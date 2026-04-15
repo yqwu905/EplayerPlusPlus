@@ -193,7 +193,7 @@ void tst_ImageListModel::testDataFilePathRole()
     model.setFolder(m_testDir);
     QVariant data = model.data(model.index(0), ImageListModel::FilePathRole);
     QVERIFY(data.toString().endsWith("apple.png"));
-    QVERIFY(data.toString().startsWith("/")); // absolute path
+    QVERIFY(QDir::isAbsolutePath(data.toString())); // absolute path
 }
 
 void tst_ImageListModel::testDataFileNameRole()
