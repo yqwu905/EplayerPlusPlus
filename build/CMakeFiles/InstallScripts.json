@@ -1,9 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/Users/yqwu/Desktop/repos/ImageCompare/build/cmake_install.cmake",
-		"/Users/yqwu/Desktop/repos/ImageCompare/build/src/cmake_install.cmake",
-		"/Users/yqwu/Desktop/repos/ImageCompare/build/tests/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
