@@ -10,11 +10,13 @@ class tst_ImageComparer : public QObject
 
 private slots:
     void testIdenticalImages();
+    void testIdenticalImages_grayscaleConversion();
     void testCompletelyDifferentImages();
     void testSmallDifferenceBelowThreshold();
     void testSmallDifferenceAboveThreshold();
     void testMixedDifferences();
     void testDifferentSizeImages();
+    void testDifferentSizeOutOfBounds();
     void testNullImageA();
     void testNullImageB();
     void testBothNull();
@@ -44,11 +46,26 @@ void tst_ImageComparer::testIdenticalImages()
     QVERIFY(!result.isNull());
     QCOMPARE(result.size(), img.size());
 
-    // All pixels should be desaturated (mostly grayscale with slight color)
+    // All pixels should be converted to grayscale (R == G == B)
     QRgb pixel = result.pixel(5, 5);
-    // R, G, B should be close to each other (near-grayscale blend)
-    QVERIFY(qAbs(qRed(pixel) - qGreen(pixel)) <= 1);
-    QVERIFY(qAbs(qGreen(pixel) - qBlue(pixel)) <= 1);
+    QCOMPARE(qRed(pixel), qGreen(pixel));
+    QCOMPARE(qGreen(pixel), qBlue(pixel));
+}
+
+void tst_ImageComparer::testIdenticalImages_grayscaleConversion()
+{
+    // Verify grayscale uses luminance formula: 0.299*R + 0.587*G + 0.114*B
+    QImage imgA = createSolidImage(1, 1, qRgb(200, 100, 50));
+    QImage imgB = createSolidImage(1, 1, qRgb(200, 100, 50));
+
+    QImage result = ImageComparer::generateToleranceMap(imgA, imgB, 10);
+    QVERIFY(!result.isNull());
+
+    QRgb pixel = result.pixel(0, 0);
+    int expectedGray = static_cast<int>(0.299 * 200 + 0.587 * 100 + 0.114 * 50);
+    QCOMPARE(qRed(pixel), expectedGray);
+    QCOMPARE(qGreen(pixel), expectedGray);
+    QCOMPARE(qBlue(pixel), expectedGray);
 }
 
 void tst_ImageComparer::testCompletelyDifferentImages()
@@ -118,10 +135,10 @@ void tst_ImageComparer::testMixedDifferences()
     QImage result = ImageComparer::generateToleranceMap(imgA, imgB, 10);
     QVERIFY(!result.isNull());
 
-    // Pixel 0: near-grayscale (identical → desaturated)
+    // Pixel 0: grayscale (identical → grayscale conversion)
     QRgb p0 = result.pixel(0, 0);
-    QVERIFY(qAbs(qRed(p0) - qGreen(p0)) <= 1);
-    QVERIFY(qAbs(qGreen(p0) - qBlue(p0)) <= 1);
+    QCOMPARE(qRed(p0), qGreen(p0));
+    QCOMPARE(qGreen(p0), qBlue(p0));
 
     // Pixel 1: blue-tinted (below threshold)
     QRgb p1 = result.pixel(1, 0);
@@ -134,6 +151,7 @@ void tst_ImageComparer::testMixedDifferences()
 
 void tst_ImageComparer::testDifferentSizeImages()
 {
+    // imageA larger than imageB — overlapping region is identical, should be grayscale
     QImage imgA = createSolidImage(20, 20, qRgb(100, 100, 100));
     QImage imgB = createSolidImage(10, 10, qRgb(100, 100, 100));
 
@@ -142,6 +160,39 @@ void tst_ImageComparer::testDifferentSizeImages()
     QVERIFY(!result.isNull());
     // Output should match imageB's size
     QCOMPARE(result.size(), imgB.size());
+
+    // All pixels are within imageA's bounds and identical → grayscale
+    QRgb pixel = result.pixel(5, 5);
+    QCOMPARE(qRed(pixel), qGreen(pixel));
+    QCOMPARE(qGreen(pixel), qBlue(pixel));
+}
+
+void tst_ImageComparer::testDifferentSizeOutOfBounds()
+{
+    // imageA smaller than imageB — pixels outside imageA should get red overlay
+    QImage imgA = createSolidImage(5, 5, qRgb(100, 100, 100));
+    QImage imgB = createSolidImage(10, 10, qRgb(100, 100, 100));
+
+    QImage result = ImageComparer::generateToleranceMap(imgA, imgB, 10);
+
+    QVERIFY(!result.isNull());
+    QCOMPARE(result.size(), imgB.size());
+
+    // Pixel within overlapping region (identical) → grayscale
+    QRgb pixelInside = result.pixel(2, 2);
+    QCOMPARE(qRed(pixelInside), qGreen(pixelInside));
+    QCOMPARE(qGreen(pixelInside), qBlue(pixelInside));
+
+    // Pixel outside imageA's bounds → red overlay
+    QRgb pixelOutside = result.pixel(7, 7);
+    QVERIFY(qRed(pixelOutside) > qGreen(pixelOutside));
+    QVERIFY(qRed(pixelOutside) > qBlue(pixelOutside));
+    QVERIFY(qRed(pixelOutside) >= 150); // Strong red component
+
+    // Pixel at edge: x outside, y inside
+    QRgb pixelEdge = result.pixel(7, 2);
+    QVERIFY(qRed(pixelEdge) > qGreen(pixelEdge));
+    QVERIFY(qRed(pixelEdge) > qBlue(pixelEdge));
 }
 
 void tst_ImageComparer::testNullImageA()

@@ -5,11 +5,13 @@
 #include <QTreeView>
 #include <QToolBar>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QFileDialog>
 #include <QMenu>
 #include <QAction>
 #include <QMessageBox>
 #include <QHeaderView>
+#include <QLabel>
 
 FolderPanel::FolderPanel(SettingsManager *settingsManager, QWidget *parent)
     : QWidget(parent)
@@ -30,20 +32,41 @@ void FolderPanel::setupUi()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
+    // ---- Panel header ----
+    auto *headerWidget = new QWidget(this);
+    headerWidget->setFixedHeight(44);
+    headerWidget->setStyleSheet(
+        "QWidget { background-color: #FAFAFA; border-bottom: 1px solid #E0E0E0; }");
+    auto *headerLayout = new QHBoxLayout(headerWidget);
+    headerLayout->setContentsMargins(16, 0, 8, 0);
+    headerLayout->setSpacing(4);
+
+    auto *titleLabel = new QLabel(tr("Folders"), headerWidget);
+    titleLabel->setStyleSheet(
+        "QLabel { font-size: 14px; font-weight: 600; color: #1A1A1A; "
+        "border: none; background: transparent; }");
+    headerLayout->addWidget(titleLabel);
+    headerLayout->addStretch();
+
+    layout->addWidget(headerWidget);
+
     // ---- Toolbar ----
     m_toolBar = new QToolBar(this);
     m_toolBar->setIconSize(QSize(16, 16));
     m_toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_toolBar->setStyleSheet(
+        "QToolBar { background-color: #FAFAFA; border: none; "
+        "border-bottom: 1px solid #E0E0E0; padding: 4px 8px; spacing: 4px; }");
 
-    QAction *addAction = m_toolBar->addAction(tr("Add Folder"));
+    QAction *addAction = m_toolBar->addAction(tr("+ Add"));
     addAction->setToolTip(tr("Add a folder to the list"));
 
     m_toolBar->addSeparator();
 
-    QAction *refreshAction = m_toolBar->addAction(tr("Refresh"));
+    QAction *refreshAction = m_toolBar->addAction(tr("↻ Refresh"));
     refreshAction->setToolTip(tr("Refresh all folders"));
 
-    QAction *clearAction = m_toolBar->addAction(tr("Clear"));
+    QAction *clearAction = m_toolBar->addAction(tr("✕ Clear"));
     clearAction->setToolTip(tr("Remove all folders"));
 
     connect(addAction, &QAction::triggered, this, &FolderPanel::onAddFolder);
@@ -60,6 +83,13 @@ void FolderPanel::setupUi()
     m_treeView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_treeView->setAnimated(true);
     m_treeView->setExpandsOnDoubleClick(true);
+    m_treeView->setIndentation(20);
+    m_treeView->setRootIsDecorated(true);
+    m_treeView->setStyleSheet(
+        "QTreeView { background-color: #FAFAFA; border: none; padding: 4px; }"
+        "QTreeView::item { padding: 4px 8px; border-radius: 4px; min-height: 24px; }"
+        "QTreeView::item:hover { background-color: #F0F0F0; }"
+        "QTreeView::item:selected { background-color: #E5F1FB; color: #1A1A1A; }");
 
     layout->addWidget(m_treeView);
 }

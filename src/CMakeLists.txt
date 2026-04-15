@@ -28,6 +28,8 @@ set(SOURCES
     services/ImageLoader.h
     services/ImageComparer.cpp
     services/ImageComparer.h
+    styles/FluentStyle.cpp
+    styles/FluentStyle.h
 )
 
 # ---- Library target for unit testing (excludes main.cpp) ----
@@ -60,6 +62,8 @@ set(LIB_SOURCES
     services/ImageLoader.h
     services/ImageComparer.cpp
     services/ImageComparer.h
+    styles/FluentStyle.cpp
+    styles/FluentStyle.h
 )
 
 add_library(ImageCompareLib STATIC ${LIB_SOURCES})

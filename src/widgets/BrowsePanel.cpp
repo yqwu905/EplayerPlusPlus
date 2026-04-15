@@ -32,11 +32,13 @@ BrowsePanel::~BrowsePanel() = default;
 void BrowsePanel::setupUi()
 {
     m_columnsLayout = new QHBoxLayout(this);
-    m_columnsLayout->setContentsMargins(4, 4, 4, 4);
-    m_columnsLayout->setSpacing(4);
+    m_columnsLayout->setContentsMargins(8, 8, 8, 8);
+    m_columnsLayout->setSpacing(8);
 
     // Add stretch so columns are left-aligned when fewer than 4
     m_columnsLayout->addStretch();
+
+    setStyleSheet("BrowsePanel { background-color: #F5F5F5; }");
 }
 
 void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
@@ -56,36 +58,41 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     col.scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     col.scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     col.scrollArea->setMinimumWidth(210);
+    col.scrollArea->setStyleSheet(
+        "QScrollArea { background-color: #F5F5F5; border: none; border-radius: 8px; }");
 
     // Create container widget inside scroll area
     col.container = new QWidget();
+    col.container->setStyleSheet("QWidget { background-color: #F5F5F5; }");
     auto *containerLayout = new QVBoxLayout(col.container);
-    containerLayout->setContentsMargins(2, 2, 2, 2);
-    containerLayout->setSpacing(4);
+    containerLayout->setContentsMargins(8, 8, 8, 8);
+    containerLayout->setSpacing(8);
 
-    // Header with folder name and close button
+    // Header with folder name and close button — Fluent 2 card style
     auto *headerWidget = new QWidget(col.container);
     auto *headerLayout = new QHBoxLayout(headerWidget);
-    headerLayout->setContentsMargins(6, 4, 4, 4);
-    headerLayout->setSpacing(4);
+    headerLayout->setContentsMargins(12, 8, 8, 8);
+    headerLayout->setSpacing(8);
 
     auto *headerLabel = new QLabel(col.model->folderName(), headerWidget);
-    headerLabel->setAlignment(Qt::AlignCenter);
+    headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     QFont headerFont = headerLabel->font();
-    headerFont.setBold(true);
-    headerFont.setPointSize(11);
+    headerFont.setWeight(QFont::DemiBold);
+    headerFont.setPointSize(12);
     headerLabel->setFont(headerFont);
+    headerLabel->setStyleSheet(
+        "QLabel { color: #1A1A1A; background: transparent; border: none; }");
     headerLayout->addWidget(headerLabel, 1);
 
     auto *closeBtn = new QPushButton(QStringLiteral("\u00D7"), headerWidget);
-    closeBtn->setFixedSize(22, 22);
+    closeBtn->setFixedSize(28, 28);
     closeBtn->setToolTip(tr("Remove from comparison"));
     closeBtn->setCursor(Qt::PointingHandCursor);
     closeBtn->setStyleSheet(
         "QPushButton { background-color: transparent; border: none; "
-        "font-size: 16px; font-weight: bold; color: #888; border-radius: 11px; }"
-        "QPushButton:hover { background-color: #d0d0d0; color: #333; }"
-        "QPushButton:pressed { background-color: #bbb; color: #111; }");
+        "font-size: 16px; font-weight: bold; color: #9E9E9E; border-radius: 14px; }"
+        "QPushButton:hover { background-color: #E0E0E0; color: #1A1A1A; }"
+        "QPushButton:pressed { background-color: #D1D1D1; color: #1A1A1A; }");
     headerLayout->addWidget(closeBtn);
 
     connect(closeBtn, &QPushButton::clicked, this, [this, folderPath]() {
@@ -93,7 +100,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     });
 
     headerWidget->setStyleSheet(
-        "QWidget { background-color: #e8e8e8; border-radius: 4px; }");
+        "QWidget { background-color: #FFFFFF; border-radius: 8px; }");
     containerLayout->addWidget(headerWidget);
 
     // Create thumbnail widgets

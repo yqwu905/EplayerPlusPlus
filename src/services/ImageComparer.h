@@ -8,8 +8,8 @@
  *
  * Generates tolerance maps by computing per-pixel differences between two images.
  * Pixels are colored based on difference magnitude:
- *   - Difference > threshold: red channel set to 255
- *   - Difference <= threshold (but > 0): blue channel set to 255
+ *   - Difference > threshold: red overlay blended onto imageB's pixel
+ *   - Difference <= threshold (but > 0): blue overlay blended onto imageB's pixel
  *   - Difference == 0: pixel converted to grayscale
  */
 class ImageComparer
@@ -20,10 +20,12 @@ public:
      * @param imageA The source image (image being compared from).
      * @param imageB The target image (image being compared to).
      * @param threshold Difference threshold (0-255). Pixels with difference
-     *                  above this value are marked red, otherwise blue.
+     *                  above this value get red overlay, otherwise blue overlay.
      * @return The tolerance map image. Returns null QImage if inputs are invalid.
      *
-     * If the images have different sizes, imageA is scaled to match imageB's size.
+     * If the images have different sizes, they are aligned at the top-left corner.
+     * Pixels in imageB that fall outside imageA's bounds are treated as having
+     * difference greater than threshold (red overlay).
      */
     static QImage generateToleranceMap(const QImage &imageA,
                                        const QImage &imageB,

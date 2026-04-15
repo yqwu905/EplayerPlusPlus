@@ -76,6 +76,7 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
 
 private:
     struct ArrowButton {
@@ -87,17 +88,20 @@ private:
     QList<ArrowButton> m_arrows;
     int m_sourceIndex = -1;
     int m_pressedArrowIdx = -1;
+    int m_hoveredArrowIdx = -1;
     bool m_isHolding = false;
     QElapsedTimer m_pressTimer;
 
-    static constexpr int kArrowSize = 32;
-    static constexpr int kArrowMargin = 8;
+    static constexpr int kArrowSize = 36;
+    static constexpr int kArrowMargin = 10;
     static constexpr int kHoldThresholdMs = 300;
 
     void recalculateHitRects();
     int hitTest(const QPoint &pos) const;
-    void drawArrow(QPainter &painter, const ArrowButton &arrow, bool pressed) const;
-    QPolygonF arrowPolygon(Direction dir, const QRect &rect) const;
+    void drawArrow(QPainter &painter, const ArrowButton &arrow,
+                   bool pressed, bool hovered) const;
+    void drawChevron(QPainter &painter, Direction dir,
+                     const QRect &rect, const QColor &color) const;
 };
 
 #endif // ARROWOVERLAY_H

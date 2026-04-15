@@ -73,7 +73,9 @@ void ArrowOverlay::paintEvent(QPaintEvent * /*event*/)
 
     for (int i = 0; i < m_arrows.size(); ++i) {
         if (m_arrows[i].targetIndex >= 0) {
-            drawArrow(painter, m_arrows[i], (i == m_pressedArrowIdx));
+            bool isHovered = (i == m_hoveredArrowIdx);
+            bool isPressed = (i == m_pressedArrowIdx);
+            drawArrow(painter, m_arrows[i], isPressed, isHovered);
         }
     }
 }
@@ -98,6 +100,21 @@ void ArrowOverlay::mousePressEvent(QMouseEvent *event)
         }
     }
     QWidget::mousePressEvent(event);
+}
+
+void ArrowOverlay::mouseMoveEvent(QMouseEvent *event)
+{
+    int idx = hitTest(event->pos());
+    if (idx != m_hoveredArrowIdx) {
+        m_hoveredArrowIdx = idx;
+        if (idx >= 0) {
+            setCursor(Qt::PointingHandCursor);
+        } else {
+            setCursor(Qt::ArrowCursor);
+        }
+        update();
+    }
+    QWidget::mouseMoveEvent(event);
 }
 
 void ArrowOverlay::mouseReleaseEvent(QMouseEvent *event)
@@ -170,52 +187,75 @@ int ArrowOverlay::hitTest(const QPoint &pos) const
 }
 
 void ArrowOverlay::drawArrow(QPainter &painter, const ArrowButton &arrow,
-                              bool pressed) const
+                              bool pressed, bool hovered) const
 {
-    QColor bgColor = pressed ? QColor(0, 120, 215, 200) : QColor(0, 0, 0, 120);
-    QColor fgColor = Qt::white;
+    QColor bgColor;
+    QColor fgColor;
+    QColor shadowColor(0, 0, 0, 20);
+
+    if (pressed) {
+        // Pressed: brand accent background, white arrow
+        bgColor = QColor(0x00, 0x78, 0xD4, 230);  // brandPrimary
+        fgColor = Qt::white;
+        shadowColor = QColor(0, 0, 0, 40);
+    } else if (hovered) {
+        // Hover: brighter white, stronger shadow
+        bgColor = QColor(255, 255, 255, 240);
+        fgColor = QColor(0x1A, 0x1A, 0x1A);       // neutralForeground1
+        shadowColor = QColor(0, 0, 0, 30);
+    } else {
+        // Normal: frosted glass white circle
+        bgColor = QColor(255, 255, 255, 200);
+        fgColor = QColor(0x61, 0x61, 0x61);        // neutralForeground2
+    }
+
+    // Draw shadow (offset 1px down)
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(shadowColor);
+    painter.drawEllipse(arrow.hitRect.adjusted(0, 1, 0, 1));
 
     // Draw circular background
-    painter.setPen(Qt::NoPen);
+    painter.setPen(QPen(QColor(0, 0, 0, 15), 1));  // subtle border
     painter.setBrush(bgColor);
     painter.drawEllipse(arrow.hitRect);
 
-    // Draw arrow polygon
-    QPolygonF poly = arrowPolygon(arrow.direction, arrow.hitRect);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(fgColor);
-    painter.drawPolygon(poly);
+    // Draw chevron arrow (V-shape lines instead of solid triangle)
+    drawChevron(painter, arrow.direction, arrow.hitRect, fgColor);
 }
 
-QPolygonF ArrowOverlay::arrowPolygon(Direction dir, const QRect &rect) const
+void ArrowOverlay::drawChevron(QPainter &painter, Direction dir,
+                                const QRect &rect, const QColor &color) const
 {
-    QPolygonF poly;
     qreal cx = rect.center().x();
     qreal cy = rect.center().y();
-    qreal s = rect.width() * 0.3; // arrow size relative to hitRect
+    qreal s = rect.width() * 0.22;  // chevron half-size
 
+    QPen pen(color, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+
+    QPainterPath path;
     switch (dir) {
     case Left:
-        poly << QPointF(cx - s, cy)
-             << QPointF(cx + s * 0.5, cy - s)
-             << QPointF(cx + s * 0.5, cy + s);
+        path.moveTo(cx + s * 0.4, cy - s);
+        path.lineTo(cx - s * 0.6, cy);
+        path.lineTo(cx + s * 0.4, cy + s);
         break;
     case Right:
-        poly << QPointF(cx + s, cy)
-             << QPointF(cx - s * 0.5, cy - s)
-             << QPointF(cx - s * 0.5, cy + s);
+        path.moveTo(cx - s * 0.4, cy - s);
+        path.lineTo(cx + s * 0.6, cy);
+        path.lineTo(cx - s * 0.4, cy + s);
         break;
     case Up:
-        poly << QPointF(cx, cy - s)
-             << QPointF(cx - s, cy + s * 0.5)
-             << QPointF(cx + s, cy + s * 0.5);
+        path.moveTo(cx - s, cy + s * 0.4);
+        path.lineTo(cx, cy - s * 0.6);
+        path.lineTo(cx + s, cy + s * 0.4);
         break;
     case Down:
-        poly << QPointF(cx, cy + s)
-             << QPointF(cx - s, cy - s * 0.5)
-             << QPointF(cx + s, cy - s * 0.5);
+        path.moveTo(cx - s, cy - s * 0.4);
+        path.lineTo(cx, cy + s * 0.6);
+        path.lineTo(cx + s, cy - s * 0.4);
         break;
     }
-
-    return poly;
+    painter.drawPath(path);
 }

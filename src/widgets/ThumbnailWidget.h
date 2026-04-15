@@ -72,12 +72,15 @@ signals:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
 
 private:
     QPixmap m_pixmap;
     QString m_fileName;
     QString m_filePath;
     bool m_selected = false;
+    bool m_hovered = false;
     QSize m_thumbnailSize = QSize(180, 180);
     static constexpr int kTextHeight = 24;
     static constexpr int kPadding = 4;

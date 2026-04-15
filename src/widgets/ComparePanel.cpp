@@ -44,13 +44,17 @@ void ComparePanel::setupUi()
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
 
-    // ---- Toolbar ----
+    // ---- Toolbar — Fluent 2 style ----
     m_toolBar = new QToolBar(this);
     m_toolBar->setIconSize(QSize(16, 16));
+    m_toolBar->setStyleSheet(
+        "QToolBar { background-color: #FAFAFA; border: none; "
+        "border-bottom: 1px solid #E0E0E0; padding: 4px 12px; spacing: 4px; }");
 
-    // Mode toggle button
+    // Mode toggle button — Fluent 2 pill / toggle style
     m_modeAction = m_toolBar->addAction(tr("Mode: Swap"));
     m_modeAction->setToolTip(tr("Click to switch between Swap and Tolerance mode"));
+    m_modeAction->setCheckable(true);
     connect(m_modeAction, &QAction::triggered, this, &ComparePanel::onModeToggled);
 
     m_toolBar->addSeparator();
@@ -59,20 +63,25 @@ void ComparePanel::setupUi()
     m_thresholdContainer = new QWidget(m_toolBar);
     auto *thresholdLayout = new QHBoxLayout(m_thresholdContainer);
     thresholdLayout->setContentsMargins(0, 0, 0, 0);
-    thresholdLayout->setSpacing(4);
+    thresholdLayout->setSpacing(8);
 
-    auto *thresholdLabel = new QLabel(tr("Threshold: "), m_thresholdContainer);
+    auto *thresholdLabel = new QLabel(tr("Threshold"), m_thresholdContainer);
+    thresholdLabel->setStyleSheet(
+        "QLabel { color: #616161; font-size: 12px; background: transparent; }");
     thresholdLayout->addWidget(thresholdLabel);
 
     m_thresholdSlider = new QSlider(Qt::Horizontal, m_thresholdContainer);
     m_thresholdSlider->setRange(0, 255);
     m_thresholdSlider->setValue(m_threshold);
-    m_thresholdSlider->setFixedWidth(150);
+    m_thresholdSlider->setFixedWidth(160);
     m_thresholdSlider->setToolTip(tr("Tolerance map threshold (0-255)"));
     thresholdLayout->addWidget(m_thresholdSlider);
 
-    m_thresholdValueLabel = new QLabel(QString(" %1 ").arg(m_threshold), m_thresholdContainer);
+    m_thresholdValueLabel = new QLabel(QString("%1").arg(m_threshold), m_thresholdContainer);
     m_thresholdValueLabel->setMinimumWidth(30);
+    m_thresholdValueLabel->setStyleSheet(
+        "QLabel { color: #1A1A1A; font-size: 12px; font-weight: 600; "
+        "background: transparent; }");
     thresholdLayout->addWidget(m_thresholdValueLabel);
 
     m_toolBar->addWidget(m_thresholdContainer);
@@ -86,11 +95,14 @@ void ComparePanel::setupUi()
     // ---- Scroll area containing the grid ----
     auto *scrollArea = new QScrollArea(this);
     scrollArea->setWidgetResizable(true);
+    scrollArea->setStyleSheet(
+        "QScrollArea { background-color: #F5F5F5; border: none; }");
 
     m_gridContainer = new QWidget(scrollArea);
+    m_gridContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
     m_gridLayout = new QGridLayout(m_gridContainer);
-    m_gridLayout->setContentsMargins(8, 8, 8, 8);
-    m_gridLayout->setSpacing(8);
+    m_gridLayout->setContentsMargins(12, 12, 12, 12);
+    m_gridLayout->setSpacing(12);
 
     scrollArea->setWidget(m_gridContainer);
     mainLayout->addWidget(scrollArea);
@@ -103,10 +115,12 @@ void ComparePanel::onModeToggled()
     if (m_compareMode == SwapMode) {
         m_compareMode = ToleranceMode;
         m_modeAction->setText(tr("Mode: Tolerance"));
+        m_modeAction->setChecked(true);
         m_thresholdContainer->setVisible(true);
     } else {
         m_compareMode = SwapMode;
         m_modeAction->setText(tr("Mode: Swap"));
+        m_modeAction->setChecked(false);
         m_thresholdContainer->setVisible(false);
 
         // Restore all images showing tolerance maps back to original
@@ -202,29 +216,40 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.folderPath = folderPath;
     cell.hasImage = false;
 
+    // ---- Fluent 2 card container ----
     cell.container = new QWidget(m_gridContainer);
+    cell.container->setStyleSheet(
+        "QWidget#compareCellContainer { background-color: #FFFFFF; "
+        "border: 1px solid #E0E0E0; border-radius: 8px; }");
+    cell.container->setObjectName("compareCellContainer");
     auto *cellLayout = new QVBoxLayout(cell.container);
-    cellLayout->setContentsMargins(4, 4, 4, 4);
-    cellLayout->setSpacing(2);
+    cellLayout->setContentsMargins(0, 0, 0, 0);
+    cellLayout->setSpacing(0);
 
+    // ---- Header — Fluent 2 style ----
     QString folderName = QDir(folderPath).dirName();
     cell.headerLabel = new QLabel(
-        QStringLiteral("<b>%1</b><br><i>No image selected</i>").arg(folderName),
+        QStringLiteral("<b>%1</b><br><span style='color:#9E9E9E;'>No image selected</span>").arg(folderName),
         cell.container);
     cell.headerLabel->setAlignment(Qt::AlignCenter);
     cell.headerLabel->setStyleSheet(
-        "QLabel { background-color: #e8e8e8; padding: 4px; border-radius: 3px; }");
+        "QLabel { background-color: #FFFFFF; color: #1A1A1A; "
+        "padding: 8px 12px; border: none; "
+        "border-top-left-radius: 8px; border-top-right-radius: 8px; "
+        "border-bottom: 1px solid #E0E0E0; font-size: 12px; }");
     cellLayout->addWidget(cell.headerLabel);
 
+    // ---- Image container ----
     cell.imageContainer = new QWidget(cell.container);
     cell.imageContainer->setMinimumSize(200, 200);
     cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    cell.imageContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
 
     cell.imageLabel = new QLabel(cell.imageContainer);
     cell.imageLabel->setAlignment(Qt::AlignCenter);
     cell.imageLabel->setScaledContents(false);
     cell.imageLabel->setStyleSheet(
-        "QLabel { background-color: #f0f0f0; border: 1px solid #ccc; }");
+        "QLabel { background-color: #F5F5F5; border: none; color: #9E9E9E; font-size: 12px; }");
     cell.imageLabel->setText(tr("Click a thumbnail\nto compare"));
 
     cell.arrowOverlay = new ArrowOverlay(cell.imageContainer);
@@ -552,7 +577,7 @@ void ComparePanel::onArrowClicked(int sourceIndex, int targetIndex)
 void ComparePanel::onThresholdChanged(int value)
 {
     m_threshold = value;
-    m_thresholdValueLabel->setText(QString(" %1 ").arg(value));
+    m_thresholdValueLabel->setText(QString("%1").arg(value));
 
     if (m_settingsManager) {
         m_settingsManager->setComparisonThreshold(value);
