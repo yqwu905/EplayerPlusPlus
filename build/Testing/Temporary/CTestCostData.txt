@@ -1,0 +1,8 @@
+tst_FileUtils 14 0.0356487
+tst_ImageUtils 14 0.0339144
+tst_SettingsManager 13 0.0370724
+tst_ImageComparer 14 0.0307911
+tst_FolderModel 13 0.00982815
+tst_CompareSession 11 0.0422105
+tst_ImageListModel 11 0.0452151
+---

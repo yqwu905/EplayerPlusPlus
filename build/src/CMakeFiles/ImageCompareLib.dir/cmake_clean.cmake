@@ -1,0 +1,42 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/ImageCompareLib_autogen.dir/AutogenUsed.txt"
+  "CMakeFiles/ImageCompareLib_autogen.dir/ParseCache.txt"
+  "ImageCompareLib_autogen"
+  "CMakeFiles/ImageCompareLib.dir/ImageCompareLib_autogen/mocs_compilation.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/ImageCompareLib_autogen/mocs_compilation.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/app/MainWindow.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/app/MainWindow.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/models/CompareSession.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/models/CompareSession.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/models/FolderModel.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/models/FolderModel.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/models/ImageListModel.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/models/ImageListModel.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/services/ImageComparer.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/services/ImageComparer.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/services/ImageLoader.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/services/ImageLoader.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/services/SettingsManager.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/services/SettingsManager.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/utils/FileUtils.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/utils/FileUtils.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/utils/ImageUtils.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/utils/ImageUtils.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/widgets/ArrowOverlay.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/widgets/ArrowOverlay.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/widgets/BrowsePanel.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/widgets/BrowsePanel.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/widgets/ComparePanel.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/widgets/ComparePanel.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/widgets/FolderPanel.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/widgets/FolderPanel.cpp.o.d"
+  "CMakeFiles/ImageCompareLib.dir/widgets/ThumbnailWidget.cpp.o"
+  "CMakeFiles/ImageCompareLib.dir/widgets/ThumbnailWidget.cpp.o.d"
+  "libImageCompareLib.a"
+  "libImageCompareLib.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/ImageCompareLib.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

@@ -1,0 +1,269 @@
+Start testing: Apr 16 01:05 CST
+----------------------------------------------------------
+1/7 Testing: tst_FileUtils
+1/7 Test: tst_FileUtils
+Command: "/Users/yqwu/Desktop/repos/ImageCompare/build/tests/tst_FileUtils"
+Directory: /Users/yqwu/Desktop/repos/ImageCompare/build/tests
+"tst_FileUtils" start time: Apr 16 01:05 CST
+Output:
+----------------------------------------------------------
+********* Start testing of tst_FileUtils *********
+Config: Using QtTest library 6.9.2, Qt 6.9.2 (arm64-little_endian-lp64 shared (dynamic) release build; by Apple LLVM 17.0.0 (clang-1700.0.13.3)), macos 15.7.1
+PASS   : tst_FileUtils::initTestCase()
+PASS   : tst_FileUtils::testIsImageFile()
+PASS   : tst_FileUtils::testIsImageFile_nonImage()
+PASS   : tst_FileUtils::testIsImageFile_nonExistent()
+PASS   : tst_FileUtils::testIsImageFile_caseInsensitive()
+PASS   : tst_FileUtils::testScanForImages_empty()
+PASS   : tst_FileUtils::testScanForImages_flat()
+PASS   : tst_FileUtils::testScanForImages_recursive()
+PASS   : tst_FileUtils::testScanForImages_nonRecursive()
+PASS   : tst_FileUtils::testScanForImages_nonExistentDir()
+PASS   : tst_FileUtils::testScanForImages_sorted()
+PASS   : tst_FileUtils::testGetSubdirectories()
+PASS   : tst_FileUtils::testGetSubdirectories_empty()
+PASS   : tst_FileUtils::testGetSubdirectories_nonExistent()
+PASS   : tst_FileUtils::testSupportedExtensions()
+PASS   : tst_FileUtils::cleanupTestCase()
+Totals: 16 passed, 0 failed, 0 skipped, 0 blacklisted, 32ms
+********* Finished testing of tst_FileUtils *********
+<end of output>
+Test time =   0.50 sec
+----------------------------------------------------------
+Test Passed.
+"tst_FileUtils" end time: Apr 16 01:05 CST
+"tst_FileUtils" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/7 Testing: tst_ImageUtils
+2/7 Test: tst_ImageUtils
+Command: "/Users/yqwu/Desktop/repos/ImageCompare/build/tests/tst_ImageUtils"
+Directory: /Users/yqwu/Desktop/repos/ImageCompare/build/tests
+"tst_ImageUtils" start time: Apr 16 01:05 CST
+Output:
+----------------------------------------------------------
+********* Start testing of tst_ImageUtils *********
+Config: Using QtTest library 6.9.2, Qt 6.9.2 (arm64-little_endian-lp64 shared (dynamic) release build; by Apple LLVM 17.0.0 (clang-1700.0.13.3)), macos 15.7.1
+PASS   : tst_ImageUtils::initTestCase()
+PASS   : tst_ImageUtils::testGenerateThumbnailFromFile()
+PASS   : tst_ImageUtils::testGenerateThumbnailFromFile_invalidPath()
+PASS   : tst_ImageUtils::testGenerateThumbnailFromImage()
+PASS   : tst_ImageUtils::testGenerateThumbnailFromImage_null()
+PASS   : tst_ImageUtils::testGenerateThumbnailPreservesAspectRatio()
+PASS   : tst_ImageUtils::testScaleImage()
+PASS   : tst_ImageUtils::testScaleImage_null()
+PASS   : tst_ImageUtils::testScaleImage_preservesAspectRatio()
+PASS   : tst_ImageUtils::testIsValidImage()
+PASS   : tst_ImageUtils::testIsValidImage_invalidFile()
+PASS   : tst_ImageUtils::testIsValidImage_nonExistent()
+PASS   : tst_ImageUtils::testGetImageSize()
+PASS   : tst_ImageUtils::testGetImageSize_invalidFile()
+PASS   : tst_ImageUtils::cleanupTestCase()
+Totals: 15 passed, 0 failed, 0 skipped, 0 blacklisted, 17ms
+********* Finished testing of tst_ImageUtils *********
+<end of output>
+Test time =   0.47 sec
+----------------------------------------------------------
+Test Passed.
+"tst_ImageUtils" end time: Apr 16 01:05 CST
+"tst_ImageUtils" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/7 Testing: tst_SettingsManager
+3/7 Test: tst_SettingsManager
+Command: "/Users/yqwu/Desktop/repos/ImageCompare/build/tests/tst_SettingsManager"
+Directory: /Users/yqwu/Desktop/repos/ImageCompare/build/tests
+"tst_SettingsManager" start time: Apr 16 01:05 CST
+Output:
+----------------------------------------------------------
+********* Start testing of tst_SettingsManager *********
+Config: Using QtTest library 6.9.2, Qt 6.9.2 (arm64-little_endian-lp64 shared (dynamic) release build; by Apple LLVM 17.0.0 (clang-1700.0.13.3)), macos 15.7.1
+PASS   : tst_SettingsManager::initTestCase()
+PASS   : tst_SettingsManager::testSaveFolderList()
+PASS   : tst_SettingsManager::testLoadFolderList_empty()
+PASS   : tst_SettingsManager::testAddFolder()
+PASS   : tst_SettingsManager::testAddFolder_duplicate()
+PASS   : tst_SettingsManager::testRemoveFolder()
+PASS   : tst_SettingsManager::testRemoveFolder_nonExistent()
+PASS   : tst_SettingsManager::testClearFolderList()
+PASS   : tst_SettingsManager::testComparisonThreshold_default()
+PASS   : tst_SettingsManager::testSetComparisonThreshold()
+PASS   : tst_SettingsManager::testSetComparisonThreshold_clamped()
+PASS   : tst_SettingsManager::cleanupTestCase()
+Totals: 12 passed, 0 failed, 0 skipped, 0 blacklisted, 3ms
+********* Finished testing of tst_SettingsManager *********
+<end of output>
+Test time =   0.48 sec
+----------------------------------------------------------
+Test Passed.
+"tst_SettingsManager" end time: Apr 16 01:05 CST
+"tst_SettingsManager" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/7 Testing: tst_ImageComparer
+4/7 Test: tst_ImageComparer
+Command: "/Users/yqwu/Desktop/repos/ImageCompare/build/tests/tst_ImageComparer"
+Directory: /Users/yqwu/Desktop/repos/ImageCompare/build/tests
+"tst_ImageComparer" start time: Apr 16 01:05 CST
+Output:
+----------------------------------------------------------
+********* Start testing of tst_ImageComparer *********
+Config: Using QtTest library 6.9.2, Qt 6.9.2 (arm64-little_endian-lp64 shared (dynamic) release build; by Apple LLVM 17.0.0 (clang-1700.0.13.3)), macos 15.7.1
+PASS   : tst_ImageComparer::initTestCase()
+PASS   : tst_ImageComparer::testIdenticalImages()
+PASS   : tst_ImageComparer::testCompletelyDifferentImages()
+PASS   : tst_ImageComparer::testSmallDifferenceBelowThreshold()
+PASS   : tst_ImageComparer::testSmallDifferenceAboveThreshold()
+PASS   : tst_ImageComparer::testMixedDifferences()
+PASS   : tst_ImageComparer::testDifferentSizeImages()
+PASS   : tst_ImageComparer::testNullImageA()
+PASS   : tst_ImageComparer::testNullImageB()
+PASS   : tst_ImageComparer::testBothNull()
+PASS   : tst_ImageComparer::testPixelDifference()
+PASS   : tst_ImageComparer::testPixelDifference_identical()
+PASS   : tst_ImageComparer::testSingleChannelDifference()
+PASS   : tst_ImageComparer::testThresholdBoundary()
+PASS   : tst_ImageComparer::testOverlayPreservesOriginalContent()
+PASS   : tst_ImageComparer::testDiffIntensityScaling()
+PASS   : tst_ImageComparer::cleanupTestCase()
+Totals: 17 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms
+********* Finished testing of tst_ImageComparer *********
+<end of output>
+Test time =   0.43 sec
+----------------------------------------------------------
+Test Passed.
+"tst_ImageComparer" end time: Apr 16 01:05 CST
+"tst_ImageComparer" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/7 Testing: tst_FolderModel
+5/7 Test: tst_FolderModel
+Command: "/Users/yqwu/Desktop/repos/ImageCompare/build/tests/tst_FolderModel"
+Directory: /Users/yqwu/Desktop/repos/ImageCompare/build/tests
+"tst_FolderModel" start time: Apr 16 01:05 CST
+Output:
+----------------------------------------------------------
+********* Start testing of tst_FolderModel *********
+Config: Using QtTest library 6.9.2, Qt 6.9.2 (arm64-little_endian-lp64 shared (dynamic) release build; by Apple LLVM 17.0.0 (clang-1700.0.13.3)), macos 15.7.1
+PASS   : tst_FolderModel::initTestCase()
+PASS   : tst_FolderModel::testInitialState()
+PASS   : tst_FolderModel::testAddFolder()
+PASS   : tst_FolderModel::testAddFolder_duplicate()
+PASS   : tst_FolderModel::testAddFolder_invalid()
+PASS   : tst_FolderModel::testRemoveFolder()
+PASS   : tst_FolderModel::testRemoveFolder_nonRoot()
+PASS   : tst_FolderModel::testClearAll()
+PASS   : tst_FolderModel::testRootFolderPaths()
+PASS   : tst_FolderModel::testSetRootFolders()
+PASS   : tst_FolderModel::testSetRootFolders_filterInvalid()
+PASS   : tst_FolderModel::testFilePath()
+PASS   : tst_FolderModel::testIsRootFolder()
+PASS   : tst_FolderModel::testRefreshFolder()
+PASS   : tst_FolderModel::testRefreshAll()
+PASS   : tst_FolderModel::testDataDisplayRole()
+PASS   : tst_FolderModel::testDataToolTipRole()
+PASS   : tst_FolderModel::testDataPathRole()
+PASS   : tst_FolderModel::testDataIsRootRole()
+PASS   : tst_FolderModel::testColumnCount()
+PASS   : tst_FolderModel::testHasChildren()
+PASS   : tst_FolderModel::testFetchMore()
+PASS   : tst_FolderModel::testFetchMoreAsync()
+PASS   : tst_FolderModel::testFetchMoreNoDuplicate()
+PASS   : tst_FolderModel::testIndex()
+PASS   : tst_FolderModel::testParent()
+PASS   : tst_FolderModel::cleanupTestCase()
+Totals: 27 passed, 0 failed, 0 skipped, 0 blacklisted, 21ms
+********* Finished testing of tst_FolderModel *********
+<end of output>
+Test time =   0.13 sec
+----------------------------------------------------------
+Test Passed.
+"tst_FolderModel" end time: Apr 16 01:05 CST
+"tst_FolderModel" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/7 Testing: tst_CompareSession
+6/7 Test: tst_CompareSession
+Command: "/Users/yqwu/Desktop/repos/ImageCompare/build/tests/tst_CompareSession"
+Directory: /Users/yqwu/Desktop/repos/ImageCompare/build/tests
+"tst_CompareSession" start time: Apr 16 01:05 CST
+Output:
+----------------------------------------------------------
+********* Start testing of tst_CompareSession *********
+Config: Using QtTest library 6.9.2, Qt 6.9.2 (arm64-little_endian-lp64 shared (dynamic) release build; by Apple LLVM 17.0.0 (clang-1700.0.13.3)), macos 15.7.1
+PASS   : tst_CompareSession::initTestCase()
+PASS   : tst_CompareSession::testInitialState()
+PASS   : tst_CompareSession::testAddFolder()
+PASS   : tst_CompareSession::testAddFolder_duplicate()
+PASS   : tst_CompareSession::testAddFolder_maxReached()
+PASS   : tst_CompareSession::testRemoveFolder()
+PASS   : tst_CompareSession::testRemoveFolder_notFound()
+PASS   : tst_CompareSession::testRemoveFolderAt()
+PASS   : tst_CompareSession::testRemoveFolderAt_invalid()
+PASS   : tst_CompareSession::testClear()
+PASS   : tst_CompareSession::testClear_empty()
+PASS   : tst_CompareSession::testContainsFolder()
+PASS   : tst_CompareSession::testIsFull()
+PASS   : tst_CompareSession::testIndexOf()
+PASS   : tst_CompareSession::testFolderCount()
+PASS   : tst_CompareSession::testSignal_folderAdded()
+PASS   : tst_CompareSession::testSignal_folderRemoved()
+PASS   : tst_CompareSession::testSignal_cleared()
+PASS   : tst_CompareSession::testSignal_sessionChanged()
+PASS   : tst_CompareSession::cleanupTestCase()
+Totals: 20 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms
+********* Finished testing of tst_CompareSession *********
+<end of output>
+Test time =   0.46 sec
+----------------------------------------------------------
+Test Passed.
+"tst_CompareSession" end time: Apr 16 01:05 CST
+"tst_CompareSession" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/7 Testing: tst_ImageListModel
+7/7 Test: tst_ImageListModel
+Command: "/Users/yqwu/Desktop/repos/ImageCompare/build/tests/tst_ImageListModel"
+Directory: /Users/yqwu/Desktop/repos/ImageCompare/build/tests
+"tst_ImageListModel" start time: Apr 16 01:05 CST
+Output:
+----------------------------------------------------------
+********* Start testing of tst_ImageListModel *********
+Config: Using QtTest library 6.9.2, Qt 6.9.2 (arm64-little_endian-lp64 shared (dynamic) release build; by Apple LLVM 17.0.0 (clang-1700.0.13.3)), macos 15.7.1
+PASS   : tst_ImageListModel::initTestCase()
+PASS   : tst_ImageListModel::testInitialState()
+PASS   : tst_ImageListModel::testSetFolder()
+PASS   : tst_ImageListModel::testSetFolder_empty()
+PASS   : tst_ImageListModel::testSetFolder_nonExistent()
+PASS   : tst_ImageListModel::testFolderName()
+PASS   : tst_ImageListModel::testRefresh()
+PASS   : tst_ImageListModel::testImagePathAt()
+PASS   : tst_ImageListModel::testImagePathAt_invalid()
+PASS   : tst_ImageListModel::testFileNameAt()
+PASS   : tst_ImageListModel::testFileNameAt_invalid()
+PASS   : tst_ImageListModel::testImageCount()
+PASS   : tst_ImageListModel::testIndexOfFileName()
+PASS   : tst_ImageListModel::testIndexOfFileName_notFound()
+PASS   : tst_ImageListModel::testDataDisplayRole()
+PASS   : tst_ImageListModel::testDataFilePathRole()
+PASS   : tst_ImageListModel::testDataFileNameRole()
+PASS   : tst_ImageListModel::testDataIsSelectedRole()
+PASS   : tst_ImageListModel::testSelection()
+PASS   : tst_ImageListModel::testSelection_outOfRange()
+PASS   : tst_ImageListModel::testClearSelection()
+PASS   : tst_ImageListModel::testSelectedIndices()
+PASS   : tst_ImageListModel::testSelectionSignal()
+PASS   : tst_ImageListModel::testRowCount()
+PASS   : tst_ImageListModel::testRowCount_withParent()
+PASS   : tst_ImageListModel::cleanupTestCase()
+Totals: 26 passed, 0 failed, 0 skipped, 0 blacklisted, 15ms
+********* Finished testing of tst_ImageListModel *********
+<end of output>
+Test time =   0.50 sec
+----------------------------------------------------------
+Test Passed.
+"tst_ImageListModel" end time: Apr 16 01:05 CST
+"tst_ImageListModel" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Apr 16 01:05 CST

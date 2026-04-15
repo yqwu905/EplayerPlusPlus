@@ -1,0 +1,249 @@
+{
+	"BUILD_DIR" : "/Users/yqwu/Desktop/repos/ImageCompare/build/src/ImageCompareLib_autogen",
+	"CMAKE_BINARY_DIR" : "/Users/yqwu/Desktop/repos/ImageCompare/build",
+	"CMAKE_CURRENT_BINARY_DIR" : "/Users/yqwu/Desktop/repos/ImageCompare/build/src",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/Users/yqwu/Desktop/repos/ImageCompare/src",
+	"CMAKE_EXECUTABLE" : "/opt/homebrew/bin/cmake",
+	"CMAKE_LIST_FILES" : 
+	[
+		"/Users/yqwu/Desktop/repos/ImageCompare/src/CMakeLists.txt",
+		"/Users/yqwu/Desktop/repos/ImageCompare/resources/resources.qrc"
+	],
+	"CMAKE_SOURCE_DIR" : "/Users/yqwu/Desktop/repos/ImageCompare",
+	"CROSS_CONFIG" : false,
+	"DEP_FILE" : "/Users/yqwu/Desktop/repos/ImageCompare/build/src/ImageCompareLib_autogen/deps",
+	"DEP_FILE_RULE_NAME" : "ImageCompareLib_autogen/timestamp",
+	"HEADERS" : 
+	[
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/app/MainWindow.h",
+			"MU",
+			"VJIZ3MDCXP/moc_MainWindow.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/models/CompareSession.h",
+			"MU",
+			"IVK4DJNV27/moc_CompareSession.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/models/FolderModel.h",
+			"MU",
+			"IVK4DJNV27/moc_FolderModel.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/models/ImageListModel.h",
+			"MU",
+			"IVK4DJNV27/moc_ImageListModel.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/services/ImageComparer.h",
+			"MU",
+			"3BYFHCGL5U/moc_ImageComparer.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/services/ImageLoader.h",
+			"MU",
+			"3BYFHCGL5U/moc_ImageLoader.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/services/SettingsManager.h",
+			"MU",
+			"3BYFHCGL5U/moc_SettingsManager.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/utils/FileUtils.h",
+			"MU",
+			"7HEHEGDA3T/moc_FileUtils.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/utils/ImageUtils.h",
+			"MU",
+			"7HEHEGDA3T/moc_ImageUtils.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/ArrowOverlay.h",
+			"MU",
+			"IMAN36LHMA/moc_ArrowOverlay.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/BrowsePanel.h",
+			"MU",
+			"IMAN36LHMA/moc_BrowsePanel.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/ComparePanel.h",
+			"MU",
+			"IMAN36LHMA/moc_ComparePanel.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/FolderPanel.h",
+			"MU",
+			"IMAN36LHMA/moc_FolderPanel.cpp",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/ThumbnailWidget.h",
+			"MU",
+			"IMAN36LHMA/moc_ThumbnailWidget.cpp",
+			null
+		]
+	],
+	"HEADER_EXTENSIONS" : [ "h", "hh", "h++", "hm", "hpp", "hxx", "in", "txx" ],
+	"INCLUDE_DIR" : "/Users/yqwu/Desktop/repos/ImageCompare/build/src/ImageCompareLib_autogen/include",
+	"MOC_COMPILATION_FILE" : "/Users/yqwu/Desktop/repos/ImageCompare/build/src/ImageCompareLib_autogen/mocs_compilation.cpp",
+	"MOC_DEFINITIONS" : 
+	[
+		"QT_CONCURRENT_LIB",
+		"QT_CORE_LIB",
+		"QT_GUI_LIB",
+		"QT_NO_DEBUG",
+		"QT_WIDGETS_LIB"
+	],
+	"MOC_DEPEND_FILTERS" : 
+	[
+		[
+			"Q_PLUGIN_METADATA",
+			"[\n][ \t]*Q_PLUGIN_METADATA[ \t]*\\([^\\)]*FILE[ \t]*\"([^\"]+)\""
+		]
+	],
+	"MOC_INCLUDES" : 
+	[
+		"/Users/yqwu/Desktop/repos/ImageCompare/src",
+		"/opt/homebrew/Cellar/qt/6.9.2/lib/QtWidgets.framework/Headers",
+		"/opt/homebrew/Cellar/qt/6.9.2/lib/QtWidgets.framework",
+		"/opt/homebrew/Cellar/qt/6.9.2/lib/QtCore.framework/Headers",
+		"/opt/homebrew/Cellar/qt/6.9.2/lib/QtCore.framework",
+		"/opt/homebrew/Cellar/qt/6.9.2/share/qt/mkspecs/macx-clang",
+		"/opt/homebrew/Cellar/qt/6.9.2/include",
+		"/opt/homebrew/Cellar/qt/6.9.2/lib/QtGui.framework/Headers",
+		"/opt/homebrew/Cellar/qt/6.9.2/lib/QtGui.framework",
+		"/opt/homebrew/Cellar/qt/6.9.2/lib/QtConcurrent.framework/Headers",
+		"/opt/homebrew/Cellar/qt/6.9.2/lib/QtConcurrent.framework",
+		"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1",
+		"/Library/Developer/CommandLineTools/usr/lib/clang/17/include",
+		"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include",
+		"/Library/Developer/CommandLineTools/usr/include"
+	],
+	"MOC_MACRO_NAMES" : 
+	[
+		"Q_OBJECT",
+		"Q_GADGET",
+		"Q_NAMESPACE",
+		"Q_NAMESPACE_EXPORT",
+		"Q_GADGET_EXPORT",
+		"Q_ENUM_NS"
+	],
+	"MOC_OPTIONS" : [],
+	"MOC_PATH_PREFIX" : false,
+	"MOC_PREDEFS_CMD" : 
+	[
+		"/usr/bin/c++",
+		"-std=c++17",
+		"-w",
+		"-dM",
+		"-E",
+		"/opt/homebrew/share/cmake/Modules/CMakeCXXCompilerABI.cpp"
+	],
+	"MOC_PREDEFS_FILE" : "/Users/yqwu/Desktop/repos/ImageCompare/build/src/ImageCompareLib_autogen/moc_predefs.h",
+	"MOC_RELAXED_MODE" : false,
+	"MOC_SKIP" : [ "/Users/yqwu/Desktop/repos/ImageCompare/build/src/qrc_resources.cpp" ],
+	"MULTI_CONFIG" : false,
+	"PARALLEL" : 10,
+	"PARSE_CACHE_FILE" : "/Users/yqwu/Desktop/repos/ImageCompare/build/src/CMakeFiles/ImageCompareLib_autogen.dir/ParseCache.txt",
+	"QT_MOC_EXECUTABLE" : "/opt/homebrew/Cellar/qt/6.9.2/share/qt/libexec/moc",
+	"QT_UIC_EXECUTABLE" : "/opt/homebrew/Cellar/qt/6.9.2/share/qt/libexec/uic",
+	"QT_VERSION_MAJOR" : 6,
+	"QT_VERSION_MINOR" : 9,
+	"SETTINGS_FILE" : "/Users/yqwu/Desktop/repos/ImageCompare/build/src/CMakeFiles/ImageCompareLib_autogen.dir/AutogenUsed.txt",
+	"SOURCES" : 
+	[
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/app/MainWindow.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/models/CompareSession.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/models/FolderModel.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/models/ImageListModel.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/services/ImageComparer.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/services/ImageLoader.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/services/SettingsManager.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/utils/FileUtils.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/utils/ImageUtils.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/ArrowOverlay.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/BrowsePanel.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/ComparePanel.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/FolderPanel.cpp",
+			"MU",
+			null
+		],
+		[
+			"/Users/yqwu/Desktop/repos/ImageCompare/src/widgets/ThumbnailWidget.cpp",
+			"MU",
+			null
+		]
+	],
+	"UIC_OPTIONS" : [],
+	"UIC_SEARCH_PATHS" : [],
+	"UIC_SKIP" : [ "/Users/yqwu/Desktop/repos/ImageCompare/build/src/qrc_resources.cpp" ],
+	"UIC_UI_FILES" : [],
+	"USE_BETTER_GRAPH" : true,
+	"VERBOSITY" : 0
+}
