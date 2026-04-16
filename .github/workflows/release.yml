@@ -58,11 +58,48 @@ jobs:
         run: |
           Compress-Archive -Path "deploy/*" -DestinationPath "ImageCompare-windows-x64.zip"
 
+          $appName = "ImageCompare"
+          $appVersion = "${{ github.ref_name }}"
+          if ($appVersion -match '^v(.*)$') {
+            $appVersion = $Matches[1]
+          } elseif ($appVersion -eq "") {
+            $appVersion = "0.1.0"
+          }
+          
+          $issContent = @"
+          [Setup]
+          AppName=$appName
+          AppVersion=$appVersion
+          DefaultDirName={autopf}\$appName
+          DefaultGroupName=$appName
+          OutputDir=.
+          OutputBaseFilename=${appName}-windows-x64-installer
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+
+          [Files]
+          Source: "deploy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\$appName"; Filename: "{app}\${appName}.exe"
+          Name: "{autodesktop}\$appName"; Filename: "{app}\${appName}.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
+          "@
+          
+          Set-Content -Path "installer.iss" -Value $issContent
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer.iss"
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ImageCompare-windows-x64
-          path: ImageCompare-windows-x64.zip
+          path: |
+            ImageCompare-windows-x64.zip
+            ImageCompare-windows-x64-installer.exe
 
   # ============================================================
   # Build for macOS
@@ -277,12 +314,13 @@ jobs:
             Cross-platform image comparison tool.
 
             ### Downloads
-            - **Windows**: `ImageCompare-windows-x64.zip`
+            - **Windows**: `ImageCompare-windows-x64-installer.exe` (Installer) or `.zip` (Portable)
             - **macOS**: `ImageCompare-macos-x64.dmg` or `.zip`
             - **Linux**: `ImageCompare-linux-x64.AppImage` or `.tar.gz`
           draft: false
           prerelease: false
           files: |
+            artifacts/**/*.exe
             artifacts/**/*.zip
             artifacts/**/*.dmg
             artifacts/**/*.AppImage
