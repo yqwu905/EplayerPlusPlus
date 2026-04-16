@@ -18,6 +18,8 @@ set(SOURCES
     widgets/ThumbnailWidget.h
     widgets/ArrowOverlay.cpp
     widgets/ArrowOverlay.h
+    widgets/ZoomableImageWidget.cpp
+    widgets/ZoomableImageWidget.h
     utils/FileUtils.cpp
     utils/FileUtils.h
     utils/ImageUtils.cpp
@@ -52,6 +54,8 @@ set(LIB_SOURCES
     widgets/ThumbnailWidget.h
     widgets/ArrowOverlay.cpp
     widgets/ArrowOverlay.h
+    widgets/ZoomableImageWidget.cpp
+    widgets/ZoomableImageWidget.h
     utils/FileUtils.cpp
     utils/FileUtils.h
     utils/ImageUtils.cpp
@@ -88,4 +92,9 @@ target_include_directories(ImageCompare PRIVATE
 
 target_link_libraries(ImageCompare PRIVATE
     ImageCompareLib
+)
+
+# Use Windows subsystem (no console window) on Windows
+set_target_properties(ImageCompare PROPERTIES
+    WIN32_EXECUTABLE $<BOOL:$<PLATFORM_ID:Windows>>
 )

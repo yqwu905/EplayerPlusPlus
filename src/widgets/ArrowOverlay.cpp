@@ -2,6 +2,7 @@
 
 #include <QPainter>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QPainterPath>
 
 ArrowOverlay::ArrowOverlay(QWidget *parent)
@@ -99,7 +100,8 @@ void ArrowOverlay::mousePressEvent(QMouseEvent *event)
             return;
         }
     }
-    QWidget::mousePressEvent(event);
+    // Not on an arrow — let the event pass through to the parent widget
+    event->ignore();
 }
 
 void ArrowOverlay::mouseMoveEvent(QMouseEvent *event)
@@ -110,11 +112,14 @@ void ArrowOverlay::mouseMoveEvent(QMouseEvent *event)
         if (idx >= 0) {
             setCursor(Qt::PointingHandCursor);
         } else {
-            setCursor(Qt::ArrowCursor);
+            unsetCursor();
         }
         update();
     }
-    QWidget::mouseMoveEvent(event);
+    // If not holding an arrow, let the event pass through
+    if (m_pressedArrowIdx < 0) {
+        event->ignore();
+    }
 }
 
 void ArrowOverlay::mouseReleaseEvent(QMouseEvent *event)
@@ -142,7 +147,14 @@ void ArrowOverlay::mouseReleaseEvent(QMouseEvent *event)
         update();
         return;
     }
-    QWidget::mouseReleaseEvent(event);
+    // Not on an arrow — let the event pass through
+    event->ignore();
+}
+
+void ArrowOverlay::wheelEvent(QWheelEvent *event)
+{
+    // Always pass wheel events through to parent (for zoom)
+    event->ignore();
 }
 
 void ArrowOverlay::recalculateHitRects()

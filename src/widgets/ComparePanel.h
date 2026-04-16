@@ -14,6 +14,7 @@ class QAction;
 class ArrowOverlay;
 class SettingsManager;
 class CompareSession;
+class ZoomableImageWidget;
 
 /**
  * @brief Image comparison panel displaying selected images in a grid.
@@ -22,6 +23,11 @@ class CompareSession;
  *   - Swap mode (default): press-hold arrow to preview source on target,
  *     release to restore.
  *   - Tolerance mode: click arrow to toggle tolerance map on target.
+ *
+ * Supports zoom and pan:
+ *   - Mouse wheel to zoom, drag to pan, double-click to reset.
+ *   - By default, zoom/pan syncs across all images (linked mode).
+ *   - Hold Ctrl to zoom/pan only the current image (independent mode).
  */
 class ComparePanel : public QWidget
 {
@@ -56,20 +62,22 @@ private slots:
     void onThresholdChanged(int value);
     void onModeToggled();
 
+    // Zoom/pan sync slots
+    void onCellZoomChanged(double zoomLevel, QPointF focalPoint);
+    void onCellPanChanged(QPointF offset);
+    void onCellViewReset();
+
 private:
     struct ImageCell {
         QWidget *container = nullptr;
         QWidget *imageContainer = nullptr;
         QLabel *headerLabel = nullptr;
-        QLabel *imageLabel = nullptr;
+        ZoomableImageWidget *imageWidget = nullptr;
         ArrowOverlay *arrowOverlay = nullptr;
         QString folderPath;
         QString imagePath;
         QImage originalImage;
-        QPixmap cachedOriginalPixmap;  // Pre-scaled for display
         QImage cachedToleranceImage;   // Cached tolerance map (full res)
-        QPixmap cachedTolerancePixmap; // Pre-scaled tolerance for display
-        QSize cachedDisplaySize;       // Size used for cached pixmaps
         bool hasImage = false;
         bool showingToleranceMap = false;
         int toleranceSourceIndex = -1;
@@ -88,6 +96,12 @@ private:
     void resizeImageCell(int cellIndex);
     void reconnectArrows();
 
+    /**
+     * @brief Find the cell index by its ZoomableImageWidget pointer.
+     * @return Index, or -1 if not found.
+     */
+    int findCellByWidget(QObject *widget) const;
+
     CompareSession *m_session = nullptr;
     CompareMode m_compareMode = SwapMode;
     QToolBar *m_toolBar = nullptr;
@@ -100,6 +114,7 @@ private:
     QList<ImageCell> m_cells;
     SettingsManager *m_settingsManager = nullptr;
     int m_threshold = 10;
+    bool m_syncingViews = false; ///< Guard to prevent recursive sync loops
 };
 
 #endif // COMPAREPANEL_H

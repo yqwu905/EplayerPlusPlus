@@ -1,5 +1,6 @@
 #include "ComparePanel.h"
 #include "ArrowOverlay.h"
+#include "ZoomableImageWidget.h"
 #include "services/ImageComparer.h"
 #include "services/SettingsManager.h"
 #include "models/CompareSession.h"
@@ -15,6 +16,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QEvent>
+#include <QApplication>
 
 ComparePanel::ComparePanel(CompareSession *session,
                            SettingsManager *settingsManager,
@@ -245,17 +247,23 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     cell.imageContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
 
-    cell.imageLabel = new QLabel(cell.imageContainer);
-    cell.imageLabel->setAlignment(Qt::AlignCenter);
-    cell.imageLabel->setScaledContents(false);
-    cell.imageLabel->setStyleSheet(
-        "QLabel { background-color: #F5F5F5; border: none; color: #9E9E9E; font-size: 12px; }");
-    cell.imageLabel->setText(tr("Click a thumbnail\nto compare"));
+    cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
+    cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
 
-    cell.arrowOverlay = new ArrowOverlay(cell.imageContainer);
+    // ArrowOverlay is a child of imageWidget so that ignored mouse/wheel
+    // events propagate from ArrowOverlay -> ZoomableImageWidget
+    cell.arrowOverlay = new ArrowOverlay(cell.imageWidget);
 
     cellLayout->addWidget(cell.imageContainer, 1);
     cell.imageContainer->installEventFilter(this);
+
+    // Connect zoom/pan signals for linked view
+    connect(cell.imageWidget, &ZoomableImageWidget::zoomChanged,
+            this, &ComparePanel::onCellZoomChanged);
+    connect(cell.imageWidget, &ZoomableImageWidget::panChanged,
+            this, &ComparePanel::onCellPanChanged);
+    connect(cell.imageWidget, &ZoomableImageWidget::viewReset,
+            this, &ComparePanel::onCellViewReset);
 
     return cell;
 }
@@ -371,24 +379,14 @@ void ComparePanel::loadImage(int cellIndex)
     cell.originalImage = QImage(cell.imagePath);
     cell.hasImage = !cell.originalImage.isNull();
     cell.cachedToleranceImage = QImage();     // Invalidate tolerance cache
-    cell.cachedTolerancePixmap = QPixmap();
-    cell.cachedOriginalPixmap = QPixmap();
-    cell.cachedDisplaySize = QSize();
 
-    if (cell.hasImage) {
-        // Pre-compute the display pixmap at current size
-        QSize displaySize = cell.imageLabel->size().expandedTo(QSize(200, 200));
-        QPixmap pixmap = QPixmap::fromImage(cell.originalImage);
-        cell.cachedOriginalPixmap = pixmap.scaled(
-            displaySize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        cell.cachedDisplaySize = displaySize;
-    }
-
-    // Update geometry and display
+    // Update geometry
     QRect r = cell.imageContainer->rect();
-    cell.imageLabel->setGeometry(r);
-    cell.arrowOverlay->setGeometry(r);
+    cell.imageWidget->setGeometry(r);
+    // ArrowOverlay is child of imageWidget, geometry is relative to it
+    cell.arrowOverlay->setGeometry(QRect(0, 0, r.width(), r.height()));
     cell.arrowOverlay->raise();
+
     showOriginalImage(cellIndex);
 }
 
@@ -399,15 +397,11 @@ void ComparePanel::clearImage(int cellIndex)
     ImageCell &cell = m_cells[cellIndex];
     cell.imagePath.clear();
     cell.originalImage = QImage();
-    cell.cachedOriginalPixmap = QPixmap();
     cell.cachedToleranceImage = QImage();
-    cell.cachedTolerancePixmap = QPixmap();
-    cell.cachedDisplaySize = QSize();
     cell.hasImage = false;
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
-    cell.imageLabel->clear();
-    cell.imageLabel->setText(tr("Click a thumbnail\nto compare"));
+    cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
 
     QString folderName = QDir(cell.folderPath).dirName();
     cell.headerLabel->setText(
@@ -422,37 +416,12 @@ void ComparePanel::resizeImageCell(int cellIndex)
     if (!cell.imageContainer) return;
 
     QRect r = cell.imageContainer->rect();
-    cell.imageLabel->setGeometry(r);
-    cell.arrowOverlay->setGeometry(r);
+    cell.imageWidget->setGeometry(r);
+    // ArrowOverlay is child of imageWidget, geometry is relative to it
+    cell.arrowOverlay->setGeometry(QRect(0, 0, r.width(), r.height()));
     cell.arrowOverlay->raise();
 
-    if (!cell.hasImage) return;
-
-    QSize displaySize = cell.imageLabel->size().expandedTo(QSize(200, 200));
-
-    // Only re-scale if size actually changed
-    if (displaySize == cell.cachedDisplaySize) return;
-
-    cell.cachedDisplaySize = displaySize;
-
-    // Re-scale original pixmap
-    QPixmap origPixmap = QPixmap::fromImage(cell.originalImage);
-    cell.cachedOriginalPixmap = origPixmap.scaled(
-        displaySize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-
-    // Re-scale tolerance pixmap if we have a cached tolerance image
-    if (!cell.cachedToleranceImage.isNull()) {
-        QPixmap tolPixmap = QPixmap::fromImage(cell.cachedToleranceImage);
-        cell.cachedTolerancePixmap = tolPixmap.scaled(
-            displaySize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    }
-
-    // Update display
-    if (cell.showingToleranceMap && !cell.cachedTolerancePixmap.isNull()) {
-        cell.imageLabel->setPixmap(cell.cachedTolerancePixmap);
-    } else {
-        cell.imageLabel->setPixmap(cell.cachedOriginalPixmap);
-    }
+    // ZoomableImageWidget handles redraw internally on resize
 }
 
 void ComparePanel::showOriginalImage(int cellIndex)
@@ -461,20 +430,11 @@ void ComparePanel::showOriginalImage(int cellIndex)
 
     ImageCell &cell = m_cells[cellIndex];
     if (cell.originalImage.isNull()) {
-        cell.imageLabel->setText(tr("Failed to load image"));
+        cell.imageWidget->setText(tr("Failed to load image"));
         return;
     }
 
-    // Use cached pixmap if available
-    if (cell.cachedOriginalPixmap.isNull()) {
-        QSize displaySize = cell.imageLabel->size().expandedTo(QSize(200, 200));
-        QPixmap pixmap = QPixmap::fromImage(cell.originalImage);
-        cell.cachedOriginalPixmap = pixmap.scaled(
-            displaySize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        cell.cachedDisplaySize = displaySize;
-    }
-
-    cell.imageLabel->setPixmap(cell.cachedOriginalPixmap);
+    cell.imageWidget->setImage(cell.originalImage);
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
 }
@@ -496,21 +456,11 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
     if (needRegenerate) {
         target.cachedToleranceImage = ImageComparer::generateToleranceMap(
             source.originalImage, target.originalImage, m_threshold);
-        // Invalidate scaled cache
-        target.cachedTolerancePixmap = QPixmap();
     }
 
     if (target.cachedToleranceImage.isNull()) return;
 
-    // Scale for display if needed
-    if (target.cachedTolerancePixmap.isNull()) {
-        QSize displaySize = target.imageLabel->size().expandedTo(QSize(200, 200));
-        QPixmap pixmap = QPixmap::fromImage(target.cachedToleranceImage);
-        target.cachedTolerancePixmap = pixmap.scaled(
-            displaySize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    }
-
-    target.imageLabel->setPixmap(target.cachedTolerancePixmap);
+    target.imageWidget->setImage(target.cachedToleranceImage);
     target.showingToleranceMap = true;
     target.toleranceSourceIndex = sourceIndex;
 }
@@ -521,19 +471,10 @@ void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
     if (targetIndex < 0 || targetIndex >= m_cells.size()) return;
 
     const ImageCell &source = m_cells[sourceIndex];
-    ImageCell &target = m_cells[targetIndex];
 
     if (source.originalImage.isNull()) return;
 
-    // Use source's cached pixmap if available and same size
-    QSize displaySize = target.imageLabel->size().expandedTo(QSize(200, 200));
-    if (!source.cachedOriginalPixmap.isNull()) {
-        target.imageLabel->setPixmap(source.cachedOriginalPixmap);
-    } else {
-        QPixmap pixmap = QPixmap::fromImage(source.originalImage);
-        target.imageLabel->setPixmap(pixmap.scaled(
-            displaySize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    }
+    m_cells[targetIndex].imageWidget->setImage(source.originalImage);
 }
 
 // ---- Arrow interaction (mode-dependent) ----
@@ -587,8 +528,86 @@ void ComparePanel::onThresholdChanged(int value)
     for (int i = 0; i < m_cells.size(); ++i) {
         if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
             m_cells[i].cachedToleranceImage = QImage(); // Force regeneration
-            m_cells[i].cachedTolerancePixmap = QPixmap();
             showToleranceMap(m_cells[i].toleranceSourceIndex, i);
         }
     }
+}
+
+// ---- Zoom/pan synchronization ----
+
+int ComparePanel::findCellByWidget(QObject *widget) const
+{
+    for (int i = 0; i < m_cells.size(); ++i) {
+        if (m_cells[i].imageWidget == widget) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void ComparePanel::onCellZoomChanged(double zoomLevel, QPointF focalPoint)
+{
+    if (m_syncingViews) return; // Prevent recursive sync
+    m_syncingViews = true;
+
+    int sourceIdx = findCellByWidget(sender());
+
+    // Check if Ctrl is held — if so, only zoom this cell (independent mode)
+    bool ctrlHeld = QApplication::keyboardModifiers() & Qt::ControlModifier;
+
+    if (!ctrlHeld) {
+        // Linked mode: sync all other cells
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (i != sourceIdx && m_cells[i].imageWidget) {
+                m_cells[i].imageWidget->setZoomLevel(zoomLevel, focalPoint, false);
+                // Also sync the pan offset from the source
+                if (sourceIdx >= 0) {
+                    QPointF srcPan = m_cells[sourceIdx].imageWidget->panOffset();
+                    m_cells[i].imageWidget->setPanOffset(srcPan, false);
+                }
+            }
+        }
+    }
+
+    m_syncingViews = false;
+}
+
+void ComparePanel::onCellPanChanged(QPointF offset)
+{
+    if (m_syncingViews) return;
+    m_syncingViews = true;
+
+    int sourceIdx = findCellByWidget(sender());
+
+    bool ctrlHeld = QApplication::keyboardModifiers() & Qt::ControlModifier;
+
+    if (!ctrlHeld) {
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (i != sourceIdx && m_cells[i].imageWidget) {
+                m_cells[i].imageWidget->setPanOffset(offset, false);
+            }
+        }
+    }
+
+    m_syncingViews = false;
+}
+
+void ComparePanel::onCellViewReset()
+{
+    if (m_syncingViews) return;
+    m_syncingViews = true;
+
+    int sourceIdx = findCellByWidget(sender());
+
+    bool ctrlHeld = QApplication::keyboardModifiers() & Qt::ControlModifier;
+
+    if (!ctrlHeld) {
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (i != sourceIdx && m_cells[i].imageWidget) {
+                m_cells[i].imageWidget->resetView(false);
+            }
+        }
+    }
+
+    m_syncingViews = false;
 }

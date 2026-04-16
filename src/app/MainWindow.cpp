@@ -10,6 +10,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QApplication>
+#include <QAction>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -36,11 +37,9 @@ void MainWindow::setupUi()
 
     // Left panel — Folder management
     m_folderPanel = new FolderPanel(m_settingsManager, m_mainSplitter);
-    m_folderPanel->setMinimumWidth(200);
 
     // Center panel — Image browsing
     m_browsePanel = new BrowsePanel(m_compareSession, m_imageLoader, m_mainSplitter);
-    m_browsePanel->setMinimumWidth(300);
 
     // Right panel — Image comparison
     m_comparePanel = new ComparePanel(m_compareSession, m_settingsManager, m_mainSplitter);
@@ -51,11 +50,33 @@ void MainWindow::setupUi()
     m_mainSplitter->addWidget(m_browsePanel);
     m_mainSplitter->addWidget(m_comparePanel);
 
-    // Set initial size ratios: folder(1) : browse(2) : compare(2)
+    // Enable collapsible for FolderPanel and BrowsePanel
+    m_mainSplitter->setCollapsible(0, true);
+    m_mainSplitter->setCollapsible(1, true);
+    m_mainSplitter->setCollapsible(2, false);
+
+    // Set initial size ratios: folder(1) : browse(1) : compare(3)
     m_mainSplitter->setStretchFactor(0, 1);
-    m_mainSplitter->setStretchFactor(1, 2);
-    m_mainSplitter->setStretchFactor(2, 2);
-    m_mainSplitter->setSizes({240, 480, 480});
+    m_mainSplitter->setStretchFactor(1, 1);
+    m_mainSplitter->setStretchFactor(2, 3);
+    m_mainSplitter->setSizes({240, 240, 720});
+    m_savedSplitterSizes = m_mainSplitter->sizes();
+
+    // Track splitter moves to keep toggle actions in sync
+    connect(m_mainSplitter, &QSplitter::splitterMoved,
+            this, [this](int /*pos*/, int /*index*/) {
+        // Update toggle action checked state when user drags a handle
+        if (m_toggleFolderPanelAction) {
+            bool folderVisible = m_mainSplitter->sizes().at(0) > 0;
+            m_toggleFolderPanelAction->setChecked(folderVisible);
+        }
+        if (m_toggleBrowsePanelAction) {
+            bool browseVisible = m_mainSplitter->sizes().at(1) > 0;
+            m_toggleBrowsePanelAction->setChecked(browseVisible);
+        }
+        // Save sizes whenever a non-collapsed state is present
+        saveSplitterSizes();
+    });
 
     setCentralWidget(m_mainSplitter);
 }
@@ -68,6 +89,25 @@ void MainWindow::setupMenuBar()
     QAction *exitAction = fileMenu->addAction(tr("E&xit"));
     exitAction->setShortcut(QKeySequence::Quit);
     connect(exitAction, &QAction::triggered, qApp, &QApplication::quit);
+
+    // ---- View menu ----
+    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
+
+    m_toggleFolderPanelAction = viewMenu->addAction(tr("Folder Panel"));
+    m_toggleFolderPanelAction->setCheckable(true);
+    m_toggleFolderPanelAction->setChecked(true);
+    m_toggleFolderPanelAction->setShortcut(QKeySequence(tr("Ctrl+1")));
+    connect(m_toggleFolderPanelAction, &QAction::triggered, this, [this]() {
+        togglePanel(0);
+    });
+
+    m_toggleBrowsePanelAction = viewMenu->addAction(tr("Browse Panel"));
+    m_toggleBrowsePanelAction->setCheckable(true);
+    m_toggleBrowsePanelAction->setChecked(true);
+    m_toggleBrowsePanelAction->setShortcut(QKeySequence(tr("Ctrl+2")));
+    connect(m_toggleBrowsePanelAction, &QAction::triggered, this, [this]() {
+        togglePanel(1);
+    });
 
     // ---- Help menu ----
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
@@ -93,4 +133,45 @@ void MainWindow::setupConnections()
     // BrowsePanel selection changes → ComparePanel
     connect(m_browsePanel, &BrowsePanel::selectionChanged,
             m_comparePanel, &ComparePanel::setSelectedImages);
+}
+
+void MainWindow::togglePanel(int panelIndex)
+{
+    QList<int> sizes = m_mainSplitter->sizes();
+
+    if (sizes.at(panelIndex) > 0) {
+        // Collapse: save current sizes, then set this panel to 0
+        m_savedSplitterSizes = sizes;
+        sizes[panelIndex] = 0;
+        m_mainSplitter->setSizes(sizes);
+    } else {
+        // Expand: restore saved size (or use a reasonable default)
+        int restoreSize = 0;
+        if (panelIndex < m_savedSplitterSizes.size()) {
+            restoreSize = m_savedSplitterSizes.at(panelIndex);
+        }
+        if (restoreSize <= 0) {
+            restoreSize = (panelIndex == 0) ? 240 : 480;
+        }
+        sizes[panelIndex] = restoreSize;
+        m_mainSplitter->setSizes(sizes);
+    }
+
+    // Update toggle action checked state
+    if (panelIndex == 0 && m_toggleFolderPanelAction) {
+        m_toggleFolderPanelAction->setChecked(sizes.at(0) > 0);
+    } else if (panelIndex == 1 && m_toggleBrowsePanelAction) {
+        m_toggleBrowsePanelAction->setChecked(sizes.at(1) > 0);
+    }
+}
+
+void MainWindow::saveSplitterSizes()
+{
+    QList<int> sizes = m_mainSplitter->sizes();
+    // Only save if at least one collapsible panel is visible
+    for (int i = 0; i < sizes.size(); ++i) {
+        if (sizes.at(i) > 0 && i < m_savedSplitterSizes.size()) {
+            m_savedSplitterSizes[i] = sizes.at(i);
+        }
+    }
 }

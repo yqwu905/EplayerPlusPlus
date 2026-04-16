@@ -2,8 +2,10 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QList>
 
 class QSplitter;
+class QAction;
 class FolderPanel;
 class BrowsePanel;
 class ComparePanel;
@@ -31,6 +33,8 @@ private:
     void setupUi();
     void setupMenuBar();
     void setupConnections();
+    void togglePanel(int panelIndex);
+    void saveSplitterSizes();
 
     QSplitter *m_mainSplitter = nullptr;
 
@@ -42,6 +46,13 @@ private:
     // Panels
     FolderPanel *m_folderPanel = nullptr;
     BrowsePanel *m_browsePanel = nullptr;
+
+    // View menu toggle actions
+    QAction *m_toggleFolderPanelAction = nullptr;
+    QAction *m_toggleBrowsePanelAction = nullptr;
+
+    // Saved sizes for restoring collapsed panels
+    QList<int> m_savedSplitterSizes;
     ComparePanel *m_comparePanel = nullptr;
 };
 
