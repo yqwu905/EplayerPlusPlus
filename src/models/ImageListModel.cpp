@@ -4,13 +4,17 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QtConcurrent>
 
 ImageListModel::ImageListModel(QObject *parent)
     : QAbstractListModel(parent)
 {
 }
 
-ImageListModel::~ImageListModel() = default;
+ImageListModel::~ImageListModel()
+{
+    cancelPendingScan();
+}
 
 int ImageListModel::rowCount(const QModelIndex &parent) const
 {
@@ -55,12 +59,25 @@ void ImageListModel::setFolder(const QString &folderPath)
         return;
     }
 
+    cancelPendingScan();
+
     beginResetModel();
     m_folderPath = folderPath;
-    m_imagePaths = FileUtils::scanForImages(folderPath, false);
+    m_imagePaths.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
     endResetModel();
+
+    // Start async scan
+    m_loading = true;
+    m_scanWatcher = new QFutureWatcher<QStringList>(this);
+    connect(m_scanWatcher, &QFutureWatcher<QStringList>::finished,
+            this, &ImageListModel::onScanFinished);
+
+    QString path = folderPath;
+    m_scanWatcher->setFuture(QtConcurrent::run([path]() {
+        return FileUtils::scanForImages(path, false);
+    }));
 }
 
 QString ImageListModel::folderPath() const
@@ -75,11 +92,33 @@ QString ImageListModel::folderName() const
 
 void ImageListModel::refresh()
 {
+    cancelPendingScan();
+
     beginResetModel();
-    m_imagePaths = FileUtils::scanForImages(m_folderPath, false);
+    m_imagePaths.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
     endResetModel();
+
+    if (m_folderPath.isEmpty()) {
+        return;
+    }
+
+    // Start async scan
+    m_loading = true;
+    m_scanWatcher = new QFutureWatcher<QStringList>(this);
+    connect(m_scanWatcher, &QFutureWatcher<QStringList>::finished,
+            this, &ImageListModel::onScanFinished);
+
+    QString path = m_folderPath;
+    m_scanWatcher->setFuture(QtConcurrent::run([path]() {
+        return FileUtils::scanForImages(path, false);
+    }));
+}
+
+bool ImageListModel::isLoading() const
+{
+    return m_loading;
 }
 
 QString ImageListModel::imagePathAt(int index) const
@@ -204,4 +243,34 @@ void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &th
 
     QModelIndex mi = this->index(idx);
     emit dataChanged(mi, mi, {Qt::DecorationRole, ThumbnailRole});
+}
+
+void ImageListModel::onScanFinished()
+{
+    if (!m_scanWatcher) {
+        return;
+    }
+
+    QStringList results = m_scanWatcher->result();
+    m_scanWatcher->deleteLater();
+    m_scanWatcher = nullptr;
+    m_loading = false;
+
+    if (!results.isEmpty()) {
+        beginInsertRows(QModelIndex(), 0, results.size() - 1);
+        m_imagePaths = results;
+        endInsertRows();
+    }
+
+    emit folderReady();
+}
+
+void ImageListModel::cancelPendingScan()
+{
+    if (m_scanWatcher) {
+        m_scanWatcher->cancel();
+        m_scanWatcher->deleteLater();
+        m_scanWatcher = nullptr;
+        m_loading = false;
+    }
 }

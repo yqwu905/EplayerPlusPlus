@@ -194,13 +194,13 @@ QTreeView::branch {
 }
 QTreeView::branch:has-children:!has-siblings:closed,
 QTreeView::branch:closed:has-children:has-siblings {
-    image: none;
-    border-image: none;
+    image: url(:/icons/branch_closed.svg);
+    padding: 5px;
 }
 QTreeView::branch:open:has-children:!has-siblings,
 QTreeView::branch:open:has-children:has-siblings {
-    image: none;
-    border-image: none;
+    image: url(:/icons/branch_open.svg);
+    padding: 5px;
 }
 
 /* ============================================================

@@ -3,9 +3,12 @@
 
 #include <QWidget>
 #include <QList>
+#include <QTimer>
 
 class QHBoxLayout;
 class QScrollArea;
+class QLabel;
+class QVBoxLayout;
 class CompareSession;
 class ImageListModel;
 class ImageLoader;
@@ -37,24 +40,41 @@ signals:
      */
     void selectionChanged(const QList<QPair<QString, QString>> &selectedImages);
 
+public slots:
+    /**
+     * @brief Navigate to the next image in all columns that have a selection.
+     */
+    void navigateNext();
+
+    /**
+     * @brief Navigate to the previous image in all columns that have a selection.
+     */
+    void navigatePrevious();
+
 private slots:
     void onFolderAdded(const QString &folderPath, int index);
     void onFolderRemoved(const QString &folderPath, int index);
     void onSessionCleared();
     void onThumbnailClicked(const QString &filePath, Qt::KeyboardModifiers modifiers);
+    void onFolderReady(int columnIndex);
 
 private:
     struct ColumnInfo {
         QScrollArea *scrollArea = nullptr;
         QWidget *container = nullptr;
+        QVBoxLayout *containerLayout = nullptr;
+        QLabel *loadingLabel = nullptr;
         ImageListModel *model = nullptr;
         QList<ThumbnailWidget *> thumbnailWidgets;
+        int builtCount = 0;
     };
 
     void setupUi();
     void rebuildColumn(int columnIndex);
+    void buildThumbnailsBatch(int columnIndex);
     void clearAllColumns();
     void clearSelection();
+    void navigateSelection(int delta);
     void clearColumnSelection(int column);
     void emitSelectionChanged();
 
@@ -66,6 +86,8 @@ private:
     ImageLoader *m_imageLoader = nullptr;
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
+
+    static constexpr int kBatchSize = 50;
 };
 
 #endif // BROWSEPANEL_H

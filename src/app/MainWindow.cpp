@@ -133,6 +133,12 @@ void MainWindow::setupConnections()
     // BrowsePanel selection changes → ComparePanel
     connect(m_browsePanel, &BrowsePanel::selectionChanged,
             m_comparePanel, &ComparePanel::setSelectedImages);
+
+    // ComparePanel navigation → BrowsePanel
+    connect(m_comparePanel, &ComparePanel::navigatePreviousRequested,
+            m_browsePanel, &BrowsePanel::navigatePrevious);
+    connect(m_comparePanel, &ComparePanel::navigateNextRequested,
+            m_browsePanel, &BrowsePanel::navigateNext);
 }
 
 void MainWindow::togglePanel(int panelIndex)

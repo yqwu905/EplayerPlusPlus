@@ -49,8 +49,20 @@ public:
 
     CompareMode compareMode() const { return m_compareMode; }
 
+signals:
+    /**
+     * @brief Request navigation to the previous image set.
+     */
+    void navigatePreviousRequested();
+
+    /**
+     * @brief Request navigation to the next image set.
+     */
+    void navigateNextRequested();
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
 private slots:
     void onFolderAdded(const QString &folderPath, int index);
@@ -90,7 +102,7 @@ private:
     void setupArrowsForCell(int cellIndex);
     void loadImage(int cellIndex);
     void clearImage(int cellIndex);
-    void showOriginalImage(int cellIndex);
+    void showOriginalImage(int cellIndex, bool resetView = false);
     void showToleranceMap(int sourceIndex, int targetIndex);
     void showSourceOnTarget(int sourceIndex, int targetIndex);
     void resizeImageCell(int cellIndex);
@@ -105,6 +117,8 @@ private:
     CompareSession *m_session = nullptr;
     CompareMode m_compareMode = SwapMode;
     QToolBar *m_toolBar = nullptr;
+    QAction *m_prevAction = nullptr;
+    QAction *m_nextAction = nullptr;
     QAction *m_modeAction = nullptr;
     QSlider *m_thresholdSlider = nullptr;
     QLabel *m_thresholdValueLabel = nullptr;

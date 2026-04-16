@@ -10,6 +10,8 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QDir>
+#include <QTimer>
 
 BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
                          QWidget *parent)
@@ -47,10 +49,9 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     ColumnInfo col;
 
-    // Create the model
+    // Create the model (setFolder is now async)
     col.model = new ImageListModel(this);
     col.model->setImageLoader(m_imageLoader);
-    col.model->setFolder(folderPath);
 
     // Create scroll area
     col.scrollArea = new QScrollArea(this);
@@ -64,9 +65,9 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     // Create container widget inside scroll area
     col.container = new QWidget();
     col.container->setStyleSheet("QWidget { background-color: #F5F5F5; }");
-    auto *containerLayout = new QVBoxLayout(col.container);
-    containerLayout->setContentsMargins(8, 8, 8, 8);
-    containerLayout->setSpacing(8);
+    col.containerLayout = new QVBoxLayout(col.container);
+    col.containerLayout->setContentsMargins(8, 8, 8, 8);
+    col.containerLayout->setSpacing(8);
 
     // Header with folder name and close button — Fluent 2 card style
     auto *headerWidget = new QWidget(col.container);
@@ -74,7 +75,8 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLayout->setContentsMargins(12, 8, 8, 8);
     headerLayout->setSpacing(8);
 
-    auto *headerLabel = new QLabel(col.model->folderName(), headerWidget);
+    QString displayName = QDir(folderPath).dirName();
+    auto *headerLabel = new QLabel(displayName, headerWidget);
     headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     QFont headerFont = headerLabel->font();
     headerFont.setWeight(QFont::DemiBold);
@@ -90,6 +92,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     closeBtn->setCursor(Qt::PointingHandCursor);
     closeBtn->setStyleSheet(
         "QPushButton { background-color: transparent; border: none; "
+        "padding: 0px; min-height: 0px; "
         "font-size: 16px; font-weight: bold; color: #9E9E9E; border-radius: 14px; }"
         "QPushButton:hover { background-color: #E0E0E0; color: #1A1A1A; }"
         "QPushButton:pressed { background-color: #D1D1D1; color: #1A1A1A; }");
@@ -101,22 +104,16 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     headerWidget->setStyleSheet(
         "QWidget { background-color: #FFFFFF; border-radius: 8px; }");
-    containerLayout->addWidget(headerWidget);
+    col.containerLayout->addWidget(headerWidget);
 
-    // Create thumbnail widgets
-    for (int i = 0; i < col.model->imageCount(); ++i) {
-        auto *thumb = new ThumbnailWidget(col.container);
-        thumb->setFilePath(col.model->imagePathAt(i));
-        thumb->setFileName(col.model->fileNameAt(i));
+    // Loading label — shown while async scan is in progress
+    col.loadingLabel = new QLabel(tr("Scanning..."), col.container);
+    col.loadingLabel->setAlignment(Qt::AlignCenter);
+    col.loadingLabel->setStyleSheet(
+        "QLabel { color: #9E9E9E; padding: 20px; background: transparent; border: none; }");
+    col.containerLayout->addWidget(col.loadingLabel);
 
-        connect(thumb, &ThumbnailWidget::clicked,
-                this, &BrowsePanel::onThumbnailClicked);
-
-        containerLayout->addWidget(thumb);
-        col.thumbnailWidgets.append(thumb);
-    }
-
-    containerLayout->addStretch();
+    col.containerLayout->addStretch();
     col.scrollArea->setWidget(col.container);
 
     // Insert before the stretch at the end
@@ -124,13 +121,17 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     m_columnsLayout->insertWidget(insertPos, col.scrollArea, 1);
 
     m_columns.append(col);
+    int colIdx = m_columns.size() - 1;
 
-    // Request thumbnails for the first batch of visible items
-    col.model->loadThumbnailsForRange(0, qMin(20, col.model->imageCount() - 1));
+    // Connect folderReady signal to build thumbnails when scan completes
+    connect(col.model, &ImageListModel::folderReady,
+            this, [this, colIdx]() {
+        onFolderReady(colIdx);
+    });
 
     // Connect scroll to lazy-load more thumbnails
     connect(col.scrollArea->verticalScrollBar(), &QScrollBar::valueChanged,
-            this, [this, colIdx = m_columns.size() - 1](int /*value*/) {
+            this, [this, colIdx](int /*value*/) {
         if (colIdx < 0 || colIdx >= m_columns.size()) return;
         const auto &c = m_columns[colIdx];
         if (!c.scrollArea || !c.model) return;
@@ -147,7 +148,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     // Connect model thumbnail updates to widget updates
     connect(col.model, &QAbstractItemModel::dataChanged,
-            this, [this, colIdx = m_columns.size() - 1](
+            this, [this, colIdx](
                 const QModelIndex &topLeft, const QModelIndex &bottomRight,
                 const QList<int> &roles) {
         if (colIdx < 0 || colIdx >= m_columns.size()) return;
@@ -166,6 +167,78 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
             }
         }
     });
+
+    // Start async folder scan
+    col.model->setFolder(folderPath);
+}
+
+void BrowsePanel::onFolderReady(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= m_columns.size()) return;
+
+    auto &col = m_columns[columnIndex];
+
+    // Remove loading label
+    if (col.loadingLabel) {
+        col.containerLayout->removeWidget(col.loadingLabel);
+        delete col.loadingLabel;
+        col.loadingLabel = nullptr;
+    }
+
+    col.builtCount = 0;
+
+    // Start building thumbnails in batches
+    buildThumbnailsBatch(columnIndex);
+}
+
+void BrowsePanel::buildThumbnailsBatch(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= m_columns.size()) return;
+
+    auto &col = m_columns[columnIndex];
+    if (!col.model) return;
+
+    int totalImages = col.model->imageCount();
+    int end = qMin(col.builtCount + kBatchSize, totalImages);
+
+    // Remove the trailing stretch before adding widgets
+    if (col.builtCount == 0 && col.containerLayout->count() > 0) {
+        QLayoutItem *lastItem = col.containerLayout->itemAt(col.containerLayout->count() - 1);
+        if (lastItem && lastItem->spacerItem()) {
+            col.containerLayout->removeItem(lastItem);
+            delete lastItem;
+        }
+    }
+
+    for (int i = col.builtCount; i < end; ++i) {
+        auto *thumb = new ThumbnailWidget(col.container);
+        thumb->setFilePath(col.model->imagePathAt(i));
+        thumb->setFileName(col.model->fileNameAt(i));
+
+        connect(thumb, &ThumbnailWidget::clicked,
+                this, &BrowsePanel::onThumbnailClicked);
+
+        col.containerLayout->addWidget(thumb);
+        col.thumbnailWidgets.append(thumb);
+    }
+
+    col.builtCount = end;
+
+    // Request thumbnails for this batch
+    if (end > 0) {
+        int batchStart = end - qMin(kBatchSize, end);
+        col.model->loadThumbnailsForRange(batchStart, end - 1);
+    }
+
+    if (col.builtCount < totalImages) {
+        // Schedule next batch
+        QTimer::singleShot(0, this, [this, columnIndex]() {
+            buildThumbnailsBatch(columnIndex);
+        });
+    } else {
+        // All widgets built — add trailing stretch
+        col.containerLayout->addStretch();
+    }
 }
 
 void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
@@ -306,4 +379,54 @@ int BrowsePanel::findIndexInColumn(int column, const QString &filePath) const
         }
     }
     return -1;
+}
+
+void BrowsePanel::navigateNext()
+{
+    navigateSelection(+1);
+}
+
+void BrowsePanel::navigatePrevious()
+{
+    navigateSelection(-1);
+}
+
+void BrowsePanel::navigateSelection(int delta)
+{
+    bool anyChanged = false;
+
+    for (int c = 0; c < m_columns.size(); ++c) {
+        auto &col = m_columns[c];
+        QList<int> selected = col.model->selectedIndices();
+        if (selected.isEmpty()) continue;
+
+        // Use the first selected index as the anchor
+        int currentIdx = selected.first();
+        int newIdx = currentIdx + delta;
+
+        if (newIdx < 0 || newIdx >= col.model->imageCount()) continue;
+
+        // Clear old selection in this column
+        col.model->clearSelection();
+        for (auto *thumb : col.thumbnailWidgets) {
+            thumb->setSelected(false);
+        }
+
+        // Select new index
+        col.model->setSelected(newIdx, true);
+        if (newIdx < col.thumbnailWidgets.size()) {
+            col.thumbnailWidgets[newIdx]->setSelected(true);
+
+            // Scroll to make the selected thumbnail visible
+            if (col.scrollArea) {
+                col.scrollArea->ensureWidgetVisible(col.thumbnailWidgets[newIdx], 50, 50);
+            }
+        }
+
+        anyChanged = true;
+    }
+
+    if (anyChanged) {
+        emitSelectionChanged();
+    }
 }

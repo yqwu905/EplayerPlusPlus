@@ -5,6 +5,7 @@
 #include <QStringList>
 #include <QImage>
 #include <QHash>
+#include <QFutureWatcher>
 
 class ImageLoader;
 
@@ -55,6 +56,11 @@ public:
      * @brief Refresh the image list by re-scanning the folder.
      */
     void refresh();
+
+    /**
+     * @brief Check if the model is currently loading (async scan in progress).
+     */
+    bool isLoading() const;
 
     /**
      * @brief Get the image file path at a given index.
@@ -116,6 +122,11 @@ public:
 
 signals:
     /**
+     * @brief Emitted when the folder scan is complete and the image list is ready.
+     */
+    void folderReady();
+
+    /**
      * @brief Emitted when selected images change.
      */
     void selectionChanged();
@@ -124,11 +135,16 @@ private slots:
     void onThumbnailReady(const QString &imagePath, const QImage &thumbnail);
 
 private:
+    void onScanFinished();
+    void cancelPendingScan();
+
     QString m_folderPath;
     QStringList m_imagePaths;
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
     ImageLoader *m_imageLoader = nullptr;
+    QFutureWatcher<QStringList> *m_scanWatcher = nullptr;
+    bool m_loading = false;
 };
 
 #endif // IMAGELISTMODEL_H

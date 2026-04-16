@@ -1,5 +1,7 @@
 <RCC>
     <qresource prefix="/">
         <file>icons/app_icon.png</file>
+        <file>icons/branch_closed.svg</file>
+        <file>icons/branch_open.svg</file>
     </qresource>
 </RCC>

@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QEvent>
+#include <QKeyEvent>
 #include <QApplication>
 
 ComparePanel::ComparePanel(CompareSession *session,
@@ -29,6 +30,9 @@ ComparePanel::ComparePanel(CompareSession *session,
         m_threshold = m_settingsManager->comparisonThreshold();
     }
     setupUi();
+
+    // Make the panel focusable for keyboard navigation
+    setFocusPolicy(Qt::StrongFocus);
 
     connect(m_session, &CompareSession::folderAdded,
             this, &ComparePanel::onFolderAdded);
@@ -52,6 +56,21 @@ void ComparePanel::setupUi()
     m_toolBar->setStyleSheet(
         "QToolBar { background-color: #FAFAFA; border: none; "
         "border-bottom: 1px solid #E0E0E0; padding: 4px 12px; spacing: 4px; }");
+
+    // Navigation buttons — Fluent 2 style
+    m_prevAction = m_toolBar->addAction(QStringLiteral("\u25B2"));  // ▲
+    m_prevAction->setToolTip(tr("Previous image (Up arrow key)"));
+    connect(m_prevAction, &QAction::triggered, this, [this]() {
+        emit navigatePreviousRequested();
+    });
+
+    m_nextAction = m_toolBar->addAction(QStringLiteral("\u25BC"));  // ▼
+    m_nextAction->setToolTip(tr("Next image (Down arrow key)"));
+    connect(m_nextAction, &QAction::triggered, this, [this]() {
+        emit navigateNextRequested();
+    });
+
+    m_toolBar->addSeparator();
 
     // Mode toggle button — Fluent 2 pill / toggle style
     m_modeAction = m_toolBar->addAction(tr("Mode: Swap"));
@@ -208,6 +227,20 @@ bool ComparePanel::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QWidget::eventFilter(watched, event);
+}
+
+void ComparePanel::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Up) {
+        emit navigatePreviousRequested();
+        event->accept();
+        return;
+    } else if (event->key() == Qt::Key_Down) {
+        emit navigateNextRequested();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 // ---- Cell management ----
@@ -387,7 +420,7 @@ void ComparePanel::loadImage(int cellIndex)
     cell.arrowOverlay->setGeometry(QRect(0, 0, r.width(), r.height()));
     cell.arrowOverlay->raise();
 
-    showOriginalImage(cellIndex);
+    showOriginalImage(cellIndex, true);  // resetView on initial load
 }
 
 void ComparePanel::clearImage(int cellIndex)
@@ -424,7 +457,7 @@ void ComparePanel::resizeImageCell(int cellIndex)
     // ZoomableImageWidget handles redraw internally on resize
 }
 
-void ComparePanel::showOriginalImage(int cellIndex)
+void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
 {
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
@@ -434,7 +467,7 @@ void ComparePanel::showOriginalImage(int cellIndex)
         return;
     }
 
-    cell.imageWidget->setImage(cell.originalImage);
+    cell.imageWidget->setImage(cell.originalImage, resetView);
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
 }
@@ -460,7 +493,7 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
 
     if (target.cachedToleranceImage.isNull()) return;
 
-    target.imageWidget->setImage(target.cachedToleranceImage);
+    target.imageWidget->setImage(target.cachedToleranceImage, false);
     target.showingToleranceMap = true;
     target.toleranceSourceIndex = sourceIndex;
 }
@@ -474,7 +507,7 @@ void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
 
     if (source.originalImage.isNull()) return;
 
-    m_cells[targetIndex].imageWidget->setImage(source.originalImage);
+    m_cells[targetIndex].imageWidget->setImage(source.originalImage, false);
 }
 
 // ---- Arrow interaction (mode-dependent) ----

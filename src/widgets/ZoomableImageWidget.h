@@ -28,8 +28,8 @@ public:
     /**
      * @brief Set the image to display.
      */
-    void setImage(const QImage &image);
-    void setImage(const QPixmap &pixmap);
+    void setImage(const QImage &image, bool resetView = true);
+    void setImage(const QPixmap &pixmap, bool resetView = true);
 
     /**
      * @brief Set placeholder text when no image is loaded.

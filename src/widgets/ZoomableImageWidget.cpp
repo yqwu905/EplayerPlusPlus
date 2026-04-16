@@ -16,19 +16,25 @@ ZoomableImageWidget::ZoomableImageWidget(QWidget *parent)
 
 ZoomableImageWidget::~ZoomableImageWidget() = default;
 
-void ZoomableImageWidget::setImage(const QImage &image)
+void ZoomableImageWidget::setImage(const QImage &image, bool resetViewState)
 {
     m_image = image;
     m_text.clear();
-    // Reset view to fit-to-view so the image fills the grid cell
-    m_zoomLevel = 1.0;
-    m_panOffset = QPointF(0.0, 0.0);
+    if (resetViewState) {
+        // Reset view to fit-to-view so the image fills the grid cell
+        m_zoomLevel = 1.0;
+        m_panOffset = QPointF(0.0, 0.0);
+    } else {
+        // Keep current zoom/pan, just re-clamp in case the new image has
+        // different dimensions
+        clampPanOffset();
+    }
     update();
 }
 
-void ZoomableImageWidget::setImage(const QPixmap &pixmap)
+void ZoomableImageWidget::setImage(const QPixmap &pixmap, bool resetViewState)
 {
-    setImage(pixmap.toImage());
+    setImage(pixmap.toImage(), resetViewState);
 }
 
 void ZoomableImageWidget::setText(const QString &text)

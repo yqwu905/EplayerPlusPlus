@@ -16,6 +16,8 @@ private slots:
     void testSetFolder();
     void testSetFolder_empty();
     void testSetFolder_nonExistent();
+    void testSetFolderAsync();
+    void testIsLoading();
     void testFolderName();
     void testRefresh();
     void testImagePathAt();
@@ -41,10 +43,20 @@ private slots:
     void testRowCount_withParent();
 
 private:
+    // Helper: set folder and wait for async scan to complete
+    void setFolderAndWait(ImageListModel &model, const QString &folder);
+
     QTemporaryDir m_tempDir;
     QString m_testDir;
     QString m_emptyDir;
 };
+
+void tst_ImageListModel::setFolderAndWait(ImageListModel &model, const QString &folder)
+{
+    QSignalSpy spy(&model, &ImageListModel::folderReady);
+    model.setFolder(folder);
+    QVERIFY(spy.wait(5000));
+}
 
 void tst_ImageListModel::initTestCase()
 {
@@ -73,41 +85,78 @@ void tst_ImageListModel::testInitialState()
     QCOMPARE(model.imageCount(), 0);
     QVERIFY(model.folderPath().isEmpty());
     QVERIFY(model.selectedIndices().isEmpty());
+    QVERIFY(!model.isLoading());
 }
 
 void tst_ImageListModel::testSetFolder()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QCOMPARE(model.folderPath(), m_testDir);
     QCOMPARE(model.imageCount(), 3);
+    QVERIFY(!model.isLoading());
 }
 
 void tst_ImageListModel::testSetFolder_empty()
 {
     ImageListModel model;
-    model.setFolder(m_emptyDir);
+    setFolderAndWait(model, m_emptyDir);
     QCOMPARE(model.imageCount(), 0);
 }
 
 void tst_ImageListModel::testSetFolder_nonExistent()
 {
     ImageListModel model;
-    model.setFolder("/nonexistent/path");
+    setFolderAndWait(model, "/nonexistent/path");
     QCOMPARE(model.imageCount(), 0);
+}
+
+void tst_ImageListModel::testSetFolderAsync()
+{
+    ImageListModel model;
+    QSignalSpy spy(&model, &ImageListModel::folderReady);
+
+    model.setFolder(m_testDir);
+
+    // Model should initially have 0 images (scan is async)
+    QCOMPARE(model.imageCount(), 0);
+
+    // Wait for folderReady signal
+    QVERIFY(spy.wait(5000));
+    QCOMPARE(spy.count(), 1);
+
+    // Now images should be available
+    QCOMPARE(model.imageCount(), 3);
+    QVERIFY(!model.isLoading());
+}
+
+void tst_ImageListModel::testIsLoading()
+{
+    ImageListModel model;
+    QVERIFY(!model.isLoading());
+
+    QSignalSpy spy(&model, &ImageListModel::folderReady);
+    model.setFolder(m_testDir);
+
+    // Should be loading immediately after setFolder
+    QVERIFY(model.isLoading());
+
+    // Wait for completion
+    QVERIFY(spy.wait(5000));
+    QVERIFY(!model.isLoading());
 }
 
 void tst_ImageListModel::testFolderName()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QCOMPARE(model.folderName(), "images");
 }
 
 void tst_ImageListModel::testRefresh()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     int count = model.imageCount();
 
     // Add a new image
@@ -115,7 +164,9 @@ void tst_ImageListModel::testRefresh()
     img.fill(Qt::blue);
     img.save(m_testDir + "/date.png");
 
+    QSignalSpy spy(&model, &ImageListModel::folderReady);
     model.refresh();
+    QVERIFY(spy.wait(5000));
     QCOMPARE(model.imageCount(), count + 1);
 
     // Clean up the extra image
@@ -125,7 +176,7 @@ void tst_ImageListModel::testRefresh()
 void tst_ImageListModel::testImagePathAt()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
 
     // Images are sorted, so apple.png should be first
     QString path = model.imagePathAt(0);
@@ -135,7 +186,7 @@ void tst_ImageListModel::testImagePathAt()
 void tst_ImageListModel::testImagePathAt_invalid()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QVERIFY(model.imagePathAt(-1).isEmpty());
     QVERIFY(model.imagePathAt(999).isEmpty());
 }
@@ -143,14 +194,14 @@ void tst_ImageListModel::testImagePathAt_invalid()
 void tst_ImageListModel::testFileNameAt()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QCOMPARE(model.fileNameAt(0), "apple.png");
 }
 
 void tst_ImageListModel::testFileNameAt_invalid()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QVERIFY(model.fileNameAt(-1).isEmpty());
     QVERIFY(model.fileNameAt(999).isEmpty());
 }
@@ -159,14 +210,14 @@ void tst_ImageListModel::testImageCount()
 {
     ImageListModel model;
     QCOMPARE(model.imageCount(), 0);
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QCOMPARE(model.imageCount(), 3);
 }
 
 void tst_ImageListModel::testIndexOfFileName()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QCOMPARE(model.indexOfFileName("apple.png"), 0);
     QCOMPARE(model.indexOfFileName("banana.png"), 1);
     QCOMPARE(model.indexOfFileName("cherry.png"), 2);
@@ -175,14 +226,14 @@ void tst_ImageListModel::testIndexOfFileName()
 void tst_ImageListModel::testIndexOfFileName_notFound()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QCOMPARE(model.indexOfFileName("nonexistent.png"), -1);
 }
 
 void tst_ImageListModel::testDataDisplayRole()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QVariant data = model.data(model.index(0), Qt::DisplayRole);
     QCOMPARE(data.toString(), "apple.png");
 }
@@ -190,7 +241,7 @@ void tst_ImageListModel::testDataDisplayRole()
 void tst_ImageListModel::testDataFilePathRole()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QVariant data = model.data(model.index(0), ImageListModel::FilePathRole);
     QVERIFY(data.toString().endsWith("apple.png"));
     QVERIFY(QDir::isAbsolutePath(data.toString())); // absolute path
@@ -199,7 +250,7 @@ void tst_ImageListModel::testDataFilePathRole()
 void tst_ImageListModel::testDataFileNameRole()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QVariant data = model.data(model.index(1), ImageListModel::FileNameRole);
     QCOMPARE(data.toString(), "banana.png");
 }
@@ -207,7 +258,7 @@ void tst_ImageListModel::testDataFileNameRole()
 void tst_ImageListModel::testDataIsSelectedRole()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
 
     QVERIFY(!model.data(model.index(0), ImageListModel::IsSelectedRole).toBool());
 
@@ -218,7 +269,7 @@ void tst_ImageListModel::testDataIsSelectedRole()
 void tst_ImageListModel::testSelection()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
 
     model.setSelected(0, true);
     QVERIFY(model.isSelected(0));
@@ -236,7 +287,7 @@ void tst_ImageListModel::testSelection()
 void tst_ImageListModel::testSelection_outOfRange()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
 
     // Should not crash
     model.setSelected(-1, true);
@@ -247,7 +298,7 @@ void tst_ImageListModel::testSelection_outOfRange()
 void tst_ImageListModel::testClearSelection()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
 
     model.setSelected(0, true);
     model.setSelected(2, true);
@@ -260,7 +311,7 @@ void tst_ImageListModel::testClearSelection()
 void tst_ImageListModel::testSelectedIndices()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
 
     model.setSelected(0, true);
     model.setSelected(2, true);
@@ -274,7 +325,7 @@ void tst_ImageListModel::testSelectedIndices()
 void tst_ImageListModel::testSelectionSignal()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
 
     QSignalSpy spy(&model, &ImageListModel::selectionChanged);
 
@@ -292,14 +343,14 @@ void tst_ImageListModel::testRowCount()
 {
     ImageListModel model;
     QCOMPARE(model.rowCount(), 0);
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     QCOMPARE(model.rowCount(), 3);
 }
 
 void tst_ImageListModel::testRowCount_withParent()
 {
     ImageListModel model;
-    model.setFolder(m_testDir);
+    setFolderAndWait(model, m_testDir);
     // List model should return 0 for any valid parent
     QCOMPARE(model.rowCount(model.index(0)), 0);
 }
