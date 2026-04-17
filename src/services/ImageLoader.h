@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QImage>
 #include <QHash>
+#include <QSet>
 #include <QMutex>
 #include <QSize>
 
@@ -30,6 +31,17 @@ public:
      * If the thumbnail is already cached, the signal is emitted immediately.
      */
     void requestThumbnail(const QString &imagePath, const QSize &thumbnailSize = QSize(200, 200));
+
+    /**
+     * @brief Request asynchronous loading of a batch of thumbnails.
+     * @param imagePaths List of paths to source images.
+     * @param thumbnailSize Desired thumbnail size.
+     *
+     * More efficient than calling requestThumbnail() in a loop because
+     * it groups work into fewer QtConcurrent tasks and QFutureWatcher objects.
+     * Each completed thumbnail still emits thumbnailReady individually.
+     */
+    void requestThumbnailBatch(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200));
 
     /**
      * @brief Request asynchronous loading of a full-size image.
@@ -80,7 +92,10 @@ private:
 
     mutable QMutex m_cacheMutex;
     QHash<QString, CacheEntry> m_thumbnailCache;
+    QSet<QString> m_pendingRequests;
     int m_maxCacheSize = 1000;
+
+    static constexpr int kBatchChunkSize = 16;
 
     void trimCache();
 };

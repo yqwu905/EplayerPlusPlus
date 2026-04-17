@@ -11,6 +11,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QDir>
+#include <QFontMetrics>
 #include <QTimer>
 
 BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
@@ -29,7 +30,10 @@ BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
             this, &BrowsePanel::onSessionCleared);
 }
 
-BrowsePanel::~BrowsePanel() = default;
+BrowsePanel::~BrowsePanel()
+{
+    stopInterleavedLoading();
+}
 
 void BrowsePanel::setupUi()
 {
@@ -76,7 +80,9 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLayout->setSpacing(8);
 
     QString displayName = QDir(folderPath).dirName();
-    auto *headerLabel = new QLabel(displayName, headerWidget);
+    
+    // Create an empty label first to set font
+    auto *headerLabel = new QLabel(headerWidget);
     headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     QFont headerFont = headerLabel->font();
     headerFont.setWeight(QFont::DemiBold);
@@ -84,6 +90,14 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLabel->setFont(headerFont);
     headerLabel->setStyleSheet(
         "QLabel { color: #1A1A1A; background: transparent; border: none; }");
+        
+    // Elide text to avoid pushing the close button out of view
+    // Available width is approx: 220 (Thumbnail width) - 28 (Close btn) - 44 (Margins/Spacing) ~= 148px
+    QFontMetrics fm(headerFont);
+    QString elidedName = fm.elidedText(displayName, Qt::ElideRight, 140);
+    headerLabel->setText(elidedName);
+    headerLabel->setToolTip(displayName);
+    
     headerLayout->addWidget(headerLabel, 1);
 
     auto *closeBtn = new QPushButton(QStringLiteral("\u00D7"), headerWidget);
@@ -98,8 +112,15 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         "QPushButton:pressed { background-color: #D1D1D1; color: #1A1A1A; }");
     headerLayout->addWidget(closeBtn);
 
-    connect(closeBtn, &QPushButton::clicked, this, [this, folderPath]() {
-        m_session->removeFolder(folderPath);
+    QScrollArea *scrollAreaPtr = col.scrollArea;
+    connect(closeBtn, &QPushButton::clicked, this, [this, scrollAreaPtr]() {
+        // Find current index dynamically — indices shift after removals
+        for (int i = 0; i < m_columns.size(); ++i) {
+            if (m_columns[i].scrollArea == scrollAreaPtr) {
+                m_session->removeFolderAt(i);
+                return;
+            }
+        }
     });
 
     headerWidget->setStyleSheet(
@@ -189,6 +210,9 @@ void BrowsePanel::onFolderReady(int columnIndex)
 
     // Start building thumbnails in batches
     buildThumbnailsBatch(columnIndex);
+
+    // Start or continue interleaved thumbnail loading across all columns
+    startInterleavedLoading();
 }
 
 void BrowsePanel::buildThumbnailsBatch(int columnIndex)
@@ -224,12 +248,6 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
 
     col.builtCount = end;
 
-    // Request thumbnails for this batch
-    if (end > 0) {
-        int batchStart = end - qMin(kBatchSize, end);
-        col.model->loadThumbnailsForRange(batchStart, end - 1);
-    }
-
     if (col.builtCount < totalImages) {
         // Schedule next batch
         QTimer::singleShot(0, this, [this, columnIndex]() {
@@ -255,11 +273,18 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
     delete col.model;
 
     m_columns.removeAt(index);
+
+    // Stop interleaved loading if no columns remain
+    if (m_columns.isEmpty()) {
+        stopInterleavedLoading();
+    }
+
     emitSelectionChanged();
 }
 
 void BrowsePanel::onSessionCleared()
 {
+    stopInterleavedLoading();
     clearAllColumns();
     emitSelectionChanged();
 }
@@ -428,5 +453,45 @@ void BrowsePanel::navigateSelection(int delta)
 
     if (anyChanged) {
         emitSelectionChanged();
+    }
+}
+
+void BrowsePanel::startInterleavedLoading()
+{
+    if (m_interleavedLoadTimer && m_interleavedLoadTimer->isActive()) {
+        return; // Already running
+    }
+
+    if (!m_interleavedLoadTimer) {
+        m_interleavedLoadTimer = new QTimer(this);
+        m_interleavedLoadTimer->setInterval(0);
+        connect(m_interleavedLoadTimer, &QTimer::timeout,
+                this, &BrowsePanel::onInterleavedLoadTick);
+    }
+
+    m_interleavedLoadTimer->start();
+}
+
+void BrowsePanel::stopInterleavedLoading()
+{
+    if (m_interleavedLoadTimer) {
+        m_interleavedLoadTimer->stop();
+    }
+}
+
+void BrowsePanel::onInterleavedLoadTick()
+{
+    bool anyMoreToLoad = false;
+
+    for (int c = 0; c < m_columns.size(); ++c) {
+        auto &col = m_columns[c];
+        if (col.model && col.model->hasMoreToLoad()) {
+            col.model->loadNextThumbnailBatch(kThumbnailBatchPerTick);
+            anyMoreToLoad = true;
+        }
+    }
+
+    if (!anyMoreToLoad) {
+        stopInterleavedLoading();
     }
 }

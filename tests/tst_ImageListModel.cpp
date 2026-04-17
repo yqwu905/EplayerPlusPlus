@@ -4,6 +4,7 @@
 #include <QSignalSpy>
 
 #include "models/ImageListModel.h"
+#include "services/ImageLoader.h"
 
 class tst_ImageListModel : public QObject
 {
@@ -41,6 +42,11 @@ private slots:
 
     void testRowCount();
     void testRowCount_withParent();
+
+    void testHasMoreToLoad_initial();
+    void testLoadNextThumbnailBatch();
+    void testLoadNextThumbnailBatch_resetsOnSetFolder();
+    void testHasMoreToLoad_emptyFolder();
 
 private:
     // Helper: set folder and wait for async scan to complete
@@ -86,6 +92,7 @@ void tst_ImageListModel::testInitialState()
     QVERIFY(model.folderPath().isEmpty());
     QVERIFY(model.selectedIndices().isEmpty());
     QVERIFY(!model.isLoading());
+    QVERIFY(!model.hasMoreToLoad());
 }
 
 void tst_ImageListModel::testSetFolder()
@@ -353,6 +360,72 @@ void tst_ImageListModel::testRowCount_withParent()
     setFolderAndWait(model, m_testDir);
     // List model should return 0 for any valid parent
     QCOMPARE(model.rowCount(model.index(0)), 0);
+}
+
+void tst_ImageListModel::testHasMoreToLoad_initial()
+{
+    ImageListModel model;
+    // No folder set — nothing to load
+    QVERIFY(!model.hasMoreToLoad());
+
+    // After setting folder and scan completes, should have items to load
+    setFolderAndWait(model, m_testDir);
+    QVERIFY(model.hasMoreToLoad());
+}
+
+void tst_ImageListModel::testLoadNextThumbnailBatch()
+{
+    ImageListModel model;
+    setFolderAndWait(model, m_testDir);
+    QCOMPARE(model.imageCount(), 3);
+
+    // Without an ImageLoader, loadNextThumbnailBatch should return false
+    QVERIFY(!model.loadNextThumbnailBatch(2));
+
+    // With an ImageLoader, it should progress through the images
+    ImageLoader loader;
+    model.setImageLoader(&loader);
+
+    QVERIFY(model.hasMoreToLoad());
+
+    // Load batch of 2 — should return true (1 remaining)
+    bool more = model.loadNextThumbnailBatch(2);
+    QVERIFY(more);
+
+    // Load next batch of 2 — should load the remaining 1 and return false
+    more = model.loadNextThumbnailBatch(2);
+    QVERIFY(!more);
+
+    // No more to load
+    QVERIFY(!model.hasMoreToLoad());
+}
+
+void tst_ImageListModel::testLoadNextThumbnailBatch_resetsOnSetFolder()
+{
+    ImageListModel model;
+    ImageLoader loader;
+    model.setImageLoader(&loader);
+
+    setFolderAndWait(model, m_testDir);
+    QVERIFY(model.hasMoreToLoad());
+
+    // Load all
+    model.loadNextThumbnailBatch(100);
+    QVERIFY(!model.hasMoreToLoad());
+
+    // Refresh should reset the load index
+    QSignalSpy spy(&model, &ImageListModel::folderReady);
+    model.refresh();
+    QVERIFY(spy.wait(5000));
+    QVERIFY(model.hasMoreToLoad());
+}
+
+void tst_ImageListModel::testHasMoreToLoad_emptyFolder()
+{
+    ImageListModel model;
+    setFolderAndWait(model, m_emptyDir);
+    QVERIFY(!model.hasMoreToLoad());
+    QVERIFY(!model.loadNextThumbnailBatch(6));
 }
 
 QTEST_MAIN(tst_ImageListModel)

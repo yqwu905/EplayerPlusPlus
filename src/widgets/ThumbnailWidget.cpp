@@ -22,8 +22,9 @@ void ThumbnailWidget::setThumbnail(const QImage &thumbnail)
     if (thumbnail.isNull()) {
         m_pixmap = QPixmap();
     } else {
-        m_pixmap = QPixmap::fromImage(thumbnail).scaled(
-            m_thumbnailSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        // Thumbnail is already generated at the correct size by
+        // ImageUtils::generateThumbnail — no redundant scaling needed.
+        m_pixmap = QPixmap::fromImage(thumbnail);
     }
     update();
 }

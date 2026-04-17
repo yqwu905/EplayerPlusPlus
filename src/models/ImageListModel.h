@@ -120,6 +120,18 @@ public:
      */
     void loadThumbnailsForRange(int firstVisible, int lastVisible);
 
+    /**
+     * @brief Load the next batch of thumbnails (for interleaved loading).
+     * @param batchSize Number of thumbnails to request in this batch.
+     * @return true if there are more thumbnails to load.
+     */
+    bool loadNextThumbnailBatch(int batchSize = 6);
+
+    /**
+     * @brief Check if there are more thumbnails to load.
+     */
+    bool hasMoreToLoad() const;
+
 signals:
     /**
      * @brief Emitted when the folder scan is complete and the image list is ready.
@@ -140,11 +152,13 @@ private:
 
     QString m_folderPath;
     QStringList m_imagePaths;
+    QHash<QString, int> m_pathToIndex;   // path -> index for O(1) lookup
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
     ImageLoader *m_imageLoader = nullptr;
     QFutureWatcher<QStringList> *m_scanWatcher = nullptr;
     bool m_loading = false;
+    int m_nextLoadIndex = 0;
 };
 
 #endif // IMAGELISTMODEL_H

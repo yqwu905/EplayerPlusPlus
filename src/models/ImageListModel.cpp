@@ -64,8 +64,10 @@ void ImageListModel::setFolder(const QString &folderPath)
     beginResetModel();
     m_folderPath = folderPath;
     m_imagePaths.clear();
+    m_pathToIndex.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
+    m_nextLoadIndex = 0;
     endResetModel();
 
     // Start async scan
@@ -96,8 +98,10 @@ void ImageListModel::refresh()
 
     beginResetModel();
     m_imagePaths.clear();
+    m_pathToIndex.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
+    m_nextLoadIndex = 0;
     endResetModel();
 
     if (m_folderPath.isEmpty()) {
@@ -231,13 +235,41 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
     }
 }
 
+bool ImageListModel::loadNextThumbnailBatch(int batchSize)
+{
+    if (!m_imageLoader || m_nextLoadIndex >= m_imagePaths.size()) {
+        return false;
+    }
+
+    int end = qMin(m_nextLoadIndex + batchSize, m_imagePaths.size());
+    QStringList pathsToLoad;
+    pathsToLoad.reserve(end - m_nextLoadIndex);
+    for (int i = m_nextLoadIndex; i < end; ++i) {
+        const QString &path = m_imagePaths.at(i);
+        if (!m_thumbnails.contains(path)) {
+            pathsToLoad.append(path);
+        }
+    }
+    if (!pathsToLoad.isEmpty()) {
+        m_imageLoader->requestThumbnailBatch(pathsToLoad);
+    }
+    m_nextLoadIndex = end;
+    return m_nextLoadIndex < m_imagePaths.size();
+}
+
+bool ImageListModel::hasMoreToLoad() const
+{
+    return m_nextLoadIndex < m_imagePaths.size();
+}
+
 void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &thumbnail)
 {
-    // Find the index of this image in our list
-    int idx = m_imagePaths.indexOf(imagePath);
-    if (idx < 0) {
+    // O(1) lookup via pre-built hash map
+    auto it = m_pathToIndex.constFind(imagePath);
+    if (it == m_pathToIndex.constEnd()) {
         return;
     }
+    int idx = it.value();
 
     m_thumbnails.insert(imagePath, thumbnail);
 
@@ -255,10 +287,17 @@ void ImageListModel::onScanFinished()
     m_scanWatcher->deleteLater();
     m_scanWatcher = nullptr;
     m_loading = false;
+    m_nextLoadIndex = 0;
 
     if (!results.isEmpty()) {
         beginInsertRows(QModelIndex(), 0, results.size() - 1);
         m_imagePaths = results;
+        // Build path-to-index map for O(1) lookup in onThumbnailReady
+        m_pathToIndex.clear();
+        m_pathToIndex.reserve(results.size());
+        for (int i = 0; i < results.size(); ++i) {
+            m_pathToIndex.insert(results.at(i), i);
+        }
         endInsertRows();
     }
 

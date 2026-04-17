@@ -13,10 +13,6 @@ bool CompareSession::addFolder(const QString &folderPath)
         return false;
     }
 
-    if (m_folders.contains(folderPath)) {
-        return false;
-    }
-
     int index = m_folders.size();
     m_folders.append(folderPath);
 

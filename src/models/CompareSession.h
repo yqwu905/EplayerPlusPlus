@@ -23,7 +23,7 @@ public:
     /**
      * @brief Add a folder to the comparison session.
      * @param folderPath Absolute path of the folder.
-     * @return true if added, false if already present or max reached.
+     * @return true if added, false if max reached. Duplicates are allowed.
      */
     bool addFolder(const QString &folderPath);
 

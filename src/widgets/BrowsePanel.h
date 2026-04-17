@@ -77,6 +77,9 @@ private:
     void navigateSelection(int delta);
     void clearColumnSelection(int column);
     void emitSelectionChanged();
+    void startInterleavedLoading();
+    void stopInterleavedLoading();
+    void onInterleavedLoadTick();
 
     // Find which column and index a file path belongs to
     int findColumn(const QString &filePath) const;
@@ -86,8 +89,10 @@ private:
     ImageLoader *m_imageLoader = nullptr;
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
+    QTimer *m_interleavedLoadTimer = nullptr;
 
     static constexpr int kBatchSize = 50;
+    static constexpr int kThumbnailBatchPerTick = 32;
 };
 
 #endif // BROWSEPANEL_H

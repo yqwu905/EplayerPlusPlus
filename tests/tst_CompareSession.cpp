@@ -50,8 +50,9 @@ void tst_CompareSession::testAddFolder_duplicate()
 {
     CompareSession session;
     QVERIFY(session.addFolder("/path/a"));
-    QVERIFY(!session.addFolder("/path/a"));
-    QCOMPARE(session.folderCount(), 1);
+    QVERIFY(session.addFolder("/path/a"));
+    QCOMPARE(session.folderCount(), 2);
+    QCOMPARE(session.folders(), QStringList({"/path/a", "/path/a"}));
 }
 
 void tst_CompareSession::testAddFolder_maxReached()

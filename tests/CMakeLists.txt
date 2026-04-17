@@ -17,3 +17,10 @@ add_unit_test(tst_FolderModel tst_FolderModel.cpp)
 add_unit_test(tst_CompareSession tst_CompareSession.cpp)
 add_unit_test(tst_ImageListModel tst_ImageListModel.cpp)
 add_unit_test(tst_ZoomableImageWidget tst_ZoomableImageWidget.cpp)
+
+# ---- Benchmark (not registered with CTest, run manually) ----
+add_executable(bench_ThumbnailPerf bench_ThumbnailPerf.cpp)
+target_link_libraries(bench_ThumbnailPerf PRIVATE
+    ImageCompareLib
+    Qt6::Test
+)
