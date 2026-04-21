@@ -13,6 +13,7 @@ class QToolBar;
 class QAction;
 class QHBoxLayout;
 class QPushButton;
+class QCheckBox;
 class SettingsManager;
 class CompareSession;
 class ZoomableImageWidget;
@@ -76,6 +77,7 @@ private slots:
     void onCompareClicked(int sourceIndex, int targetIndex);
     void onThresholdChanged(int value);
     void onModeToggled();
+    void onResizeToFirstImageToggled(bool enabled);
 
     // Zoom/pan sync slots
     void onCellZoomChanged(double zoomLevel, QPointF focalPoint);
@@ -112,6 +114,7 @@ private:
     void showSourceOnTarget(int sourceIndex, int targetIndex);
     void resizeImageCell(int cellIndex);
     void rebuildCompareButtons();
+    QImage imageForCompare(int cellIndex) const;
 
     /**
      * @brief Find the cell index by its ZoomableImageWidget pointer.
@@ -128,11 +131,13 @@ private:
     QSlider *m_thresholdSlider = nullptr;
     QLabel *m_thresholdValueLabel = nullptr;
     QWidget *m_thresholdContainer = nullptr; // to show/hide threshold controls
+    QCheckBox *m_resizeToFirstImageCheckBox = nullptr;
     QWidget *m_gridContainer = nullptr;
     QGridLayout *m_gridLayout = nullptr;
     QList<ImageCell> m_cells;
     SettingsManager *m_settingsManager = nullptr;
     int m_threshold = 10;
+    bool m_resizeToFirstImageEnabled = false;
     bool m_syncingViews = false; ///< Guard to prevent recursive sync loops
 };
 

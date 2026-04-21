@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QEvent>
 #include <QKeyEvent>
 #include <QApplication>
@@ -28,6 +29,7 @@ ComparePanel::ComparePanel(CompareSession *session,
 {
     if (m_settingsManager) {
         m_threshold = m_settingsManager->comparisonThreshold();
+        m_resizeToFirstImageEnabled = m_settingsManager->resizeToFirstImageEnabled();
     }
     setupUi();
 
@@ -69,6 +71,16 @@ void ComparePanel::setupUi()
     connect(m_nextAction, &QAction::triggered, this, [this]() {
         emit navigateNextRequested();
     });
+
+    m_toolBar->addSeparator();
+
+    m_resizeToFirstImageCheckBox = new QCheckBox(tr("Resize others to first"), m_toolBar);
+    m_resizeToFirstImageCheckBox->setChecked(m_resizeToFirstImageEnabled);
+    m_resizeToFirstImageCheckBox->setToolTip(
+        tr("When enabled, non-primary images are resized to match the first image size"));
+    connect(m_resizeToFirstImageCheckBox, &QCheckBox::toggled,
+            this, &ComparePanel::onResizeToFirstImageToggled);
+    m_toolBar->addWidget(m_resizeToFirstImageCheckBox);
 
     m_toolBar->addSeparator();
 
@@ -481,12 +493,13 @@ void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
-    if (cell.originalImage.isNull()) {
+    const QImage displayImage = imageForCompare(cellIndex);
+    if (displayImage.isNull()) {
         cell.imageWidget->setText(tr("Failed to load image"));
         return;
     }
 
-    cell.imageWidget->setImage(cell.originalImage, resetView);
+    cell.imageWidget->setImage(displayImage, resetView);
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
 }
@@ -496,10 +509,10 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
     if (sourceIndex < 0 || sourceIndex >= m_cells.size()) return;
     if (targetIndex < 0 || targetIndex >= m_cells.size()) return;
 
-    const ImageCell &source = m_cells[sourceIndex];
     ImageCell &target = m_cells[targetIndex];
-
-    if (source.originalImage.isNull() || target.originalImage.isNull()) return;
+    const QImage sourceImage = imageForCompare(sourceIndex);
+    const QImage targetImage = imageForCompare(targetIndex);
+    if (sourceImage.isNull() || targetImage.isNull()) return;
 
     // Only regenerate the tolerance image if source or threshold changed
     bool needRegenerate = target.cachedToleranceImage.isNull()
@@ -507,7 +520,7 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
 
     if (needRegenerate) {
         target.cachedToleranceImage = ImageComparer::generateToleranceMap(
-            source.originalImage, target.originalImage, m_threshold);
+            sourceImage, targetImage, m_threshold);
     }
 
     if (target.cachedToleranceImage.isNull()) return;
@@ -522,11 +535,9 @@ void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
     if (sourceIndex < 0 || sourceIndex >= m_cells.size()) return;
     if (targetIndex < 0 || targetIndex >= m_cells.size()) return;
 
-    const ImageCell &source = m_cells[sourceIndex];
-
-    if (source.originalImage.isNull()) return;
-
-    m_cells[targetIndex].imageWidget->setImage(source.originalImage, false);
+    const QImage sourceImage = imageForCompare(sourceIndex);
+    if (sourceImage.isNull()) return;
+    m_cells[targetIndex].imageWidget->setImage(sourceImage, false);
 }
 
 // ---- Compare interaction (mode-dependent) ----
@@ -583,6 +594,49 @@ void ComparePanel::onThresholdChanged(int value)
             showToleranceMap(m_cells[i].toleranceSourceIndex, i);
         }
     }
+}
+
+void ComparePanel::onResizeToFirstImageToggled(bool enabled)
+{
+    m_resizeToFirstImageEnabled = enabled;
+
+    if (m_settingsManager) {
+        m_settingsManager->setResizeToFirstImageEnabled(enabled);
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        m_cells[i].cachedToleranceImage = QImage();
+        if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
+            showToleranceMap(m_cells[i].toleranceSourceIndex, i);
+        } else {
+            showOriginalImage(i);
+        }
+    }
+}
+
+QImage ComparePanel::imageForCompare(int cellIndex) const
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) return QImage();
+
+    const QImage &original = m_cells[cellIndex].originalImage;
+    if (original.isNull()) return QImage();
+
+    if (!m_resizeToFirstImageEnabled || cellIndex == 0 || m_cells.isEmpty()) {
+        return original;
+    }
+
+    const QImage &firstImage = m_cells.first().originalImage;
+    if (firstImage.isNull()) {
+        return original;
+    }
+
+    if (original.size() == firstImage.size()) {
+        return original;
+    }
+
+    return original.scaled(firstImage.size(),
+                           Qt::IgnoreAspectRatio,
+                           Qt::SmoothTransformation);
 }
 
 // ---- Zoom/pan synchronization ----
