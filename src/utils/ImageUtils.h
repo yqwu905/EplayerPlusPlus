@@ -18,7 +18,9 @@ namespace ImageUtils
  * @param thumbnailSize Maximum size of the thumbnail (preserves aspect ratio).
  * @return The generated thumbnail as QImage. Returns a null QImage on failure.
  */
-QImage generateThumbnail(const QString &imagePath, const QSize &thumbnailSize = QSize(200, 200));
+QImage generateThumbnail(const QString &imagePath,
+                         const QSize &thumbnailSize = QSize(200, 200),
+                         Qt::TransformationMode transformMode = Qt::SmoothTransformation);
 
 /**
  * @brief Generate a thumbnail from an existing QImage.
@@ -26,7 +28,9 @@ QImage generateThumbnail(const QString &imagePath, const QSize &thumbnailSize = 
  * @param thumbnailSize Maximum size of the thumbnail (preserves aspect ratio).
  * @return The generated thumbnail as QImage.
  */
-QImage generateThumbnail(const QImage &image, const QSize &thumbnailSize = QSize(200, 200));
+QImage generateThumbnail(const QImage &image,
+                         const QSize &thumbnailSize = QSize(200, 200),
+                         Qt::TransformationMode transformMode = Qt::SmoothTransformation);
 
 /**
  * @brief Scale an image to fit within the given size, preserving aspect ratio.
