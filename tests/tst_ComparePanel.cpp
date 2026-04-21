@@ -17,6 +17,7 @@ private slots:
     void layout_oneToThreeImages_singleRow();
     void layout_fourToSixImages_twoRows();
     void compareButtons_nMinusOnePerImage();
+    void layout_shrinksFromSixToTwo_cellsExpand();
 
 private:
     static QString createImageInFolder(const QString &folderPath, const QString &name, const QColor &color);
@@ -141,6 +142,46 @@ void tst_ComparePanel::compareButtons_nMinusOnePerImage()
         }
         QCOMPARE(compareButtonCount, 5);
     }
+}
+
+void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr);
+    panel.resize(1400, 900);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 6; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(folder, "img.png", QColor::fromHsv((i * 35) % 360, 255, 255));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    auto cells = findCells(panel);
+    QCOMPARE(cells.size(), 6);
+    int widthBefore = cells.first()->width();
+    QVERIFY(widthBefore > 0);
+
+    while (session.folderCount() > 2) {
+        QVERIFY(session.removeFolderAt(session.folderCount() - 1));
+    }
+    QCoreApplication::processEvents();
+
+    cells = findCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    int widthAfter = cells.first()->width();
+    QVERIFY(widthAfter > widthBefore);
 }
 
 QTEST_MAIN(tst_ComparePanel)

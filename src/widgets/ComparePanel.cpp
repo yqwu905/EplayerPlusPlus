@@ -333,6 +333,15 @@ void ComparePanel::rebuildGrid()
     int cols = (count <= 3) ? count : ((count + 1) / 2);
     int rows = (count + cols - 1) / cols;
 
+    // Reset historical stretch factors, otherwise a previous 2x3 layout can
+    // keep occupying space after switching to 1x2 / 2x2.
+    for (int r = 0; r < CompareSession::MaxFolders; ++r) {
+        m_gridLayout->setRowStretch(r, 0);
+    }
+    for (int c = 0; c < CompareSession::MaxFolders; ++c) {
+        m_gridLayout->setColumnStretch(c, 0);
+    }
+
     for (int i = 0; i < count; ++i) {
         int row = i / cols;
         int col = i % cols;
@@ -380,6 +389,23 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
         const QString folderName = QDir(m_cells[targetIndex].folderPath).dirName();
         button->setToolTip(tr("使用当前图片与“%1”列对比").arg(folderName));
         button->setMinimumHeight(26);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid #0078D4;"
+            "  border-radius: 6px;"
+            "  background-color: #FFFFFF;"
+            "  color: #0078D4;"
+            "  font-weight: 600;"
+            "  padding: 4px 10px;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #E5F1FB;"
+            "}"
+            "QPushButton:pressed {"
+            "  background-color: #0078D4;"
+            "  color: #FFFFFF;"
+            "}");
 
         connect(button, &QPushButton::pressed, this, [this, cellIndex, targetIndex]() {
             onComparePressed(cellIndex, targetIndex);
