@@ -81,9 +81,9 @@ private:
     void stopInterleavedLoading();
     void onInterleavedLoadTick();
 
-    // Find which column and index a file path belongs to
-    int findColumn(const QString &filePath) const;
-    int findIndexInColumn(int column, const QString &filePath) const;
+    bool findThumbnailPosition(const ThumbnailWidget *thumbnail,
+                               int &column,
+                               int &indexInColumn) const;
 
     CompareSession *m_session = nullptr;
     ImageLoader *m_imageLoader = nullptr;

@@ -187,26 +187,28 @@ void ComparePanel::onSessionCleared()
 
 void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selectedImages)
 {
-    QHash<QString, QString> selectionMap;
+    QHash<QString, QStringList> selectionMap;
     for (const auto &pair : selectedImages) {
-        selectionMap.insert(pair.first, pair.second);
+        selectionMap[pair.first].append(pair.second);
     }
 
     for (int i = 0; i < m_cells.size(); ++i) {
         auto it = selectionMap.find(m_cells[i].folderPath);
-        if (it != selectionMap.end()) {
-            QString newImagePath = it.value();
-            if (newImagePath != m_cells[i].imagePath) {
-                m_cells[i].imagePath = newImagePath;
-                m_cells[i].showingToleranceMap = false;
-                m_cells[i].toleranceSourceIndex = -1;
-                loadImage(i);
+        if (it == selectionMap.end() || it->isEmpty()) {
+            continue;
+        }
 
-                QString folderName = QDir(m_cells[i].folderPath).dirName();
-                QString fileName = QFileInfo(newImagePath).fileName();
-                m_cells[i].headerLabel->setText(
-                    QStringLiteral("<b>%1</b><br>%2").arg(folderName, fileName));
-            }
+        const QString newImagePath = it->takeFirst();
+        if (newImagePath != m_cells[i].imagePath) {
+            m_cells[i].imagePath = newImagePath;
+            m_cells[i].showingToleranceMap = false;
+            m_cells[i].toleranceSourceIndex = -1;
+            loadImage(i);
+
+            QString folderName = QDir(m_cells[i].folderPath).dirName();
+            QString fileName = QFileInfo(newImagePath).fileName();
+            m_cells[i].headerLabel->setText(
+                QStringLiteral("<b>%1</b><br>%2").arg(folderName, fileName));
         }
     }
 }

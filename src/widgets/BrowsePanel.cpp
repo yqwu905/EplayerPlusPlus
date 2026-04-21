@@ -292,11 +292,14 @@ void BrowsePanel::onSessionCleared()
 void BrowsePanel::onThumbnailClicked(const QString &filePath,
                                       Qt::KeyboardModifiers modifiers)
 {
-    int clickedCol = findColumn(filePath);
-    if (clickedCol < 0) return;
+    Q_UNUSED(filePath);
 
-    int clickedIdx = findIndexInColumn(clickedCol, filePath);
-    if (clickedIdx < 0) return;
+    const auto *clickedThumb = qobject_cast<const ThumbnailWidget *>(sender());
+    int clickedCol = -1;
+    int clickedIdx = -1;
+    if (!clickedThumb || !findThumbnailPosition(clickedThumb, clickedCol, clickedIdx)) {
+        return;
+    }
 
     if (modifiers & Qt::ControlModifier) {
         // Ctrl+Click: select this image + same-filename images in all other columns
@@ -381,29 +384,25 @@ void BrowsePanel::emitSelectionChanged()
     emit selectionChanged(selected);
 }
 
-int BrowsePanel::findColumn(const QString &filePath) const
+bool BrowsePanel::findThumbnailPosition(const ThumbnailWidget *thumbnail,
+                                        int &column,
+                                        int &indexInColumn) const
 {
-    for (int c = 0; c < m_columns.size(); ++c) {
-        for (int i = 0; i < m_columns[c].model->imageCount(); ++i) {
-            if (m_columns[c].model->imagePathAt(i) == filePath) {
-                return c;
-            }
-        }
+    if (!thumbnail) {
+        return false;
     }
-    return -1;
-}
 
-int BrowsePanel::findIndexInColumn(int column, const QString &filePath) const
-{
-    if (column < 0 || column >= m_columns.size()) {
-        return -1;
-    }
-    for (int i = 0; i < m_columns[column].model->imageCount(); ++i) {
-        if (m_columns[column].model->imagePathAt(i) == filePath) {
-            return i;
+    for (int c = 0; c < m_columns.size(); ++c) {
+        const int idx = m_columns[c].thumbnailWidgets.indexOf(
+            const_cast<ThumbnailWidget *>(thumbnail));
+        if (idx >= 0) {
+            column = c;
+            indexInColumn = idx;
+            return true;
         }
     }
-    return -1;
+
+    return false;
 }
 
 void BrowsePanel::navigateNext()
