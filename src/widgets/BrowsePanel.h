@@ -77,6 +77,9 @@ private:
     void clearSelection();
     void navigateSelection(int delta);
     void clearColumnSelection(int column);
+    void alignColumnsToAnchor(int anchorColumn,
+                              int anchorIndex,
+                              const QList<int> &matchedIndices);
     void emitSelectionChanged();
     void startInterleavedLoading();
     void stopInterleavedLoading();
