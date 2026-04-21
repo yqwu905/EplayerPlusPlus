@@ -6,6 +6,9 @@ function(add_unit_test TEST_NAME TEST_SOURCE)
         Qt6::Test
     )
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    set_tests_properties(${TEST_NAME} PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
 endfunction()
 
 # ---- Unit tests ----
