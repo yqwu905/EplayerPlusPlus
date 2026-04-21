@@ -3,11 +3,13 @@
 #include <QImage>
 #include <QSet>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QDir>
 #include <QCoreApplication>
 
 #include "models/CompareSession.h"
 #include "widgets/ComparePanel.h"
+#include "widgets/ZoomableImageWidget.h"
 
 class tst_ComparePanel : public QObject
 {
@@ -18,6 +20,7 @@ private slots:
     void layout_fourToSixImages_twoRows();
     void compareButtons_nMinusOnePerImage();
     void layout_shrinksFromSixToTwo_cellsExpand();
+    void resizeToFirstImage_toggleResizesOtherCells();
 
 private:
     static QString createImageInFolder(const QString &folderPath, const QString &name, const QColor &color);
@@ -182,6 +185,51 @@ void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
 
     int widthAfter = cells.first()->width();
     QVERIFY(widthAfter > widthBefore);
+}
+
+void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr);
+    panel.resize(1200, 800);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    const QString folder0 = root.filePath("folder_0");
+    const QString folder1 = root.filePath("folder_1");
+    QVERIFY(QDir().mkpath(folder0));
+    QVERIFY(QDir().mkpath(folder1));
+
+    const QString image0Path = createImageInFolder(folder0, "img.png", Qt::red);
+    QVERIFY(!image0Path.isEmpty());
+
+    QImage image1(20, 10, QImage::Format_ARGB32);
+    image1.fill(Qt::green);
+    const QString image1Path = folder1 + "/img.png";
+    QVERIFY(image1.save(image1Path));
+
+    QVERIFY(session.addFolder(folder0));
+    QVERIFY(session.addFolder(folder1));
+    panel.setSelectedImages({{folder0, image0Path}, {folder1, image1Path}});
+    QCoreApplication::processEvents();
+
+    const auto widgets = panel.findChildren<ZoomableImageWidget *>();
+    QCOMPARE(widgets.size(), 2);
+    QCOMPARE(widgets[0]->image().size(), QSize(32, 32));
+    QCOMPARE(widgets[1]->image().size(), QSize(20, 10));
+
+    auto *resizeCheckBox = panel.findChild<QCheckBox *>();
+    QVERIFY(resizeCheckBox != nullptr);
+    QCOMPARE(resizeCheckBox->isChecked(), false);
+
+    resizeCheckBox->setChecked(true);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(widgets[0]->image().size(), QSize(32, 32));
+    QCOMPARE(widgets[1]->image().size(), QSize(32, 32));
 }
 
 QTEST_MAIN(tst_ComparePanel)

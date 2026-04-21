@@ -5,6 +5,7 @@
 
 const QString SettingsManager::kFolderListKey = QStringLiteral("folders/list");
 const QString SettingsManager::kComparisonThresholdKey = QStringLiteral("comparison/threshold");
+const QString SettingsManager::kResizeToFirstImageKey = QStringLiteral("comparison/resize_to_first_image");
 
 SettingsManager::SettingsManager(QObject *parent)
     : QObject(parent)
@@ -57,4 +58,16 @@ void SettingsManager::setComparisonThreshold(int threshold)
 {
     QSettings settings;
     settings.setValue(kComparisonThresholdKey, std::clamp(threshold, 0, 255));
+}
+
+bool SettingsManager::resizeToFirstImageEnabled() const
+{
+    QSettings settings;
+    return settings.value(kResizeToFirstImageKey, false).toBool();
+}
+
+void SettingsManager::setResizeToFirstImageEnabled(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(kResizeToFirstImageKey, enabled);
 }

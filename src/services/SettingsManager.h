@@ -59,9 +59,22 @@ public:
      */
     void setComparisonThreshold(int threshold);
 
+    /**
+     * @brief Whether non-primary compare images should be resized to the first image size.
+     * @return True if resize alignment is enabled.
+     */
+    bool resizeToFirstImageEnabled() const;
+
+    /**
+     * @brief Enable or disable resizing non-primary compare images to the first image size.
+     * @param enabled True to enable.
+     */
+    void setResizeToFirstImageEnabled(bool enabled);
+
 private:
     static const QString kFolderListKey;
     static const QString kComparisonThresholdKey;
+    static const QString kResizeToFirstImageKey;
 };
 
 #endif // SETTINGSMANAGER_H

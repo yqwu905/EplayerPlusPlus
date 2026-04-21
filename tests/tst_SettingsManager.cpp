@@ -21,6 +21,8 @@ private slots:
     void testComparisonThreshold_default();
     void testSetComparisonThreshold();
     void testSetComparisonThreshold_clamped();
+    void testResizeToFirstImage_defaultOff();
+    void testResizeToFirstImage_setAndRead();
 
 private:
     SettingsManager *m_manager = nullptr;
@@ -122,6 +124,20 @@ void tst_SettingsManager::testSetComparisonThreshold_clamped()
 
     m_manager->setComparisonThreshold(300);
     QCOMPARE(m_manager->comparisonThreshold(), 255);
+}
+
+void tst_SettingsManager::testResizeToFirstImage_defaultOff()
+{
+    QCOMPARE(m_manager->resizeToFirstImageEnabled(), false);
+}
+
+void tst_SettingsManager::testResizeToFirstImage_setAndRead()
+{
+    m_manager->setResizeToFirstImageEnabled(true);
+    QCOMPARE(m_manager->resizeToFirstImageEnabled(), true);
+
+    m_manager->setResizeToFirstImageEnabled(false);
+    QCOMPARE(m_manager->resizeToFirstImageEnabled(), false);
 }
 
 QTEST_MAIN(tst_SettingsManager)
