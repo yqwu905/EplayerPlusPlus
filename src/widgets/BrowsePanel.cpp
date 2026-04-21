@@ -41,7 +41,7 @@ void BrowsePanel::setupUi()
     m_columnsLayout->setContentsMargins(8, 8, 8, 8);
     m_columnsLayout->setSpacing(8);
 
-    // Add stretch so columns are left-aligned when fewer than 4
+    // Add stretch so columns are left-aligned when fewer than max compare count
     m_columnsLayout->addStretch();
 
     setStyleSheet("BrowsePanel { background-color: #F5F5F5; }");
