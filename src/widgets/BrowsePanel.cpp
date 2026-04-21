@@ -8,11 +8,14 @@
 #include <QVBoxLayout>
 #include <QScrollArea>
 #include <QLabel>
+#include <QCheckBox>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QDir>
 #include <QFontMetrics>
 #include <QTimer>
+#include <limits>
+#include <vector>
 
 BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
                          QWidget *parent)
@@ -37,12 +40,30 @@ BrowsePanel::~BrowsePanel()
 
 void BrowsePanel::setupUi()
 {
-    m_columnsLayout = new QHBoxLayout(this);
+    m_rootLayout = new QVBoxLayout(this);
+    m_rootLayout->setContentsMargins(8, 8, 8, 8);
+    m_rootLayout->setSpacing(8);
+
+    auto *optionsRow = new QHBoxLayout();
+    optionsRow->setContentsMargins(0, 0, 0, 0);
+    optionsRow->setSpacing(8);
+
+    m_fuzzyFileNameCheckBox = new QCheckBox(tr("Fuzzy filename match"), this);
+    m_fuzzyFileNameCheckBox->setObjectName(QStringLiteral("fuzzyFileNameCheckBox"));
+    m_fuzzyFileNameCheckBox->setChecked(false);
+    m_fuzzyFileNameCheckBox->setToolTip(
+        tr("When enabled, Alt+Click will match the closest filename in each compared folder."));
+    optionsRow->addWidget(m_fuzzyFileNameCheckBox);
+    optionsRow->addStretch();
+    m_rootLayout->addLayout(optionsRow);
+
+    m_columnsLayout = new QHBoxLayout();
     m_columnsLayout->setContentsMargins(8, 8, 8, 8);
     m_columnsLayout->setSpacing(8);
 
     // Add stretch so columns are left-aligned when fewer than max compare count
     m_columnsLayout->addStretch();
+    m_rootLayout->addLayout(m_columnsLayout);
 
     setStyleSheet("BrowsePanel { background-color: #F5F5F5; }");
 }
@@ -299,25 +320,7 @@ void BrowsePanel::onThumbnailClicked(const QString &filePath,
     }
 
     if (modifiers & Qt::ControlModifier) {
-        // Ctrl+Click: select this image + same-filename images in all other columns
-        clearSelection();
-        QString fileName = m_columns[clickedCol].model->fileNameAt(clickedIdx);
-        QList<int> matchedIndices(m_columns.size(), -1);
-
-        for (int c = 0; c < m_columns.size(); ++c) {
-            int matchIdx = m_columns[c].model->indexOfFileName(fileName);
-            if (matchIdx >= 0) {
-                matchedIndices[c] = matchIdx;
-                m_columns[c].model->setSelected(matchIdx, true);
-                if (matchIdx < m_columns[c].thumbnailWidgets.size()) {
-                    m_columns[c].thumbnailWidgets[matchIdx]->setSelected(true);
-                }
-            }
-        }
-
-        alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
-    } else if (modifiers & Qt::AltModifier) {
-        // Alt+Click: select this image + same-index (order) images in all other columns
+        // Ctrl+Click: select this image + same-index (order) images in all other columns
         clearSelection();
         QList<int> matchedIndices(m_columns.size(), -1);
         for (int c = 0; c < m_columns.size(); ++c) {
@@ -326,6 +329,24 @@ void BrowsePanel::onThumbnailClicked(const QString &filePath,
                 m_columns[c].model->setSelected(clickedIdx, true);
                 if (clickedIdx < m_columns[c].thumbnailWidgets.size()) {
                     m_columns[c].thumbnailWidgets[clickedIdx]->setSelected(true);
+                }
+            }
+        }
+
+        alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
+    } else if (modifiers & Qt::AltModifier) {
+        // Alt+Click: select this image + filename-matched images in all other columns
+        clearSelection();
+        const QString fileName = m_columns[clickedCol].model->fileNameAt(clickedIdx);
+        QList<int> matchedIndices(m_columns.size(), -1);
+
+        for (int c = 0; c < m_columns.size(); ++c) {
+            const int matchIdx = findFileNameMatchIndex(c, fileName);
+            if (matchIdx >= 0) {
+                matchedIndices[c] = matchIdx;
+                m_columns[c].model->setSelected(matchIdx, true);
+                if (matchIdx < m_columns[c].thumbnailWidgets.size()) {
+                    m_columns[c].thumbnailWidgets[matchIdx]->setSelected(true);
                 }
             }
         }
@@ -425,6 +446,54 @@ void BrowsePanel::emitSelectionChanged()
     }
 
     emit selectionChanged(selected);
+}
+
+int BrowsePanel::findFileNameMatchIndex(int column, const QString &targetFileName) const
+{
+    if (column < 0 || column >= m_columns.size() || !m_columns[column].model) {
+        return -1;
+    }
+
+    const auto *model = m_columns[column].model;
+    if (!m_fuzzyFileNameCheckBox || !m_fuzzyFileNameCheckBox->isChecked()) {
+        return model->indexOfFileName(targetFileName);
+    }
+
+    int bestIndex = -1;
+    int bestDistance = std::numeric_limits<int>::max();
+    for (int i = 0; i < model->imageCount(); ++i) {
+        const int distance = levenshteinDistance(targetFileName, model->fileNameAt(i));
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
+int BrowsePanel::levenshteinDistance(const QString &a, const QString &b) const
+{
+    const int n = a.size();
+    const int m = b.size();
+
+    std::vector<int> prev(m + 1, 0);
+    std::vector<int> curr(m + 1, 0);
+
+    for (int j = 0; j <= m; ++j) {
+        prev[j] = j;
+    }
+
+    for (int i = 1; i <= n; ++i) {
+        curr[0] = i;
+        for (int j = 1; j <= m; ++j) {
+            const int cost = (a.at(i - 1) == b.at(j - 1)) ? 0 : 1;
+            curr[j] = qMin(qMin(prev[j] + 1, curr[j - 1] + 1), prev[j - 1] + cost);
+        }
+        std::swap(prev, curr);
+    }
+
+    return prev[m];
 }
 
 bool BrowsePanel::findThumbnailPosition(const ThumbnailWidget *thumbnail,
