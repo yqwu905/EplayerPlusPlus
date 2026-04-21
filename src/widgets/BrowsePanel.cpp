@@ -157,13 +157,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         const auto &c = m_columns[colIdx];
         if (!c.scrollArea || !c.model) return;
 
-        // Estimate visible range from scroll position
-        int scrollY = c.scrollArea->verticalScrollBar()->value();
-        int viewportH = c.scrollArea->viewport()->height();
-        int itemH = 220; // approximate thumbnail widget height
-        int firstVisible = qMax(0, scrollY / itemH - 2);
-        int lastVisible = qMin(c.model->imageCount() - 1,
-                               (scrollY + viewportH) / itemH + 2);
+        auto [firstVisible, lastVisible] = visibleRangeForColumn(c);
         c.model->loadThumbnailsForRange(firstVisible, lastVisible);
     });
 
@@ -210,6 +204,9 @@ void BrowsePanel::onFolderReady(int columnIndex)
 
     // Start building thumbnails in batches
     buildThumbnailsBatch(columnIndex);
+
+    // Load visible thumbnails first for instant feedback
+    requestVisibleThumbnailsForAllColumns();
 
     // Start or continue interleaved thumbnail loading across all columns
     startInterleavedLoading();
@@ -481,6 +478,7 @@ void BrowsePanel::stopInterleavedLoading()
 void BrowsePanel::onInterleavedLoadTick()
 {
     bool anyMoreToLoad = false;
+    requestVisibleThumbnailsForAllColumns();
 
     for (int c = 0; c < m_columns.size(); ++c) {
         auto &col = m_columns[c];
@@ -490,7 +488,57 @@ void BrowsePanel::onInterleavedLoadTick()
         }
     }
 
+    if (m_imageLoader) {
+        m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
+    }
+
     if (!anyMoreToLoad) {
         stopInterleavedLoading();
     }
+}
+
+QPair<int, int> BrowsePanel::visibleRangeForColumn(const ColumnInfo &column) const
+{
+    if (!column.scrollArea || !column.model || column.model->imageCount() <= 0) {
+        return {0, -1};
+    }
+
+    const int scrollY = column.scrollArea->verticalScrollBar()->value();
+    const int viewportH = column.scrollArea->viewport()->height();
+    const int itemH = 220;
+    const int firstVisible = qMax(0, scrollY / itemH - 2);
+    const int lastVisible = qMin(column.model->imageCount() - 1,
+                                 (scrollY + viewportH) / itemH + 3);
+    return {firstVisible, lastVisible};
+}
+
+void BrowsePanel::requestVisibleThumbnailsForAllColumns()
+{
+    for (auto &col : m_columns) {
+        if (!col.model || !col.scrollArea || col.model->imageCount() <= 0) {
+            continue;
+        }
+        auto [firstVisible, lastVisible] = visibleRangeForColumn(col);
+        if (lastVisible >= firstVisible) {
+            col.model->loadThumbnailsForRange(firstVisible, lastVisible);
+        }
+    }
+}
+
+QSet<QString> BrowsePanel::aggregateVisiblePaths() const
+{
+    QSet<QString> visiblePaths;
+    for (const auto &col : m_columns) {
+        if (!col.model || !col.scrollArea || col.model->imageCount() <= 0) {
+            continue;
+        }
+        auto [firstVisible, lastVisible] = visibleRangeForColumn(col);
+        for (int i = firstVisible; i <= lastVisible; ++i) {
+            QString path = col.model->imagePathAt(i);
+            if (!path.isEmpty()) {
+                visiblePaths.insert(path);
+            }
+        }
+    }
+    return visiblePaths;
 }

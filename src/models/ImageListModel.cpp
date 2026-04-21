@@ -227,11 +227,17 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
     firstVisible = qMax(0, firstVisible);
     lastVisible = qMin(m_imagePaths.size() - 1, lastVisible);
 
+    QStringList visibleFirst;
+    visibleFirst.reserve(lastVisible - firstVisible + 1);
     for (int i = firstVisible; i <= lastVisible; ++i) {
         const QString &path = m_imagePaths.at(i);
         if (!m_thumbnails.contains(path)) {
-            m_imageLoader->requestThumbnail(path);
+            visibleFirst.append(path);
         }
+    }
+
+    if (!visibleFirst.isEmpty()) {
+        m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst);
     }
 }
 

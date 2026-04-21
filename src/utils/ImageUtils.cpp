@@ -5,7 +5,9 @@
 namespace ImageUtils
 {
 
-QImage generateThumbnail(const QString &imagePath, const QSize &thumbnailSize)
+QImage generateThumbnail(const QString &imagePath,
+                         const QSize &thumbnailSize,
+                         Qt::TransformationMode transformMode)
 {
     QImageReader reader(imagePath);
     reader.setAutoTransform(true);
@@ -24,18 +26,20 @@ QImage generateThumbnail(const QString &imagePath, const QSize &thumbnailSize)
 
     // If the reader didn't support setScaledSize, scale manually
     if (image.size() != image.size().scaled(thumbnailSize, Qt::KeepAspectRatio)) {
-        return image.scaled(thumbnailSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        return image.scaled(thumbnailSize, Qt::KeepAspectRatio, transformMode);
     }
 
     return image;
 }
 
-QImage generateThumbnail(const QImage &image, const QSize &thumbnailSize)
+QImage generateThumbnail(const QImage &image,
+                         const QSize &thumbnailSize,
+                         Qt::TransformationMode transformMode)
 {
     if (image.isNull()) {
         return QImage();
     }
-    return image.scaled(thumbnailSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    return image.scaled(thumbnailSize, Qt::KeepAspectRatio, transformMode);
 }
 
 QImage scaleImage(const QImage &image, const QSize &targetSize)

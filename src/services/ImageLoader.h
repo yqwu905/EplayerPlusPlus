@@ -7,6 +7,8 @@
 #include <QSet>
 #include <QMutex>
 #include <QSize>
+#include <QDateTime>
+#include <QQueue>
 
 /**
  * @brief Asynchronous image and thumbnail loading service with caching.
@@ -42,6 +44,7 @@ public:
      * Each completed thumbnail still emits thumbnailReady individually.
      */
     void requestThumbnailBatch(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200));
+    void requestThumbnailBatchVisibleFirst(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200));
 
     /**
      * @brief Request asynchronous loading of a full-size image.
@@ -57,6 +60,7 @@ public:
      * @return Cached thumbnail, or null QImage if not cached.
      */
     QImage getCachedThumbnail(const QString &imagePath) const;
+    QImage getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize) const;
 
     /**
      * @brief Clear the thumbnail cache.
@@ -68,6 +72,9 @@ public:
      * @param maxSize Maximum cache size. Default is 1000.
      */
     void setMaxCacheSize(int maxSize);
+    void setMaxConcurrentLoads(int maxConcurrentLoads);
+    void cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths);
+    QHash<QString, qint64> thumbnailMetrics() const;
 
 signals:
     /**
@@ -88,14 +95,61 @@ private:
     struct CacheEntry {
         QImage thumbnail;
         QSize requestedSize;
+        QDateTime sourceLastModifiedUtc;
+        bool highQuality = true;
+        qint64 sequence = 0;
+    };
+
+    struct ThumbnailRequest {
+        QString imagePath;
+        QSize thumbnailSize;
+        bool highPriority = false;
+        bool highQuality = true;
     };
 
     mutable QMutex m_cacheMutex;
     QHash<QString, CacheEntry> m_thumbnailCache;
     QSet<QString> m_pendingRequests;
+    QQueue<ThumbnailRequest> m_highPriorityQueue;
+    QQueue<ThumbnailRequest> m_normalPriorityQueue;
     int m_maxCacheSize = 1000;
+    int m_maxConcurrentLoads = 4;
+    int m_activeLoads = 0;
+    qint64 m_cacheSequenceCounter = 0;
+    qint64 m_metricRequests = 0;
+    qint64 m_metricMemoryHits = 0;
+    qint64 m_metricDiskHits = 0;
+    qint64 m_metricDecodes = 0;
+    qint64 m_metricCancelled = 0;
 
-    static constexpr int kBatchChunkSize = 16;
+    static QString makeCacheKey(const QString &imagePath,
+                                const QSize &thumbnailSize,
+                                const QDateTime &lastModifiedUtc,
+                                bool highQuality);
+    static QString cacheRootDir();
+    static QString cachePathForKey(const QString &cacheKey);
+    static QDateTime sourceLastModifiedUtc(const QString &imagePath);
+    static QImage tryLoadDiskCachedThumbnail(const QString &imagePath,
+                                             const QSize &thumbnailSize,
+                                             const QDateTime &lastModifiedUtc,
+                                             bool highQuality);
+    static void persistDiskThumbnail(const QString &imagePath,
+                                     const QSize &thumbnailSize,
+                                     const QDateTime &lastModifiedUtc,
+                                     const QImage &thumbnail,
+                                     bool highQuality);
+
+    void enqueueThumbnailRequest(const QString &imagePath,
+                                 const QSize &thumbnailSize,
+                                 bool highPriority,
+                                 bool highQuality);
+    void processQueue();
+    void finishRequest(const QString &imagePath,
+                       const QSize &thumbnailSize,
+                       const QImage &thumbnail,
+                       const QDateTime &lastModifiedUtc,
+                       bool highQuality,
+                       bool cancelledBeforeEmit);
 
     void trimCache();
 };

@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QList>
 #include <QTimer>
+#include <QSet>
 
 class QHBoxLayout;
 class QScrollArea;
@@ -80,6 +81,9 @@ private:
     void startInterleavedLoading();
     void stopInterleavedLoading();
     void onInterleavedLoadTick();
+    QPair<int, int> visibleRangeForColumn(const ColumnInfo &column) const;
+    void requestVisibleThumbnailsForAllColumns();
+    QSet<QString> aggregateVisiblePaths() const;
 
     bool findThumbnailPosition(const ThumbnailWidget *thumbnail,
                                int &column,
@@ -92,7 +96,7 @@ private:
     QTimer *m_interleavedLoadTimer = nullptr;
 
     static constexpr int kBatchSize = 50;
-    static constexpr int kThumbnailBatchPerTick = 32;
+    static constexpr int kThumbnailBatchPerTick = 16;
 };
 
 #endif // BROWSEPANEL_H
