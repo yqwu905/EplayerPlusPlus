@@ -1,5 +1,4 @@
 #include "ComparePanel.h"
-#include "ArrowOverlay.h"
 #include "ZoomableImageWidget.h"
 #include "services/ImageComparer.h"
 #include "services/SettingsManager.h"
@@ -15,6 +14,7 @@
 #include <QScrollArea>
 #include <QDir>
 #include <QFileInfo>
+#include <QPushButton>
 #include <QEvent>
 #include <QKeyEvent>
 #include <QApplication>
@@ -276,6 +276,14 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
         "border-bottom: 1px solid #E0E0E0; font-size: 12px; }");
     cellLayout->addWidget(cell.headerLabel);
 
+    cell.compareButtonsContainer = new QWidget(cell.container);
+    cell.compareButtonsLayout = new QHBoxLayout(cell.compareButtonsContainer);
+    cell.compareButtonsLayout->setContentsMargins(8, 6, 8, 6);
+    cell.compareButtonsLayout->setSpacing(6);
+    cell.compareButtonsContainer->setStyleSheet(
+        "QWidget { background-color: #FFFFFF; border-bottom: 1px solid #EEEEEE; }");
+    cellLayout->addWidget(cell.compareButtonsContainer);
+
     // ---- Image container ----
     cell.imageContainer = new QWidget(cell.container);
     cell.imageContainer->setMinimumSize(200, 200);
@@ -284,10 +292,6 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
-
-    // ArrowOverlay is a child of imageWidget so that ignored mouse/wheel
-    // events propagate from ArrowOverlay -> ZoomableImageWidget
-    cell.arrowOverlay = new ArrowOverlay(cell.imageWidget);
 
     cellLayout->addWidget(cell.imageContainer, 1);
     cell.imageContainer->installEventFilter(this);
@@ -326,8 +330,17 @@ void ComparePanel::rebuildGrid()
     int count = m_cells.size();
     if (count == 0) return;
 
-    int cols = (count <= 1) ? 1 : 2;
+    int cols = (count <= 3) ? count : ((count + 1) / 2);
     int rows = (count + cols - 1) / cols;
+
+    // Reset historical stretch factors, otherwise a previous 2x3 layout can
+    // keep occupying space after switching to 1x2 / 2x2.
+    for (int r = 0; r < CompareSession::MaxFolders; ++r) {
+        m_gridLayout->setRowStretch(r, 0);
+    }
+    for (int c = 0; c < CompareSession::MaxFolders; ++c) {
+        m_gridLayout->setColumnStretch(c, 0);
+    }
 
     for (int i = 0; i < count; ++i) {
         int row = i / cols;
@@ -342,68 +355,78 @@ void ComparePanel::rebuildGrid()
         m_gridLayout->setColumnStretch(c, 1);
     }
 
-    reconnectArrows();
+    rebuildCompareButtons();
 }
 
-void ComparePanel::reconnectArrows()
+void ComparePanel::rebuildCompareButtons()
 {
     for (int i = 0; i < m_cells.size(); ++i) {
-        disconnect(m_cells[i].arrowOverlay, nullptr, this, nullptr);
-        setupArrowsForCell(i);
+        setupCompareButtonsForCell(i);
     }
 }
 
-void ComparePanel::setupArrowsForCell(int cellIndex)
+void ComparePanel::setupCompareButtonsForCell(int cellIndex)
 {
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
-    int count = m_cells.size();
-    int cols = (count <= 1) ? 1 : 2;
-
     ImageCell &cell = m_cells[cellIndex];
-    int row = cellIndex / cols;
-    int col = cellIndex % cols;
+    qDeleteAll(cell.compareButtons);
+    cell.compareButtons.clear();
 
-    QList<ArrowOverlay::Direction> directions;
-
-    if (col > 0) {
-        int target = row * cols + (col - 1);
-        if (target < count) {
-            directions << ArrowOverlay::Left;
-            cell.arrowOverlay->setTargetIndex(ArrowOverlay::Left, target);
-        }
-    }
-    if (col < cols - 1) {
-        int target = row * cols + (col + 1);
-        if (target < count) {
-            directions << ArrowOverlay::Right;
-            cell.arrowOverlay->setTargetIndex(ArrowOverlay::Right, target);
-        }
-    }
-    if (row > 0) {
-        int target = (row - 1) * cols + col;
-        if (target < count) {
-            directions << ArrowOverlay::Up;
-            cell.arrowOverlay->setTargetIndex(ArrowOverlay::Up, target);
-        }
-    }
-    {
-        int target = (row + 1) * cols + col;
-        if (target < count) {
-            directions << ArrowOverlay::Down;
-            cell.arrowOverlay->setTargetIndex(ArrowOverlay::Down, target);
-        }
+    while (cell.compareButtonsLayout->count() > 0) {
+        QLayoutItem *item = cell.compareButtonsLayout->takeAt(0);
+        delete item;
     }
 
-    cell.arrowOverlay->setDirections(directions);
-    cell.arrowOverlay->setSourceIndex(cellIndex);
+    const int count = m_cells.size();
+    for (int targetIndex = 0; targetIndex < count; ++targetIndex) {
+        if (targetIndex == cellIndex) {
+            continue;
+        }
 
-    connect(cell.arrowOverlay, &ArrowOverlay::arrowPressed,
-            this, &ComparePanel::onArrowPressed);
-    connect(cell.arrowOverlay, &ArrowOverlay::arrowReleased,
-            this, &ComparePanel::onArrowReleased);
-    connect(cell.arrowOverlay, &ArrowOverlay::arrowClicked,
-            this, &ComparePanel::onArrowClicked);
+        auto *button = new QPushButton(
+            tr("对比 %1").arg(targetIndex + 1), cell.compareButtonsContainer);
+        const QString folderName = QDir(m_cells[targetIndex].folderPath).dirName();
+        button->setToolTip(tr("使用当前图片与“%1”列对比").arg(folderName));
+        button->setMinimumHeight(26);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid #0078D4;"
+            "  border-radius: 6px;"
+            "  background-color: #FFFFFF;"
+            "  color: #0078D4;"
+            "  font-weight: 600;"
+            "  padding: 4px 10px;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #E5F1FB;"
+            "}"
+            "QPushButton:pressed {"
+            "  background-color: #0078D4;"
+            "  color: #FFFFFF;"
+            "}");
+
+        connect(button, &QPushButton::pressed, this, [this, cellIndex, targetIndex]() {
+            onComparePressed(cellIndex, targetIndex);
+        });
+        connect(button, &QPushButton::released, this, [this, cellIndex, targetIndex]() {
+            onCompareReleased(cellIndex, targetIndex);
+        });
+        connect(button, &QPushButton::clicked, this, [this, cellIndex, targetIndex]() {
+            onCompareClicked(cellIndex, targetIndex);
+        });
+
+        cell.compareButtonsLayout->addWidget(button);
+        cell.compareButtons.append(button);
+    }
+
+    if (cell.compareButtonsLayout->count() == 0) {
+        auto *hint = new QLabel(tr("至少需要 2 张图片才能对比"), cell.compareButtonsContainer);
+        hint->setStyleSheet("QLabel { color: #9E9E9E; font-size: 12px; }");
+        cell.compareButtonsLayout->addWidget(hint);
+    }
+    cell.compareButtonsLayout->addStretch();
 }
 
 void ComparePanel::loadImage(int cellIndex)
@@ -418,9 +441,6 @@ void ComparePanel::loadImage(int cellIndex)
     // Update geometry
     QRect r = cell.imageContainer->rect();
     cell.imageWidget->setGeometry(r);
-    // ArrowOverlay is child of imageWidget, geometry is relative to it
-    cell.arrowOverlay->setGeometry(QRect(0, 0, r.width(), r.height()));
-    cell.arrowOverlay->raise();
 
     showOriginalImage(cellIndex, true);  // resetView on initial load
 }
@@ -452,9 +472,6 @@ void ComparePanel::resizeImageCell(int cellIndex)
 
     QRect r = cell.imageContainer->rect();
     cell.imageWidget->setGeometry(r);
-    // ArrowOverlay is child of imageWidget, geometry is relative to it
-    cell.arrowOverlay->setGeometry(QRect(0, 0, r.width(), r.height()));
-    cell.arrowOverlay->raise();
 
     // ZoomableImageWidget handles redraw internally on resize
 }
@@ -512,9 +529,9 @@ void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
     m_cells[targetIndex].imageWidget->setImage(source.originalImage, false);
 }
 
-// ---- Arrow interaction (mode-dependent) ----
+// ---- Compare interaction (mode-dependent) ----
 
-void ComparePanel::onArrowPressed(int sourceIndex, int targetIndex)
+void ComparePanel::onComparePressed(int sourceIndex, int targetIndex)
 {
     if (m_compareMode == SwapMode) {
         showSourceOnTarget(sourceIndex, targetIndex);
@@ -522,7 +539,7 @@ void ComparePanel::onArrowPressed(int sourceIndex, int targetIndex)
     // In ToleranceMode, press does nothing
 }
 
-void ComparePanel::onArrowReleased(int sourceIndex, int targetIndex)
+void ComparePanel::onCompareReleased(int sourceIndex, int targetIndex)
 {
     Q_UNUSED(sourceIndex);
 
@@ -535,7 +552,7 @@ void ComparePanel::onArrowReleased(int sourceIndex, int targetIndex)
     // In ToleranceMode, release does nothing
 }
 
-void ComparePanel::onArrowClicked(int sourceIndex, int targetIndex)
+void ComparePanel::onCompareClicked(int sourceIndex, int targetIndex)
 {
     if (m_compareMode == ToleranceMode) {
         if (targetIndex < 0 || targetIndex >= m_cells.size()) return;

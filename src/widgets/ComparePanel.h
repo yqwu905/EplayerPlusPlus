@@ -11,7 +11,8 @@ class QSlider;
 class QLabel;
 class QToolBar;
 class QAction;
-class ArrowOverlay;
+class QHBoxLayout;
+class QPushButton;
 class SettingsManager;
 class CompareSession;
 class ZoomableImageWidget;
@@ -19,10 +20,12 @@ class ZoomableImageWidget;
 /**
  * @brief Image comparison panel displaying selected images in a grid.
  *
- * Maintains one cell per folder in the CompareSession. Two arrow modes:
- *   - Swap mode (default): press-hold arrow to preview source on target,
+ * Maintains one cell per folder in the CompareSession. Each cell provides
+ * compare buttons to trigger operations against other visible images.
+ * Two compare modes:
+ *   - Swap mode (default): press-hold compare button to preview source on target,
  *     release to restore.
- *   - Tolerance mode: click arrow to toggle tolerance map on target.
+ *   - Tolerance mode: click compare button to toggle tolerance map on target.
  *
  * Supports zoom and pan:
  *   - Mouse wheel to zoom, drag to pan, double-click to reset.
@@ -68,9 +71,9 @@ private slots:
     void onFolderAdded(const QString &folderPath, int index);
     void onFolderRemoved(const QString &folderPath, int index);
     void onSessionCleared();
-    void onArrowPressed(int sourceIndex, int targetIndex);
-    void onArrowReleased(int sourceIndex, int targetIndex);
-    void onArrowClicked(int sourceIndex, int targetIndex);
+    void onComparePressed(int sourceIndex, int targetIndex);
+    void onCompareReleased(int sourceIndex, int targetIndex);
+    void onCompareClicked(int sourceIndex, int targetIndex);
     void onThresholdChanged(int value);
     void onModeToggled();
 
@@ -84,8 +87,10 @@ private:
         QWidget *container = nullptr;
         QWidget *imageContainer = nullptr;
         QLabel *headerLabel = nullptr;
+        QWidget *compareButtonsContainer = nullptr;
+        QHBoxLayout *compareButtonsLayout = nullptr;
+        QList<QPushButton *> compareButtons;
         ZoomableImageWidget *imageWidget = nullptr;
-        ArrowOverlay *arrowOverlay = nullptr;
         QString folderPath;
         QString imagePath;
         QImage originalImage;
@@ -99,14 +104,14 @@ private:
     ImageCell createCell(const QString &folderPath);
     void clearCells();
     void rebuildGrid();
-    void setupArrowsForCell(int cellIndex);
+    void setupCompareButtonsForCell(int cellIndex);
     void loadImage(int cellIndex);
     void clearImage(int cellIndex);
     void showOriginalImage(int cellIndex, bool resetView = false);
     void showToleranceMap(int sourceIndex, int targetIndex);
     void showSourceOnTarget(int sourceIndex, int targetIndex);
     void resizeImageCell(int cellIndex);
-    void reconnectArrows();
+    void rebuildCompareButtons();
 
     /**
      * @brief Find the cell index by its ZoomableImageWidget pointer.

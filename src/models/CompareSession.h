@@ -7,7 +7,7 @@
 /**
  * @brief Manages the current comparison session — a set of folders being compared.
  *
- * Supports up to 4 folders simultaneously. Provides add/remove/clear operations
+ * Supports up to 6 folders simultaneously. Provides add/remove/clear operations
  * and emits signals when the folder set changes.
  */
 class CompareSession : public QObject
@@ -15,7 +15,7 @@ class CompareSession : public QObject
     Q_OBJECT
 
 public:
-    static constexpr int MaxFolders = 4;
+    static constexpr int MaxFolders = 6;
 
     explicit CompareSession(QObject *parent = nullptr);
     ~CompareSession() override;
