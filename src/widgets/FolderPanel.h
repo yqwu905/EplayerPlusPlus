@@ -5,6 +5,7 @@
 
 class QTreeView;
 class QToolBar;
+class QLineEdit;
 class FolderModel;
 class SettingsManager;
 
@@ -37,6 +38,7 @@ signals:
 
 private slots:
     void onAddFolder();
+    void onPathSubmitted();
     void onRefreshAll();
     void onClearAll();
     void onContextMenu(const QPoint &pos);
@@ -49,6 +51,7 @@ private:
 
     QTreeView *m_treeView = nullptr;
     QToolBar *m_toolBar = nullptr;
+    QLineEdit *m_pathInput = nullptr;
     FolderModel *m_folderModel = nullptr;
     SettingsManager *m_settingsManager = nullptr;
 };

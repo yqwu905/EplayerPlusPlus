@@ -12,6 +12,7 @@
 #include <QMessageBox>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
 
 FolderPanel::FolderPanel(SettingsManager *settingsManager, QWidget *parent)
     : QWidget(parent)
@@ -75,6 +76,17 @@ void FolderPanel::setupUi()
 
     layout->addWidget(m_toolBar);
 
+    // ---- Path Input ----
+    m_pathInput = new QLineEdit(this);
+    m_pathInput->setObjectName(QStringLiteral("folderPathInput"));
+    m_pathInput->setPlaceholderText(tr("Enter folder path and press Enter"));
+    m_pathInput->setClearButtonEnabled(true);
+    m_pathInput->setStyleSheet(
+        "QLineEdit { background-color: #FFFFFF; border: 1px solid #D0D0D0; "
+        "border-radius: 4px; padding: 6px 8px; margin: 8px; }"
+        "QLineEdit:focus { border-color: #0078D4; }");
+    layout->addWidget(m_pathInput);
+
     // ---- Tree View ----
     m_treeView = new QTreeView(this);
     m_treeView->setModel(m_folderModel);
@@ -101,6 +113,9 @@ void FolderPanel::setupConnections()
 
     connect(m_folderModel, &FolderModel::addToCompareRequested,
             this, &FolderPanel::addToCompareRequested);
+
+    connect(m_pathInput, &QLineEdit::returnPressed,
+            this, &FolderPanel::onPathSubmitted);
 }
 
 void FolderPanel::onAddFolder()
@@ -124,6 +139,23 @@ void FolderPanel::onAddFolder()
 void FolderPanel::onRefreshAll()
 {
     m_folderModel->refreshAll();
+}
+
+void FolderPanel::onPathSubmitted()
+{
+    if (!m_pathInput) {
+        return;
+    }
+
+    const QString inputPath = m_pathInput->text().trimmed();
+    if (inputPath.isEmpty()) {
+        return;
+    }
+
+    if (m_folderModel->addFolder(inputPath)) {
+        saveFolderList();
+        m_pathInput->clear();
+    }
 }
 
 void FolderPanel::onClearAll()
