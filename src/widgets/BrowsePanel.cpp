@@ -302,27 +302,34 @@ void BrowsePanel::onThumbnailClicked(const QString &filePath,
         // Ctrl+Click: select this image + same-filename images in all other columns
         clearSelection();
         QString fileName = m_columns[clickedCol].model->fileNameAt(clickedIdx);
+        QList<int> matchedIndices(m_columns.size(), -1);
 
         for (int c = 0; c < m_columns.size(); ++c) {
             int matchIdx = m_columns[c].model->indexOfFileName(fileName);
             if (matchIdx >= 0) {
+                matchedIndices[c] = matchIdx;
                 m_columns[c].model->setSelected(matchIdx, true);
                 if (matchIdx < m_columns[c].thumbnailWidgets.size()) {
                     m_columns[c].thumbnailWidgets[matchIdx]->setSelected(true);
                 }
             }
         }
+
+        alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
     } else if (modifiers & Qt::AltModifier) {
         // Alt+Click: select this image + same-index (order) images in all other columns
         clearSelection();
+        QList<int> matchedIndices(m_columns.size(), -1);
         for (int c = 0; c < m_columns.size(); ++c) {
             if (clickedIdx < m_columns[c].model->imageCount()) {
+                matchedIndices[c] = clickedIdx;
                 m_columns[c].model->setSelected(clickedIdx, true);
                 if (clickedIdx < m_columns[c].thumbnailWidgets.size()) {
                     m_columns[c].thumbnailWidgets[clickedIdx]->setSelected(true);
                 }
             }
         }
+        alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
     } else {
         // Plain click: select only this single image in its own column,
         // without affecting other columns' selections
@@ -334,6 +341,45 @@ void BrowsePanel::onThumbnailClicked(const QString &filePath,
     }
 
     emitSelectionChanged();
+}
+
+void BrowsePanel::alignColumnsToAnchor(int anchorColumn,
+                                       int anchorIndex,
+                                       const QList<int> &matchedIndices)
+{
+    if (anchorColumn < 0 || anchorColumn >= m_columns.size()) {
+        return;
+    }
+
+    const auto &anchorCol = m_columns[anchorColumn];
+    if (!anchorCol.scrollArea || anchorIndex < 0 ||
+        anchorIndex >= anchorCol.thumbnailWidgets.size()) {
+        return;
+    }
+
+    auto *anchorScrollBar = anchorCol.scrollArea->verticalScrollBar();
+    const int anchorYInViewport =
+        anchorCol.thumbnailWidgets[anchorIndex]->y() - anchorScrollBar->value();
+
+    for (int c = 0; c < m_columns.size(); ++c) {
+        if (c == anchorColumn || c >= matchedIndices.size()) {
+            continue;
+        }
+
+        const int targetIndex = matchedIndices[c];
+        auto &targetCol = m_columns[c];
+        if (!targetCol.scrollArea || targetIndex < 0 ||
+            targetIndex >= targetCol.thumbnailWidgets.size()) {
+            continue;
+        }
+
+        auto *targetScrollBar = targetCol.scrollArea->verticalScrollBar();
+        const int targetY = targetCol.thumbnailWidgets[targetIndex]->y();
+        const int desiredScroll = qBound(targetScrollBar->minimum(),
+                                         targetY - anchorYInViewport,
+                                         targetScrollBar->maximum());
+        targetScrollBar->setValue(desiredScroll);
+    }
 }
 
 void BrowsePanel::clearAllColumns()
