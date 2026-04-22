@@ -48,16 +48,16 @@ ComparePanel::~ComparePanel() = default;
 
 void ComparePanel::setupUi()
 {
+    setObjectName(QStringLiteral("comparePanel"));
+
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(0);
 
     // ---- Toolbar — Fluent 2 style ----
     m_toolBar = new QToolBar(this);
+    m_toolBar->setObjectName(QStringLiteral("panelToolBar"));
     m_toolBar->setIconSize(QSize(16, 16));
-    m_toolBar->setStyleSheet(
-        "QToolBar { background-color: #FAFAFA; border: none; "
-        "border-bottom: 1px solid #E0E0E0; padding: 4px 12px; spacing: 4px; }");
 
     // Navigation buttons — Fluent 2 style
     m_prevAction = m_toolBar->addAction(QStringLiteral("\u25B2"));  // ▲
@@ -99,8 +99,7 @@ void ComparePanel::setupUi()
     thresholdLayout->setSpacing(8);
 
     auto *thresholdLabel = new QLabel(tr("Threshold"), m_thresholdContainer);
-    thresholdLabel->setStyleSheet(
-        "QLabel { color: #616161; font-size: 12px; background: transparent; }");
+    thresholdLabel->setObjectName(QStringLiteral("thresholdLabel"));
     thresholdLayout->addWidget(thresholdLabel);
 
     m_thresholdSlider = new QSlider(Qt::Horizontal, m_thresholdContainer);
@@ -111,10 +110,8 @@ void ComparePanel::setupUi()
     thresholdLayout->addWidget(m_thresholdSlider);
 
     m_thresholdValueLabel = new QLabel(QString("%1").arg(m_threshold), m_thresholdContainer);
+    m_thresholdValueLabel->setObjectName(QStringLiteral("thresholdValueLabel"));
     m_thresholdValueLabel->setMinimumWidth(30);
-    m_thresholdValueLabel->setStyleSheet(
-        "QLabel { color: #1A1A1A; font-size: 12px; font-weight: 600; "
-        "background: transparent; }");
     thresholdLayout->addWidget(m_thresholdValueLabel);
 
     m_toolBar->addWidget(m_thresholdContainer);
@@ -127,12 +124,11 @@ void ComparePanel::setupUi()
 
     // ---- Scroll area containing the grid ----
     auto *scrollArea = new QScrollArea(this);
+    scrollArea->setObjectName(QStringLiteral("compareScrollArea"));
     scrollArea->setWidgetResizable(true);
-    scrollArea->setStyleSheet(
-        "QScrollArea { background-color: #F5F5F5; border: none; }");
 
     m_gridContainer = new QWidget(scrollArea);
-    m_gridContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
+    m_gridContainer->setObjectName(QStringLiteral("compareGridContainer"));
     m_gridLayout = new QGridLayout(m_gridContainer);
     m_gridLayout->setContentsMargins(12, 12, 12, 12);
     m_gridLayout->setSpacing(12);
@@ -267,9 +263,6 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
     // ---- Fluent 2 card container ----
     cell.container = new QWidget(m_gridContainer);
-    cell.container->setStyleSheet(
-        "QWidget#compareCellContainer { background-color: #FFFFFF; "
-        "border: 1px solid #E0E0E0; border-radius: 8px; }");
     cell.container->setObjectName("compareCellContainer");
     auto *cellLayout = new QVBoxLayout(cell.container);
     cellLayout->setContentsMargins(0, 0, 0, 0);
@@ -280,27 +273,22 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.headerLabel = new QLabel(
         QStringLiteral("<b>%1</b><br><span style='color:#9E9E9E;'>No image selected</span>").arg(folderName),
         cell.container);
+    cell.headerLabel->setObjectName(QStringLiteral("compareCellHeader"));
     cell.headerLabel->setAlignment(Qt::AlignCenter);
-    cell.headerLabel->setStyleSheet(
-        "QLabel { background-color: #FFFFFF; color: #1A1A1A; "
-        "padding: 8px 12px; border: none; "
-        "border-top-left-radius: 8px; border-top-right-radius: 8px; "
-        "border-bottom: 1px solid #E0E0E0; font-size: 12px; }");
     cellLayout->addWidget(cell.headerLabel);
 
     cell.compareButtonsContainer = new QWidget(cell.container);
     cell.compareButtonsLayout = new QHBoxLayout(cell.compareButtonsContainer);
     cell.compareButtonsLayout->setContentsMargins(8, 6, 8, 6);
     cell.compareButtonsLayout->setSpacing(6);
-    cell.compareButtonsContainer->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border-bottom: 1px solid #EEEEEE; }");
+    cell.compareButtonsContainer->setObjectName(QStringLiteral("compareButtonsContainer"));
     cellLayout->addWidget(cell.compareButtonsContainer);
 
     // ---- Image container ----
     cell.imageContainer = new QWidget(cell.container);
+    cell.imageContainer->setObjectName(QStringLiteral("compareImageContainer"));
     cell.imageContainer->setMinimumSize(200, 200);
     cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    cell.imageContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));

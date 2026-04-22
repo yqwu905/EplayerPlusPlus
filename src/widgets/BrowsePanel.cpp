@@ -40,6 +40,8 @@ BrowsePanel::~BrowsePanel()
 
 void BrowsePanel::setupUi()
 {
+    setObjectName(QStringLiteral("browsePanel"));
+
     m_rootLayout = new QVBoxLayout(this);
     m_rootLayout->setContentsMargins(8, 8, 8, 8);
     m_rootLayout->setSpacing(8);
@@ -65,7 +67,6 @@ void BrowsePanel::setupUi()
     m_columnsLayout->addStretch();
     m_rootLayout->addLayout(m_columnsLayout);
 
-    setStyleSheet("BrowsePanel { background-color: #F5F5F5; }");
 }
 
 void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
@@ -80,22 +81,23 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     // Create scroll area
     col.scrollArea = new QScrollArea(this);
-    col.scrollArea->setWidgetResizable(true);
+    col.scrollArea->setObjectName(QStringLiteral("browseColumnScrollArea"));
+    col.scrollArea->setWidgetResizable(false);
     col.scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     col.scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     col.scrollArea->setMinimumWidth(210);
-    col.scrollArea->setStyleSheet(
-        "QScrollArea { background-color: #F5F5F5; border: none; border-radius: 8px; }");
 
     // Create container widget inside scroll area
     col.container = new QWidget();
-    col.container->setStyleSheet("QWidget { background-color: #F5F5F5; }");
+    col.container->setObjectName(QStringLiteral("browseColumnContainer"));
+    col.container->setMinimumWidth(194);
     col.containerLayout = new QVBoxLayout(col.container);
     col.containerLayout->setContentsMargins(8, 8, 8, 8);
     col.containerLayout->setSpacing(8);
 
     // Header with folder name and close button — Fluent 2 card style
     auto *headerWidget = new QWidget(col.container);
+    headerWidget->setObjectName(QStringLiteral("browseColumnHeader"));
     auto *headerLayout = new QHBoxLayout(headerWidget);
     headerLayout->setContentsMargins(12, 8, 8, 8);
     headerLayout->setSpacing(8);
@@ -104,14 +106,13 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     
     // Create an empty label first to set font
     auto *headerLabel = new QLabel(headerWidget);
+    headerLabel->setObjectName(QStringLiteral("browseColumnTitle"));
     headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     QFont headerFont = headerLabel->font();
     headerFont.setWeight(QFont::DemiBold);
     headerFont.setPointSize(12);
     headerLabel->setFont(headerFont);
-    headerLabel->setStyleSheet(
-        "QLabel { color: #1A1A1A; background: transparent; border: none; }");
-        
+
     // Elide text to avoid pushing the close button out of view
     // Available width is approx: 220 (Thumbnail width) - 28 (Close btn) - 44 (Margins/Spacing) ~= 148px
     QFontMetrics fm(headerFont);
@@ -122,15 +123,10 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLayout->addWidget(headerLabel, 1);
 
     auto *closeBtn = new QPushButton(QStringLiteral("\u00D7"), headerWidget);
+    closeBtn->setObjectName(QStringLiteral("browseColumnCloseButton"));
     closeBtn->setFixedSize(28, 28);
     closeBtn->setToolTip(tr("Remove from comparison"));
     closeBtn->setCursor(Qt::PointingHandCursor);
-    closeBtn->setStyleSheet(
-        "QPushButton { background-color: transparent; border: none; "
-        "padding: 0px; min-height: 0px; "
-        "font-size: 16px; font-weight: bold; color: #9E9E9E; border-radius: 14px; }"
-        "QPushButton:hover { background-color: #E0E0E0; color: #1A1A1A; }"
-        "QPushButton:pressed { background-color: #D1D1D1; color: #1A1A1A; }");
     headerLayout->addWidget(closeBtn);
 
     QScrollArea *scrollAreaPtr = col.scrollArea;
@@ -144,15 +140,12 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         }
     });
 
-    headerWidget->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border-radius: 8px; }");
     col.containerLayout->addWidget(headerWidget);
 
     // Loading label — shown while async scan is in progress
     col.loadingLabel = new QLabel(tr("Scanning..."), col.container);
+    col.loadingLabel->setObjectName(QStringLiteral("browseColumnLoadingLabel"));
     col.loadingLabel->setAlignment(Qt::AlignCenter);
-    col.loadingLabel->setStyleSheet(
-        "QLabel { color: #9E9E9E; padding: 20px; background: transparent; border: none; }");
     col.containerLayout->addWidget(col.loadingLabel);
 
     col.containerLayout->addStretch();
@@ -261,12 +254,14 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
                 this, &BrowsePanel::onThumbnailClicked);
 
         col.containerLayout->addWidget(thumb);
+        thumb->show();
         col.thumbnailWidgets.append(thumb);
     }
 
     col.builtCount = end;
 
     if (col.builtCount < totalImages) {
+        col.container->adjustSize();
         // Schedule next batch
         QTimer::singleShot(0, this, [this, columnIndex]() {
             buildThumbnailsBatch(columnIndex);
@@ -274,6 +269,7 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
     } else {
         // All widgets built — add trailing stretch
         col.containerLayout->addStretch();
+        col.container->adjustSize();
     }
 }
 
