@@ -33,16 +33,20 @@ void MainWindow::setupUi()
 
     // ---- Main splitter: three panels side by side ----
     m_mainSplitter = new QSplitter(Qt::Horizontal, this);
+    m_mainSplitter->setObjectName(QStringLiteral("mainSplitter"));
     m_mainSplitter->setHandleWidth(1);
 
     // Left panel — Folder management
     m_folderPanel = new FolderPanel(m_settingsManager, m_mainSplitter);
+    m_folderPanel->setObjectName(QStringLiteral("folderPanel"));
 
     // Center panel — Image browsing
     m_browsePanel = new BrowsePanel(m_compareSession, m_imageLoader, m_mainSplitter);
+    m_browsePanel->setObjectName(QStringLiteral("browsePanel"));
 
     // Right panel — Image comparison
     m_comparePanel = new ComparePanel(m_compareSession, m_settingsManager, m_mainSplitter);
+    m_comparePanel->setObjectName(QStringLiteral("comparePanel"));
     m_comparePanel->setMinimumWidth(300);
 
     // Add panels to splitter

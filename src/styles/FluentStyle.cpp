@@ -42,6 +42,18 @@ QMainWindow {
     background-color: #FAFAFA;
 }
 
+QWidget#folderPanelRoot,
+QWidget#browsePanelRoot,
+QWidget#comparePanelRoot {
+    background-color: #FFFFFF;
+    border: 1px solid #E8E8E8;
+    border-radius: 12px;
+}
+
+QWidget#mainSplitter {
+    background-color: #FAFAFA;
+}
+
 /* ============================================================
    QMenuBar
    ============================================================ */
@@ -98,6 +110,11 @@ QToolBar {
     border-bottom: 1px solid #E0E0E0;
     padding: 4px 8px;
     spacing: 4px;
+}
+QToolBar#panelToolBar {
+    background-color: transparent;
+    border: none;
+    padding: 2px 8px;
 }
 QToolBar::separator {
     width: 1px;
@@ -171,7 +188,7 @@ QPushButton#primaryButton:pressed {
    QTreeView
    ============================================================ */
 QTreeView {
-    background-color: #FAFAFA;
+    background-color: transparent;
     border: none;
     outline: none;
     font-size: 12px;
@@ -209,6 +226,18 @@ QTreeView::branch:open:has-children:has-siblings {
 QScrollArea {
     background-color: transparent;
     border: none;
+}
+
+QScrollArea#browseColumnScrollArea,
+QScrollArea#compareScrollArea {
+    background-color: #F7F8FA;
+    border: 1px solid #ECECEC;
+    border-radius: 10px;
+}
+
+QWidget#browseColumnContainer,
+QWidget#compareGridContainer {
+    background-color: #F7F8FA;
 }
 
 /* ============================================================
@@ -319,6 +348,72 @@ QSplitter::handle:hover {
 QLabel {
     color: #1A1A1A;
     background-color: transparent;
+}
+
+QLabel#panelTitleLabel {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QWidget#panelHeader {
+    background-color: transparent;
+    border: none;
+}
+
+QWidget#browseOptionsBar {
+    background-color: #F7F8FA;
+    border: 1px solid #ECECEC;
+    border-radius: 10px;
+    padding: 8px 12px;
+}
+
+QWidget#browseColumnHeader {
+    background-color: #FFFFFF;
+    border: 1px solid #ECECEC;
+    border-radius: 10px;
+}
+
+QLabel#browseColumnTitle {
+    color: #1A1A1A;
+}
+
+QPushButton#browseColumnCloseButton {
+    background-color: transparent;
+    border: none;
+    border-radius: 14px;
+    color: #9E9E9E;
+    font-size: 16px;
+    font-weight: 700;
+    min-height: 0px;
+    padding: 0px;
+}
+QPushButton#browseColumnCloseButton:hover {
+    background-color: #EFEFEF;
+    color: #1A1A1A;
+}
+QPushButton#browseColumnCloseButton:pressed {
+    background-color: #E0E0E0;
+}
+
+QLineEdit#folderPathInput {
+    background-color: #FFFFFF;
+    border: 1px solid #D1D1D1;
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+QLineEdit#folderPathInput:focus {
+    border: 1px solid #0078D4;
+}
+
+QLabel#thresholdLabel {
+    color: #616161;
+    font-size: 12px;
+}
+
+QLabel#thresholdValueLabel {
+    color: #1A1A1A;
+    font-size: 12px;
+    font-weight: 600;
 }
 
 /* ============================================================
