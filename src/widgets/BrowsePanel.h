@@ -10,6 +10,7 @@ class QHBoxLayout;
 class QScrollArea;
 class QLabel;
 class QVBoxLayout;
+class QCheckBox;
 class CompareSession;
 class ImageListModel;
 class ImageLoader;
@@ -21,8 +22,8 @@ class ThumbnailWidget;
  * Each folder in the CompareSession is displayed as a vertically scrollable
  * column of thumbnails. Supports three selection modes:
  *   - Click: select single image in its column only (other columns unchanged)
- *   - Ctrl+Click: select image + same-filename images in other columns
- *   - Alt+Click: select image + same-index (order) images in other columns
+ *   - Ctrl+Click: select image + same-index (order) images in other columns
+ *   - Alt+Click: select image + filename-matched images in other columns
  */
 class BrowsePanel : public QWidget
 {
@@ -80,6 +81,9 @@ private:
     void alignColumnsToAnchor(int anchorColumn,
                               int anchorIndex,
                               const QList<int> &matchedIndices);
+    int findFileNameMatchIndex(int column,
+                               const QString &targetFileName) const;
+    int levenshteinDistance(const QString &a, const QString &b) const;
     void emitSelectionChanged();
     void startInterleavedLoading();
     void stopInterleavedLoading();
@@ -94,6 +98,8 @@ private:
 
     CompareSession *m_session = nullptr;
     ImageLoader *m_imageLoader = nullptr;
+    QVBoxLayout *m_rootLayout = nullptr;
+    QCheckBox *m_fuzzyFileNameCheckBox = nullptr;
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
     QTimer *m_interleavedLoadTimer = nullptr;

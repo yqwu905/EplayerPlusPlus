@@ -2,9 +2,11 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QImage>
+#include <QFile>
 #include <QMap>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QCheckBox>
 #include <algorithm>
 
 #include "models/CompareSession.h"
@@ -21,7 +23,8 @@ class tst_BrowsePanel : public QObject
 
 private slots:
     void duplicateFolder_plainClickSelectionsAreIndependent();
-    void ctrlClick_alignsMatchedRowsAcrossColumns();
+    void ctrlClick_alignsSameIndexRowsAcrossColumns();
+    void altClick_exactVsFuzzyFileNameMatch();
 };
 
 void tst_BrowsePanel::duplicateFolder_plainClickSelectionsAreIndependent()
@@ -85,7 +88,7 @@ void tst_BrowsePanel::duplicateFolder_plainClickSelectionsAreIndependent()
     QVERIFY(latestSelection.contains(qMakePair(tempDir.path(), imageBPath)));
 }
 
-void tst_BrowsePanel::ctrlClick_alignsMatchedRowsAcrossColumns()
+void tst_BrowsePanel::ctrlClick_alignsSameIndexRowsAcrossColumns()
 {
     QTemporaryDir dirA;
     QTemporaryDir dirB;
@@ -120,7 +123,7 @@ void tst_BrowsePanel::ctrlClick_alignsMatchedRowsAcrossColumns()
     });
 
     // Put the second column in a different scroll offset first, then ensure
-    // Ctrl+Click realigns it to the same visual row as the first column.
+    // Ctrl+Click (same-index mode) realigns it to the same visual row.
     columns[1]->verticalScrollBar()->setValue(columns[1]->verticalScrollBar()->maximum());
     QVERIFY(columns[1]->verticalScrollBar()->value() > 0);
 
@@ -150,6 +153,97 @@ void tst_BrowsePanel::ctrlClick_alignsMatchedRowsAcrossColumns()
     const int matchedY = matchedThumb->mapTo(&panel, QPoint(0, 0)).y();
     QVERIFY2(qAbs(anchorY - matchedY) <= 2,
              qPrintable(QString("anchorY=%1, matchedY=%2").arg(anchorY).arg(matchedY)));
+}
+
+void tst_BrowsePanel::altClick_exactVsFuzzyFileNameMatch()
+{
+    QTemporaryDir dirA;
+    QTemporaryDir dirB;
+    QVERIFY(dirA.isValid());
+    QVERIFY(dirB.isValid());
+
+    QImage image(16, 16, QImage::Format_ARGB32);
+    image.fill(Qt::yellow);
+
+    const QString anchorName = "cat.png";
+    const QString exactName = "cat.png";
+    const QString fuzzyName = "cats.png";
+    QVERIFY(image.save(dirA.filePath(anchorName)));
+    QVERIFY(image.save(dirA.filePath("dog.png")));
+    QVERIFY(image.save(dirB.filePath(exactName)));
+    QVERIFY(image.save(dirB.filePath(fuzzyName)));
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(900, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dirA.path()));
+    QVERIFY(session.addFolder(dirB.path()));
+
+    QList<ThumbnailWidget *> thumbnails;
+    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() == 4), 8000);
+
+    ThumbnailWidget *anchorThumb = nullptr;
+    for (auto *thumb : thumbnails) {
+        if (thumb->fileName() == anchorName &&
+            thumb->mapTo(&panel, QPoint(0, 0)).x() < panel.width() / 2) {
+            anchorThumb = thumb;
+            break;
+        }
+    }
+    QVERIFY(anchorThumb != nullptr);
+
+    // Fuzzy OFF by default: should only select exact same filename.
+    QTest::mouseClick(anchorThumb, Qt::LeftButton, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(anchorThumb->isSelected(), 1000);
+
+    ThumbnailWidget *exactThumb = nullptr;
+    ThumbnailWidget *fuzzyThumb = nullptr;
+    for (auto *thumb : panel.findChildren<ThumbnailWidget *>()) {
+        if (thumb->mapTo(&panel, QPoint(0, 0)).x() > panel.width() / 2) {
+            if (thumb->fileName() == exactName) {
+                exactThumb = thumb;
+            } else if (thumb->fileName() == fuzzyName) {
+                fuzzyThumb = thumb;
+            }
+        }
+    }
+    QVERIFY(exactThumb != nullptr);
+    QVERIFY(fuzzyThumb != nullptr);
+    QVERIFY(exactThumb->isSelected());
+    QVERIFY(!fuzzyThumb->isSelected());
+
+    // Remove exact match then enable fuzzy matching, now closest filename should match.
+    QVERIFY(QFile::remove(dirB.filePath(exactName)));
+    QVERIFY(session.removeFolderAt(1));
+    QVERIFY(session.addFolder(dirB.path()));
+    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() >= 3), 8000);
+
+    auto *fuzzyCheckBox = panel.findChild<QCheckBox *>("fuzzyFileNameCheckBox");
+    QVERIFY(fuzzyCheckBox != nullptr);
+    QVERIFY(!fuzzyCheckBox->isChecked());
+    fuzzyCheckBox->setChecked(true);
+
+    // Re-find widgets after rebuild.
+    anchorThumb = nullptr;
+    fuzzyThumb = nullptr;
+    for (auto *thumb : panel.findChildren<ThumbnailWidget *>()) {
+        const int x = thumb->mapTo(&panel, QPoint(0, 0)).x();
+        if (thumb->fileName() == anchorName && x < panel.width() / 2) {
+            anchorThumb = thumb;
+        }
+        if (thumb->fileName() == fuzzyName && x > panel.width() / 2) {
+            fuzzyThumb = thumb;
+        }
+    }
+    QVERIFY(anchorThumb != nullptr);
+    QVERIFY(fuzzyThumb != nullptr);
+
+    QTest::mouseClick(anchorThumb, Qt::LeftButton, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(fuzzyThumb->isSelected(), 2000);
 }
 
 QTEST_MAIN(tst_BrowsePanel)
