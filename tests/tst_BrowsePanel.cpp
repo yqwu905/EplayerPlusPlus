@@ -124,8 +124,10 @@ void tst_BrowsePanel::ctrlClick_alignsSameIndexRowsAcrossColumns()
 
     // Put the second column in a different scroll offset first, then ensure
     // Ctrl+Click (same-index mode) realigns it to the same visual row.
-    columns[1]->verticalScrollBar()->setValue(columns[1]->verticalScrollBar()->maximum());
-    QVERIFY(columns[1]->verticalScrollBar()->value() > 0);
+    QScrollBar *scrollBar = columns[1]->verticalScrollBar();
+    QTRY_VERIFY_WITH_TIMEOUT(scrollBar->maximum() > 0, 2000);
+    scrollBar->setValue(scrollBar->maximum());
+    QTRY_VERIFY_WITH_TIMEOUT(scrollBar->value() > 0, 1000);
 
     ThumbnailWidget *anchorThumb = nullptr;
     for (auto *thumb : thumbnails) {

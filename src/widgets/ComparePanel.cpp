@@ -54,11 +54,8 @@ void ComparePanel::setupUi()
 
     // ---- Toolbar — Fluent 2 style ----
     m_toolBar = new QToolBar(this);
+    m_toolBar->setObjectName(QStringLiteral("panelToolBar"));
     m_toolBar->setIconSize(QSize(16, 16));
-    m_toolBar->setStyleSheet(
-        "QToolBar { background-color: #FAFAFA; border: none; "
-        "border-bottom: 1px solid #E0E0E0; padding: 4px 12px; spacing: 4px; }");
-
     // Navigation buttons — Fluent 2 style
     m_prevAction = m_toolBar->addAction(QStringLiteral("\u25B2"));  // ▲
     m_prevAction->setToolTip(tr("Previous image (Up arrow key)"));
@@ -132,7 +129,7 @@ void ComparePanel::setupUi()
         "QScrollArea { background-color: #F5F5F5; border: none; }");
 
     m_gridContainer = new QWidget(scrollArea);
-    m_gridContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
+    m_gridContainer->setObjectName(QStringLiteral("compareGridContainer"));
     m_gridLayout = new QGridLayout(m_gridContainer);
     m_gridLayout->setContentsMargins(12, 12, 12, 12);
     m_gridLayout->setSpacing(12);

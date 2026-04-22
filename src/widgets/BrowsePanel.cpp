@@ -85,17 +85,18 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     col.scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     col.scrollArea->setMinimumWidth(210);
     col.scrollArea->setStyleSheet(
-        "QScrollArea { background-color: #F5F5F5; border: none; border-radius: 8px; }");
+        "QScrollArea { background-color: #F5F5F5; border: none; border-radius: 10px; }");
 
     // Create container widget inside scroll area
     col.container = new QWidget();
-    col.container->setStyleSheet("QWidget { background-color: #F5F5F5; }");
+    col.container->setObjectName(QStringLiteral("columnContainer"));
     col.containerLayout = new QVBoxLayout(col.container);
     col.containerLayout->setContentsMargins(8, 8, 8, 8);
     col.containerLayout->setSpacing(8);
 
     // Header with folder name and close button — Fluent 2 card style
     auto *headerWidget = new QWidget(col.container);
+    headerWidget->setObjectName(QStringLiteral("panelHeader"));
     auto *headerLayout = new QHBoxLayout(headerWidget);
     headerLayout->setContentsMargins(12, 8, 8, 8);
     headerLayout->setSpacing(8);
@@ -109,8 +110,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerFont.setWeight(QFont::DemiBold);
     headerFont.setPointSize(12);
     headerLabel->setFont(headerFont);
-    headerLabel->setStyleSheet(
-        "QLabel { color: #1A1A1A; background: transparent; border: none; }");
+    headerLabel->setObjectName(QStringLiteral("panelTitle"));
         
     // Elide text to avoid pushing the close button out of view
     // Available width is approx: 220 (Thumbnail width) - 28 (Close btn) - 44 (Margins/Spacing) ~= 148px
@@ -144,8 +144,6 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         }
     });
 
-    headerWidget->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border-radius: 8px; }");
     col.containerLayout->addWidget(headerWidget);
 
     // Loading label — shown while async scan is in progress
@@ -274,6 +272,10 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
     } else {
         // All widgets built — add trailing stretch
         col.containerLayout->addStretch();
+        col.container->adjustSize();
+        if (col.scrollArea && col.scrollArea->widget()) {
+            col.scrollArea->widget()->adjustSize();
+        }
     }
 }
 

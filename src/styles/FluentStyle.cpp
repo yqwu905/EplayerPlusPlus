@@ -42,6 +42,22 @@ QMainWindow {
     background-color: #FAFAFA;
 }
 
+QWidget#leftPanel,
+QWidget#centerPanel,
+QWidget#rightPanel {
+    background-color: #FAFAFA;
+}
+
+QSplitter::handle {
+    background-color: #E8E8E8;
+}
+QSplitter::handle:hover {
+    background-color: #D6EAFB;
+}
+QSplitter::handle:pressed {
+    background-color: #BEDCF6;
+}
+
 /* ============================================================
    QMenuBar
    ============================================================ */
@@ -98,6 +114,10 @@ QToolBar {
     border-bottom: 1px solid #E0E0E0;
     padding: 4px 8px;
     spacing: 4px;
+}
+
+QToolBar#panelToolBar {
+    border-radius: 8px;
 }
 QToolBar::separator {
     width: 1px;
@@ -201,6 +221,89 @@ QTreeView::branch:open:has-children:!has-siblings,
 QTreeView::branch:open:has-children:has-siblings {
     image: url(:/icons/branch_open.svg);
     padding: 5px;
+}
+
+QLineEdit {
+    background-color: #FFFFFF;
+    border: 1px solid #D1D1D1;
+    border-radius: 8px;
+    padding: 6px 10px;
+    color: #1A1A1A;
+    selection-background-color: #CFE8FF;
+}
+QLineEdit:hover {
+    border-color: #B8B8B8;
+}
+QLineEdit:focus {
+    border: 1px solid #0078D4;
+}
+
+QCheckBox {
+    spacing: 8px;
+    color: #3B3B3B;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #8A8A8A;
+    border-radius: 4px;
+    background-color: #FFFFFF;
+}
+QCheckBox::indicator:hover {
+    border-color: #0078D4;
+}
+QCheckBox::indicator:checked {
+    border: 1px solid #0078D4;
+    background-color: #0078D4;
+}
+
+QSlider::groove:horizontal {
+    border: none;
+    height: 4px;
+    border-radius: 2px;
+    background: #D9D9D9;
+}
+QSlider::sub-page:horizontal {
+    border: none;
+    height: 4px;
+    border-radius: 2px;
+    background: #0078D4;
+}
+QSlider::handle:horizontal {
+    background: #FFFFFF;
+    border: 2px solid #0078D4;
+    width: 14px;
+    height: 14px;
+    margin: -6px 0;
+    border-radius: 7px;
+}
+QSlider::handle:horizontal:hover {
+    background: #EAF4FD;
+}
+
+QWidget#panelHeader {
+    background-color: #FFFFFF;
+    border: 1px solid #E4E4E4;
+    border-radius: 10px;
+}
+QLabel#panelTitle {
+    color: #1A1A1A;
+    font-size: 14px;
+    font-weight: 600;
+}
+QLabel#panelSubtitle {
+    color: #7A7A7A;
+    font-size: 11px;
+}
+
+QWidget#columnContainer {
+    background-color: #F7F7F7;
+    border: 1px solid #E6E6E6;
+    border-radius: 10px;
+}
+
+QWidget#compareGridContainer {
+    background-color: #F5F5F5;
 }
 
 /* ============================================================

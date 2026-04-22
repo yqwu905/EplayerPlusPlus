@@ -37,12 +37,15 @@ void MainWindow::setupUi()
 
     // Left panel — Folder management
     m_folderPanel = new FolderPanel(m_settingsManager, m_mainSplitter);
+    m_folderPanel->setObjectName(QStringLiteral("leftPanel"));
 
     // Center panel — Image browsing
     m_browsePanel = new BrowsePanel(m_compareSession, m_imageLoader, m_mainSplitter);
+    m_browsePanel->setObjectName(QStringLiteral("centerPanel"));
 
     // Right panel — Image comparison
     m_comparePanel = new ComparePanel(m_compareSession, m_settingsManager, m_mainSplitter);
+    m_comparePanel->setObjectName(QStringLiteral("rightPanel"));
     m_comparePanel->setMinimumWidth(300);
 
     // Add panels to splitter
