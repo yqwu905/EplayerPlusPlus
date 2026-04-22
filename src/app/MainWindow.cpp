@@ -11,6 +11,8 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QAction>
+#include <QVBoxLayout>
+#include <QWidget>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -31,18 +33,28 @@ void MainWindow::setupUi()
     setWindowTitle(tr("ImageCompare"));
     setMinimumSize(1200, 800);
 
+    auto *canvas = new QWidget(this);
+    canvas->setObjectName(QStringLiteral("appCanvas"));
+    auto *canvasLayout = new QVBoxLayout(canvas);
+    canvasLayout->setContentsMargins(10, 10, 10, 10);
+    canvasLayout->setSpacing(0);
+
     // ---- Main splitter: three panels side by side ----
-    m_mainSplitter = new QSplitter(Qt::Horizontal, this);
+    m_mainSplitter = new QSplitter(Qt::Horizontal, canvas);
     m_mainSplitter->setHandleWidth(1);
+    m_mainSplitter->setObjectName(QStringLiteral("mainSplitter"));
 
     // Left panel — Folder management
     m_folderPanel = new FolderPanel(m_settingsManager, m_mainSplitter);
+    m_folderPanel->setObjectName(QStringLiteral("panelSurface"));
 
     // Center panel — Image browsing
     m_browsePanel = new BrowsePanel(m_compareSession, m_imageLoader, m_mainSplitter);
+    m_browsePanel->setObjectName(QStringLiteral("panelSurface"));
 
     // Right panel — Image comparison
     m_comparePanel = new ComparePanel(m_compareSession, m_settingsManager, m_mainSplitter);
+    m_comparePanel->setObjectName(QStringLiteral("panelSurface"));
     m_comparePanel->setMinimumWidth(300);
 
     // Add panels to splitter
@@ -78,7 +90,8 @@ void MainWindow::setupUi()
         saveSplitterSizes();
     });
 
-    setCentralWidget(m_mainSplitter);
+    canvasLayout->addWidget(m_mainSplitter);
+    setCentralWidget(canvas);
 }
 
 void MainWindow::setupMenuBar()

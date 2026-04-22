@@ -55,9 +55,6 @@ void ComparePanel::setupUi()
     // ---- Toolbar — Fluent 2 style ----
     m_toolBar = new QToolBar(this);
     m_toolBar->setIconSize(QSize(16, 16));
-    m_toolBar->setStyleSheet(
-        "QToolBar { background-color: #FAFAFA; border: none; "
-        "border-bottom: 1px solid #E0E0E0; padding: 4px 12px; spacing: 4px; }");
 
     // Navigation buttons — Fluent 2 style
     m_prevAction = m_toolBar->addAction(QStringLiteral("\u25B2"));  // ▲
@@ -129,10 +126,10 @@ void ComparePanel::setupUi()
     auto *scrollArea = new QScrollArea(this);
     scrollArea->setWidgetResizable(true);
     scrollArea->setStyleSheet(
-        "QScrollArea { background-color: #F5F5F5; border: none; }");
+        "QScrollArea { background-color: #F8FAFC; border: none; }");
 
     m_gridContainer = new QWidget(scrollArea);
-    m_gridContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
+    m_gridContainer->setStyleSheet("QWidget { background-color: #F8FAFC; }");
     m_gridLayout = new QGridLayout(m_gridContainer);
     m_gridLayout->setContentsMargins(12, 12, 12, 12);
     m_gridLayout->setSpacing(12);
@@ -269,7 +266,7 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.container = new QWidget(m_gridContainer);
     cell.container->setStyleSheet(
         "QWidget#compareCellContainer { background-color: #FFFFFF; "
-        "border: 1px solid #E0E0E0; border-radius: 8px; }");
+        "border: 1px solid #E6E8EB; border-radius: 10px; }");
     cell.container->setObjectName("compareCellContainer");
     auto *cellLayout = new QVBoxLayout(cell.container);
     cellLayout->setContentsMargins(0, 0, 0, 0);
@@ -284,8 +281,8 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.headerLabel->setStyleSheet(
         "QLabel { background-color: #FFFFFF; color: #1A1A1A; "
         "padding: 8px 12px; border: none; "
-        "border-top-left-radius: 8px; border-top-right-radius: 8px; "
-        "border-bottom: 1px solid #E0E0E0; font-size: 12px; }");
+        "border-top-left-radius: 10px; border-top-right-radius: 10px; "
+        "border-bottom: 1px solid #EEF0F2; font-size: 12px; }");
     cellLayout->addWidget(cell.headerLabel);
 
     cell.compareButtonsContainer = new QWidget(cell.container);
@@ -293,14 +290,14 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.compareButtonsLayout->setContentsMargins(8, 6, 8, 6);
     cell.compareButtonsLayout->setSpacing(6);
     cell.compareButtonsContainer->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border-bottom: 1px solid #EEEEEE; }");
+        "QWidget { background-color: #FFFFFF; border-bottom: 1px solid #EEF0F2; }");
     cellLayout->addWidget(cell.compareButtonsContainer);
 
     // ---- Image container ----
     cell.imageContainer = new QWidget(cell.container);
     cell.imageContainer->setMinimumSize(200, 200);
     cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    cell.imageContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
+    cell.imageContainer->setStyleSheet("QWidget { background-color: #F8FAFC; }");
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));

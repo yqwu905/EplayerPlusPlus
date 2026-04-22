@@ -41,7 +41,7 @@ BrowsePanel::~BrowsePanel()
 void BrowsePanel::setupUi()
 {
     m_rootLayout = new QVBoxLayout(this);
-    m_rootLayout->setContentsMargins(8, 8, 8, 8);
+    m_rootLayout->setContentsMargins(10, 10, 10, 10);
     m_rootLayout->setSpacing(8);
 
     auto *optionsRow = new QHBoxLayout();
@@ -65,7 +65,7 @@ void BrowsePanel::setupUi()
     m_columnsLayout->addStretch();
     m_rootLayout->addLayout(m_columnsLayout);
 
-    setStyleSheet("BrowsePanel { background-color: #F5F5F5; }");
+    setStyleSheet("BrowsePanel { background-color: transparent; }");
 }
 
 void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
@@ -85,17 +85,18 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     col.scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     col.scrollArea->setMinimumWidth(210);
     col.scrollArea->setStyleSheet(
-        "QScrollArea { background-color: #F5F5F5; border: none; border-radius: 8px; }");
+        "QScrollArea { background-color: #F8FAFC; border: 1px solid #E6E8EB; border-radius: 10px; }");
 
     // Create container widget inside scroll area
     col.container = new QWidget();
-    col.container->setStyleSheet("QWidget { background-color: #F5F5F5; }");
+    col.container->setStyleSheet("QWidget { background-color: #F8FAFC; }");
     col.containerLayout = new QVBoxLayout(col.container);
     col.containerLayout->setContentsMargins(8, 8, 8, 8);
     col.containerLayout->setSpacing(8);
 
     // Header with folder name and close button — Fluent 2 card style
     auto *headerWidget = new QWidget(col.container);
+    headerWidget->setObjectName(QStringLiteral("panelHeader"));
     auto *headerLayout = new QHBoxLayout(headerWidget);
     headerLayout->setContentsMargins(12, 8, 8, 8);
     headerLayout->setSpacing(8);
@@ -145,7 +146,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     });
 
     headerWidget->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border-radius: 8px; }");
+        "QWidget#panelHeader { background-color: #FFFFFF; border: 1px solid #EEF0F2; border-radius: 8px; }");
     col.containerLayout->addWidget(headerWidget);
 
     // Loading label — shown while async scan is in progress
@@ -267,6 +268,7 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
     col.builtCount = end;
 
     if (col.builtCount < totalImages) {
+        col.container->setMinimumHeight(col.containerLayout->sizeHint().height());
         // Schedule next batch
         QTimer::singleShot(0, this, [this, columnIndex]() {
             buildThumbnailsBatch(columnIndex);
@@ -274,6 +276,7 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
     } else {
         // All widgets built — add trailing stretch
         col.containerLayout->addStretch();
+        col.container->setMinimumHeight(col.containerLayout->sizeHint().height());
     }
 }
 

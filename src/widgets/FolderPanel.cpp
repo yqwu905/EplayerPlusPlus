@@ -35,17 +35,14 @@ void FolderPanel::setupUi()
 
     // ---- Panel header ----
     auto *headerWidget = new QWidget(this);
+    headerWidget->setObjectName(QStringLiteral("panelHeader"));
     headerWidget->setFixedHeight(44);
-    headerWidget->setStyleSheet(
-        "QWidget { background-color: #FAFAFA; border-bottom: 1px solid #E0E0E0; }");
     auto *headerLayout = new QHBoxLayout(headerWidget);
     headerLayout->setContentsMargins(16, 0, 8, 0);
     headerLayout->setSpacing(4);
 
     auto *titleLabel = new QLabel(tr("Folders"), headerWidget);
-    titleLabel->setStyleSheet(
-        "QLabel { font-size: 14px; font-weight: 600; color: #1A1A1A; "
-        "border: none; background: transparent; }");
+    titleLabel->setObjectName(QStringLiteral("panelTitleLabel"));
     headerLayout->addWidget(titleLabel);
     headerLayout->addStretch();
 
@@ -55,9 +52,6 @@ void FolderPanel::setupUi()
     m_toolBar = new QToolBar(this);
     m_toolBar->setIconSize(QSize(16, 16));
     m_toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_toolBar->setStyleSheet(
-        "QToolBar { background-color: #FAFAFA; border: none; "
-        "border-bottom: 1px solid #E0E0E0; padding: 4px 8px; spacing: 4px; }");
 
     QAction *addAction = m_toolBar->addAction(tr("+ Add"));
     addAction->setToolTip(tr("Add a folder to the list"));
@@ -81,10 +75,7 @@ void FolderPanel::setupUi()
     m_pathInput->setObjectName(QStringLiteral("folderPathInput"));
     m_pathInput->setPlaceholderText(tr("Enter folder path and press Enter"));
     m_pathInput->setClearButtonEnabled(true);
-    m_pathInput->setStyleSheet(
-        "QLineEdit { background-color: #FFFFFF; border: 1px solid #D0D0D0; "
-        "border-radius: 4px; padding: 6px 8px; margin: 8px; }"
-        "QLineEdit:focus { border-color: #0078D4; }");
+    m_pathInput->setContentsMargins(8, 8, 8, 8);
     layout->addWidget(m_pathInput);
 
     // ---- Tree View ----
@@ -97,11 +88,7 @@ void FolderPanel::setupUi()
     m_treeView->setExpandsOnDoubleClick(true);
     m_treeView->setIndentation(20);
     m_treeView->setRootIsDecorated(true);
-    m_treeView->setStyleSheet(
-        "QTreeView { background-color: #FAFAFA; border: none; padding: 4px; }"
-        "QTreeView::item { padding: 4px 8px; border-radius: 4px; min-height: 24px; }"
-        "QTreeView::item:hover { background-color: #F0F0F0; }"
-        "QTreeView::item:selected { background-color: #E5F1FB; color: #1A1A1A; }");
+    m_treeView->setStyleSheet("QTreeView { padding: 4px; }");
 
     layout->addWidget(m_treeView);
 }

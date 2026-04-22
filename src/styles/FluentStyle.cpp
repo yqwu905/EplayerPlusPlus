@@ -42,6 +42,30 @@ QMainWindow {
     background-color: #FAFAFA;
 }
 
+QWidget#appCanvas {
+    background-color: #F3F4F6;
+}
+
+QWidget#panelSurface {
+    background-color: #FFFFFF;
+    border: 1px solid #E6E8EB;
+    border-radius: 12px;
+}
+
+QWidget#panelHeader {
+    background-color: #FFFFFF;
+    border: none;
+    border-bottom: 1px solid #EEF0F2;
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}
+
+QLabel#panelTitleLabel {
+    color: #1A1A1A;
+    font-size: 14px;
+    font-weight: 600;
+}
+
 /* ============================================================
    QMenuBar
    ============================================================ */
@@ -93,10 +117,10 @@ QMenu::separator {
    QToolBar
    ============================================================ */
 QToolBar {
-    background-color: #FAFAFA;
+    background-color: #FFFFFF;
     border: none;
-    border-bottom: 1px solid #E0E0E0;
-    padding: 4px 8px;
+    border-bottom: 1px solid #EEF0F2;
+    padding: 6px 10px;
     spacing: 4px;
 }
 QToolBar::separator {
@@ -110,14 +134,15 @@ QToolBar::separator {
    ============================================================ */
 QToolButton {
     background-color: transparent;
-    border: none;
+    border: 1px solid transparent;
     border-radius: 4px;
     padding: 6px 12px;
     color: #1A1A1A;
     font-size: 12px;
 }
 QToolButton:hover {
-    background-color: #EFEFEF;
+    background-color: #F3F5F7;
+    border-color: #E6E8EB;
 }
 QToolButton:pressed {
     background-color: #E0E0E0;
@@ -171,7 +196,7 @@ QPushButton#primaryButton:pressed {
    QTreeView
    ============================================================ */
 QTreeView {
-    background-color: #FAFAFA;
+    background-color: #FFFFFF;
     border: none;
     outline: none;
     font-size: 12px;
@@ -183,10 +208,10 @@ QTreeView::item {
     min-height: 24px;
 }
 QTreeView::item:hover {
-    background-color: #F0F0F0;
+    background-color: #F7F9FB;
 }
 QTreeView::item:selected {
-    background-color: #E5F1FB;
+    background-color: #E8F3FF;
     color: #1A1A1A;
 }
 QTreeView::branch {
@@ -209,6 +234,36 @@ QTreeView::branch:open:has-children:has-siblings {
 QScrollArea {
     background-color: transparent;
     border: none;
+}
+
+QLineEdit#folderPathInput {
+    background-color: #FFFFFF;
+    border: 1px solid #D6DADE;
+    border-radius: 8px;
+    padding: 8px 10px;
+    selection-background-color: #CCE4FA;
+}
+QLineEdit#folderPathInput:hover {
+    border-color: #BFC5CB;
+}
+QLineEdit#folderPathInput:focus {
+    border: 1px solid #0078D4;
+}
+
+QCheckBox {
+    color: #40464D;
+    spacing: 6px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #BFC5CB;
+    border-radius: 4px;
+    background: #FFFFFF;
+}
+QCheckBox::indicator:checked {
+    border-color: #0078D4;
+    background-color: #0078D4;
 }
 
 /* ============================================================
@@ -301,7 +356,7 @@ QSlider::sub-page:horizontal {
    QSplitter
    ============================================================ */
 QSplitter::handle {
-    background-color: #E0E0E0;
+    background-color: #E5E8EC;
 }
 QSplitter::handle:horizontal {
     width: 1px;
@@ -310,7 +365,7 @@ QSplitter::handle:vertical {
     height: 1px;
 }
 QSplitter::handle:hover {
-    background-color: #0078D4;
+    background-color: #99C8EE;
 }
 
 /* ============================================================
