@@ -57,6 +57,11 @@ void BrowsePanel::setupUi()
     optionsRow->addStretch();
     m_rootLayout->addLayout(optionsRow);
 
+    m_scanStatusLabel = new QLabel(tr("Idle"), this);
+    m_scanStatusLabel->setStyleSheet(
+        "QLabel { color: #6E6E6E; padding-left: 2px; background: transparent; border: none; }");
+    m_rootLayout->addWidget(m_scanStatusLabel);
+
     m_columnsLayout = new QHBoxLayout();
     m_columnsLayout->setContentsMargins(8, 8, 8, 8);
     m_columnsLayout->setSpacing(8);
@@ -161,6 +166,12 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         "QLabel { color: #9E9E9E; padding: 20px; background: transparent; border: none; }");
     col.containerLayout->addWidget(col.loadingLabel);
 
+    col.progressLabel = new QLabel(tr("Discovered: 0"), col.container);
+    col.progressLabel->setAlignment(Qt::AlignCenter);
+    col.progressLabel->setStyleSheet(
+        "QLabel { color: #7D7D7D; padding: 4px; background: transparent; border: none; }");
+    col.containerLayout->addWidget(col.progressLabel);
+
     col.containerLayout->addStretch();
     col.scrollArea->setWidget(col.container);
 
@@ -175,6 +186,17 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     connect(col.model, &ImageListModel::folderReady,
             this, [this, colIdx]() {
         onFolderReady(colIdx);
+    });
+    connect(col.model, &ImageListModel::scanProgressChanged,
+            this, [this, colIdx](int discoveredCount, bool finished) {
+        if (colIdx < 0 || colIdx >= m_columns.size()) {
+            return;
+        }
+        auto &column = m_columns[colIdx];
+        column.discoveredCount = discoveredCount;
+        column.scanFinished = finished;
+        updateColumnProgressLabel(colIdx);
+        updateGlobalScanStatus();
     });
 
     // Connect scroll to lazy-load more thumbnails
@@ -210,6 +232,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     // Start async folder scan
     col.model->setFolder(folderPath);
+    updateGlobalScanStatus();
 }
 
 void BrowsePanel::onFolderReady(int columnIndex)
@@ -218,12 +241,17 @@ void BrowsePanel::onFolderReady(int columnIndex)
 
     auto &col = m_columns[columnIndex];
 
+    col.scanFinished = true;
+    col.discoveredCount = col.model ? col.model->imageCount() : col.discoveredCount;
+
     // Remove loading label
     if (col.loadingLabel) {
         col.containerLayout->removeWidget(col.loadingLabel);
         delete col.loadingLabel;
         col.loadingLabel = nullptr;
     }
+    updateColumnProgressLabel(columnIndex);
+    updateGlobalScanStatus();
 
     col.builtCount = 0;
 
@@ -310,6 +338,8 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
         stopInterleavedLoading();
     }
 
+    updateGlobalScanStatus();
+
     emitSelectionChanged();
 }
 
@@ -317,6 +347,7 @@ void BrowsePanel::onSessionCleared()
 {
     stopInterleavedLoading();
     clearAllColumns();
+    updateGlobalScanStatus();
     emitSelectionChanged();
 }
 
@@ -424,6 +455,10 @@ void BrowsePanel::clearAllColumns()
         delete col.model;
     }
     m_columns.clear();
+    if (m_scanStatusLabel) {
+        m_scanStatusLabel->setText(tr("Idle"));
+    }
+    emit scanStatusChanged(tr("Idle"));
 }
 
 void BrowsePanel::clearSelection()
@@ -659,4 +694,47 @@ void BrowsePanel::onViewportUpdateTick()
     if (m_imageLoader) {
         m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
     }
+}
+
+void BrowsePanel::updateColumnProgressLabel(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= m_columns.size()) {
+        return;
+    }
+
+    auto &col = m_columns[columnIndex];
+    if (!col.progressLabel) {
+        return;
+    }
+
+    if (col.scanFinished) {
+        col.progressLabel->setText(tr("Discovered: %1 (done)").arg(col.discoveredCount));
+    } else {
+        col.progressLabel->setText(tr("Discovered: %1 (scanning...)").arg(col.discoveredCount));
+    }
+}
+
+void BrowsePanel::updateGlobalScanStatus()
+{
+    int discoveredTotal = 0;
+    int scanningCount = 0;
+    for (const auto &col : m_columns) {
+        discoveredTotal += col.discoveredCount;
+        if (!col.scanFinished) {
+            ++scanningCount;
+        }
+    }
+
+    const QString statusText = m_columns.isEmpty()
+        ? tr("Idle")
+        : (scanningCount > 0
+            ? tr("Scanning %1 folder(s), discovered %2 image(s)")
+                  .arg(scanningCount)
+                  .arg(discoveredTotal)
+            : tr("Scan complete, discovered %1 image(s)").arg(discoveredTotal));
+
+    if (m_scanStatusLabel) {
+        m_scanStatusLabel->setText(statusText);
+    }
+    emit scanStatusChanged(statusText);
 }

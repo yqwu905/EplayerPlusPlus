@@ -2,6 +2,7 @@
 #include <QTemporaryDir>
 #include <QFile>
 #include <QImage>
+#include <memory>
 
 #include "utils/FileUtils.h"
 
@@ -23,6 +24,8 @@ private slots:
     void testScanForImages_nonRecursive();
     void testScanForImages_nonExistentDir();
     void testScanForImages_sorted();
+    void testScanForImagesBatched_batches();
+    void testScanForImagesBatched_cancel();
 
     void testGetSubdirectories();
     void testGetSubdirectories_empty();
@@ -176,6 +179,63 @@ void tst_FileUtils::testScanForImages_sorted()
     QStringList sorted = result;
     std::sort(sorted.begin(), sorted.end());
     QCOMPARE(result, sorted);
+}
+
+void tst_FileUtils::testScanForImagesBatched_batches()
+{
+    QStringList all;
+    int progressUpdates = 0;
+    FileUtils::ScanOptions options;
+    options.recursive = true;
+    options.batchSize = 2;
+    options.initialBatchSize = 1;
+
+    FileUtils::scanForImagesBatched(
+        m_tempDir.path(),
+        options,
+        [&all](const QStringList &batch, bool /*initialBatch*/) {
+            all.append(batch);
+        },
+        [&progressUpdates](const FileUtils::ScanProgress &progress) {
+            ++progressUpdates;
+            if (progress.finished) {
+                QVERIFY(progress.discoveredCount >= 6);
+            }
+        });
+
+    QVERIFY(all.size() >= 6);
+    QVERIFY(progressUpdates > 0);
+}
+
+void tst_FileUtils::testScanForImagesBatched_cancel()
+{
+    for (int i = 0; i < 60; ++i) {
+        createTestFile(QString("cancel_%1.png").arg(i), true);
+    }
+
+    QStringList all;
+    auto token = std::make_shared<FileUtils::ScanCancelToken>();
+    FileUtils::ScanOptions options;
+    options.recursive = false;
+    options.batchSize = 5;
+    options.initialBatchSize = 5;
+
+    bool cancelledEarly = false;
+    FileUtils::scanForImagesBatched(
+        m_tempDir.path(),
+        options,
+        [&all, &token, &cancelledEarly](const QStringList &batch, bool /*initialBatch*/) {
+            all.append(batch);
+            if (all.size() >= 10 && !token->isCancelled()) {
+                token->cancel();
+                cancelledEarly = true;
+            }
+        },
+        {},
+        token);
+
+    QVERIFY(cancelledEarly);
+    QVERIFY(all.size() < 60);
 }
 
 void tst_FileUtils::testGetSubdirectories()

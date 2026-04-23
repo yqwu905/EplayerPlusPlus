@@ -44,6 +44,7 @@ private slots:
     void testRowCount_withParent();
 
     void testHasMoreToLoad_initial();
+    void testScanProgressAndIncrementalInsert();
     void testLoadNextThumbnailBatch();
     void testLoadNextThumbnailBatch_resetsOnSetFolder();
     void testHasMoreToLoad_emptyFolder();
@@ -371,6 +372,30 @@ void tst_ImageListModel::testHasMoreToLoad_initial()
     // After setting folder and scan completes, should have items to load
     setFolderAndWait(model, m_testDir);
     QVERIFY(model.hasMoreToLoad());
+}
+
+void tst_ImageListModel::testScanProgressAndIncrementalInsert()
+{
+    QTemporaryDir largeDir;
+    QVERIFY(largeDir.isValid());
+
+    for (int i = 0; i < 1200; ++i) {
+        QImage img(8, 8, QImage::Format_ARGB32);
+        img.fill(Qt::red);
+        QVERIFY(img.save(largeDir.filePath(QString("img_%1.png").arg(i, 4, 10, QChar('0')))));
+    }
+
+    ImageListModel model;
+    QSignalSpy readySpy(&model, &ImageListModel::folderReady);
+    QSignalSpy insertSpy(&model, &QAbstractItemModel::rowsInserted);
+    QSignalSpy progressSpy(&model, &ImageListModel::scanProgressChanged);
+
+    model.setFolder(largeDir.path());
+    QVERIFY(readySpy.wait(8000));
+
+    QCOMPARE(model.imageCount(), 1200);
+    QVERIFY(insertSpy.count() >= 2);
+    QVERIFY(progressSpy.count() >= 2);
 }
 
 void tst_ImageListModel::testLoadNextThumbnailBatch()

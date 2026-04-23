@@ -343,6 +343,11 @@ QString ImageLoader::makeRequestKey(const QString &imagePath,
            + QString::number(static_cast<int>(colorSpace));
 }
 
+void ImageLoader::cancelAllThumbnailRequests()
+{
+    cancelThumbnailRequestsExcept({});
+}
+
 QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
 {
     QMutexLocker locker(&m_cacheMutex);
