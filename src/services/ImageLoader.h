@@ -9,6 +9,7 @@
 #include <QSize>
 #include <QDateTime>
 #include <QQueue>
+#include <QColorSpace>
 
 /**
  * @brief Asynchronous image and thumbnail loading service with caching.
@@ -92,24 +93,40 @@ signals:
     void imageReady(const QString &imagePath, const QImage &image);
 
 private:
+    struct RequestKey {
+        QString imagePath;
+        QSize thumbnailSize;
+        QColorSpace::NamedColorSpace colorSpace = QColorSpace::SRgb;
+
+        bool operator==(const RequestKey &other) const
+        {
+            return imagePath == other.imagePath &&
+                   thumbnailSize == other.thumbnailSize &&
+                   colorSpace == other.colorSpace;
+        }
+    };
+
     struct CacheEntry {
         QImage thumbnail;
         QSize requestedSize;
+        QColorSpace::NamedColorSpace colorSpace = QColorSpace::SRgb;
         QDateTime sourceLastModifiedUtc;
         bool highQuality = true;
         qint64 sequence = 0;
     };
 
     struct ThumbnailRequest {
+        RequestKey key;
         QString imagePath;
         QSize thumbnailSize;
+        QColorSpace::NamedColorSpace colorSpace = QColorSpace::SRgb;
         bool highPriority = false;
         bool highQuality = true;
     };
 
     mutable QMutex m_cacheMutex;
     QHash<QString, CacheEntry> m_thumbnailCache;
-    QSet<QString> m_pendingRequests;
+    QHash<QString, ThumbnailRequest> m_pendingRequests;
     QQueue<ThumbnailRequest> m_highPriorityQueue;
     QQueue<ThumbnailRequest> m_normalPriorityQueue;
     int m_maxCacheSize = 1000;
@@ -152,6 +169,9 @@ private:
                        bool cancelledBeforeEmit);
 
     void trimCache();
+    static QString makeRequestKey(const QString &imagePath,
+                                  const QSize &thumbnailSize,
+                                  QColorSpace::NamedColorSpace colorSpace);
 };
 
 #endif // IMAGELOADER_H

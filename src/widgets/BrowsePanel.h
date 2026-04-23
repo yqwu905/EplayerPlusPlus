@@ -59,6 +59,7 @@ private slots:
     void onSessionCleared();
     void onThumbnailClicked(const QString &filePath, Qt::KeyboardModifiers modifiers);
     void onFolderReady(int columnIndex);
+    void onViewportUpdateTick();
 
 private:
     struct ColumnInfo {
@@ -91,6 +92,7 @@ private:
     QPair<int, int> visibleRangeForColumn(const ColumnInfo &column) const;
     void requestVisibleThumbnailsForAllColumns();
     QSet<QString> aggregateVisiblePaths() const;
+    void scheduleViewportUpdate();
 
     bool findThumbnailPosition(const ThumbnailWidget *thumbnail,
                                int &column,
@@ -103,9 +105,11 @@ private:
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
     QTimer *m_interleavedLoadTimer = nullptr;
+    QTimer *m_viewportUpdateTimer = nullptr;
 
     static constexpr int kBatchSize = 50;
-    static constexpr int kThumbnailBatchPerTick = 16;
+    static constexpr int kViewportThrottleMs = 24;
+    static constexpr int kPrefetchScreens = 3;
 };
 
 #endif // BROWSEPANEL_H
