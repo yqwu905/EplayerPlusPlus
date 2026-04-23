@@ -41,6 +41,7 @@ signals:
      * Each inner list contains {folderPath, imagePath} pairs for selected images.
      */
     void selectionChanged(const QList<QPair<QString, QString>> &selectedImages);
+    void scanStatusChanged(const QString &statusText);
 
 public slots:
     /**
@@ -66,9 +67,12 @@ private:
         QWidget *container = nullptr;
         QVBoxLayout *containerLayout = nullptr;
         QLabel *loadingLabel = nullptr;
+        QLabel *progressLabel = nullptr;
         ImageListModel *model = nullptr;
         QList<ThumbnailWidget *> thumbnailWidgets;
         int builtCount = 0;
+        int discoveredCount = 0;
+        bool scanFinished = false;
     };
 
     void setupUi();
@@ -91,6 +95,8 @@ private:
     QPair<int, int> visibleRangeForColumn(const ColumnInfo &column) const;
     void requestVisibleThumbnailsForAllColumns();
     QSet<QString> aggregateVisiblePaths() const;
+    void updateColumnProgressLabel(int columnIndex);
+    void updateGlobalScanStatus();
 
     bool findThumbnailPosition(const ThumbnailWidget *thumbnail,
                                int &column,
@@ -99,6 +105,7 @@ private:
     CompareSession *m_session = nullptr;
     ImageLoader *m_imageLoader = nullptr;
     QVBoxLayout *m_rootLayout = nullptr;
+    QLabel *m_scanStatusLabel = nullptr;
     QCheckBox *m_fuzzyFileNameCheckBox = nullptr;
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;

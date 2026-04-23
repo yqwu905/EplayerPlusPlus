@@ -11,6 +11,7 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QAction>
+#include <QStatusBar>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -139,6 +140,11 @@ void MainWindow::setupConnections()
             m_browsePanel, &BrowsePanel::navigatePrevious);
     connect(m_comparePanel, &ComparePanel::navigateNextRequested,
             m_browsePanel, &BrowsePanel::navigateNext);
+
+    connect(m_browsePanel, &BrowsePanel::scanStatusChanged,
+            this, [this](const QString &statusText) {
+        statusBar()->showMessage(statusText);
+    });
 }
 
 void MainWindow::togglePanel(int panelIndex)

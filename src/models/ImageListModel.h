@@ -5,9 +5,12 @@
 #include <QStringList>
 #include <QImage>
 #include <QHash>
-#include <QFutureWatcher>
+#include <memory>
 
 class ImageLoader;
+namespace FileUtils {
+class ScanCancelToken;
+}
 
 /**
  * @brief List model for images within a single folder.
@@ -142,12 +145,15 @@ signals:
      * @brief Emitted when selected images change.
      */
     void selectionChanged();
+    void scanProgressChanged(int discoveredCount, bool finished);
 
 private slots:
     void onThumbnailReady(const QString &imagePath, const QImage &thumbnail);
 
 private:
-    void onScanFinished();
+    void startScan(const QString &path);
+    void appendScanBatch(const QStringList &batch, int generation);
+    void finalizeScan(int generation);
     void cancelPendingScan();
 
     QString m_folderPath;
@@ -156,9 +162,11 @@ private:
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
     ImageLoader *m_imageLoader = nullptr;
-    QFutureWatcher<QStringList> *m_scanWatcher = nullptr;
+    std::shared_ptr<FileUtils::ScanCancelToken> m_scanCancelToken;
     bool m_loading = false;
     int m_nextLoadIndex = 0;
+    int m_scanGeneration = 0;
+    int m_initialPrefetchRemaining = 0;
 };
 
 #endif // IMAGELISTMODEL_H

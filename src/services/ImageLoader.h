@@ -74,6 +74,7 @@ public:
     void setMaxCacheSize(int maxSize);
     void setMaxConcurrentLoads(int maxConcurrentLoads);
     void cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths);
+    void cancelAllThumbnailRequests();
     QHash<QString, qint64> thumbnailMetrics() const;
 
 signals:
