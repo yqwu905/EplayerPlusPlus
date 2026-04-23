@@ -9,10 +9,18 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QCryptographicHash>
+#include <QThread>
+
+namespace {
+constexpr int kDefaultDecodeThreadCap = 6;
+}
 
 ImageLoader::ImageLoader(QObject *parent)
     : QObject(parent)
 {
+    const int logicalCores = qMax(1, QThread::idealThreadCount());
+    const int estimatedPhysicalCores = qMax(1, logicalCores / 2);
+    m_maxConcurrentLoads = qMin(estimatedPhysicalCores, kDefaultDecodeThreadCap);
 }
 
 ImageLoader::~ImageLoader() = default;
@@ -52,7 +60,8 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
         QMutexLocker locker(&m_cacheMutex);
         ++m_metricRequests;
 
-        auto it = m_thumbnailCache.constFind(imagePath);
+        const QString requestKey = makeRequestKey(imagePath, thumbnailSize, QColorSpace::SRgb);
+        auto it = m_thumbnailCache.constFind(requestKey);
         if (it != m_thumbnailCache.constEnd() &&
             it->requestedSize == thumbnailSize &&
             it->highQuality >= highQuality) {
@@ -64,12 +73,23 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
         }
 
         if (!hasCached) {
-            if (m_pendingRequests.contains(imagePath)) {
+            auto pendingIt = m_pendingRequests.find(requestKey);
+            if (pendingIt != m_pendingRequests.end()) {
+                if (highPriority && !pendingIt->highPriority) {
+                    pendingIt->highPriority = true;
+                    pendingIt->highQuality = pendingIt->highQuality || highQuality;
+                }
                 return;
             }
 
-            m_pendingRequests.insert(imagePath);
-            ThumbnailRequest request{imagePath, thumbnailSize, highPriority, highQuality};
+            ThumbnailRequest request;
+            request.key = {imagePath, thumbnailSize, QColorSpace::SRgb};
+            request.imagePath = imagePath;
+            request.thumbnailSize = thumbnailSize;
+            request.colorSpace = QColorSpace::SRgb;
+            request.highPriority = highPriority;
+            request.highQuality = highQuality;
+            m_pendingRequests.insert(requestKey, request);
             if (highPriority) {
                 m_highPriorityQueue.enqueue(request);
             } else {
@@ -106,6 +126,13 @@ void ImageLoader::processQueue()
             } else {
                 return;
             }
+            const QString requestKey =
+                makeRequestKey(request.imagePath, request.thumbnailSize, request.colorSpace);
+            auto pendingIt = m_pendingRequests.find(requestKey);
+            if (pendingIt == m_pendingRequests.end()) {
+                continue;
+            }
+            request = pendingIt.value();
 
             ++m_activeLoads;
         }
@@ -166,8 +193,10 @@ void ImageLoader::processQueue()
                             ++m_metricDecodes;
                         }
 
-                        if (m_pendingRequests.contains(imagePath)) {
-                            m_pendingRequests.remove(imagePath);
+                        const QString requestKey =
+                            makeRequestKey(imagePath, thumbnailSize, QColorSpace::SRgb);
+                        if (m_pendingRequests.contains(requestKey)) {
+                            m_pendingRequests.remove(requestKey);
                         } else {
                             cancelledBeforeEmit = true;
                             ++m_metricCancelled;
@@ -198,9 +227,11 @@ void ImageLoader::finishRequest(const QString &imagePath,
 {
     if (!thumbnail.isNull()) {
         QMutexLocker locker(&m_cacheMutex);
-        m_thumbnailCache.insert(imagePath,
+        const QString requestKey = makeRequestKey(imagePath, thumbnailSize, QColorSpace::SRgb);
+        m_thumbnailCache.insert(requestKey,
                                 {thumbnail,
                                  thumbnailSize,
+                                 QColorSpace::SRgb,
                                  lastModifiedUtc,
                                  highQuality,
                                  ++m_cacheSequenceCounter});
@@ -232,7 +263,7 @@ void ImageLoader::requestImage(const QString &imagePath)
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
 {
     QMutexLocker locker(&m_cacheMutex);
-    auto it = m_thumbnailCache.constFind(imagePath);
+    auto it = m_thumbnailCache.constFind(makeRequestKey(imagePath, QSize(200, 200), QColorSpace::SRgb));
     if (it != m_thumbnailCache.constEnd()) {
         return it->thumbnail;
     }
@@ -242,7 +273,7 @@ QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize) const
 {
     QMutexLocker locker(&m_cacheMutex);
-    auto it = m_thumbnailCache.constFind(imagePath);
+    auto it = m_thumbnailCache.constFind(makeRequestKey(imagePath, thumbnailSize, QColorSpace::SRgb));
     if (it != m_thumbnailCache.constEnd() && it->requestedSize == thumbnailSize) {
         return it->thumbnail;
     }
@@ -269,7 +300,7 @@ void ImageLoader::setMaxConcurrentLoads(int maxConcurrentLoads)
 {
     {
         QMutexLocker locker(&m_cacheMutex);
-        m_maxConcurrentLoads = qBound(1, maxConcurrentLoads, 32);
+        m_maxConcurrentLoads = qBound(1, maxConcurrentLoads, 8);
     }
     processQueue();
 }
@@ -293,13 +324,23 @@ void ImageLoader::cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths)
     filterQueue(m_normalPriorityQueue);
 
     for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end();) {
-        if (keepPaths.contains(*it)) {
+        if (keepPaths.contains(it->imagePath)) {
             ++it;
         } else {
             it = m_pendingRequests.erase(it);
             ++m_metricCancelled;
         }
     }
+}
+
+QString ImageLoader::makeRequestKey(const QString &imagePath,
+                                    const QSize &thumbnailSize,
+                                    QColorSpace::NamedColorSpace colorSpace)
+{
+    return imagePath + QLatin1Char('|')
+           + QString::number(thumbnailSize.width()) + QLatin1Char('x')
+           + QString::number(thumbnailSize.height()) + QLatin1Char('|')
+           + QString::number(static_cast<int>(colorSpace));
 }
 
 QHash<QString, qint64> ImageLoader::thumbnailMetrics() const

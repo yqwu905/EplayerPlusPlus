@@ -66,6 +66,12 @@ void BrowsePanel::setupUi()
     m_rootLayout->addLayout(m_columnsLayout);
 
     setStyleSheet("BrowsePanel { background-color: #F5F5F5; }");
+
+    m_viewportUpdateTimer = new QTimer(this);
+    m_viewportUpdateTimer->setSingleShot(true);
+    m_viewportUpdateTimer->setInterval(kViewportThrottleMs);
+    connect(m_viewportUpdateTimer, &QTimer::timeout,
+            this, &BrowsePanel::onViewportUpdateTick);
 }
 
 void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
@@ -177,9 +183,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         if (colIdx < 0 || colIdx >= m_columns.size()) return;
         const auto &c = m_columns[colIdx];
         if (!c.scrollArea || !c.model) return;
-
-        auto [firstVisible, lastVisible] = visibleRangeForColumn(c);
-        c.model->loadThumbnailsForRange(firstVisible, lastVisible);
+        scheduleViewportUpdate();
     });
 
     // Connect model thumbnail updates to widget updates
@@ -227,9 +231,9 @@ void BrowsePanel::onFolderReady(int columnIndex)
     buildThumbnailsBatch(columnIndex);
 
     // Load visible thumbnails first for instant feedback
-    requestVisibleThumbnailsForAllColumns();
+    scheduleViewportUpdate();
 
-    // Start or continue interleaved thumbnail loading across all columns
+    // Start or continue interleaved loading across all columns
     startInterleavedLoading();
 }
 
@@ -274,6 +278,15 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
     } else {
         // All widgets built — add trailing stretch
         col.containerLayout->addStretch();
+        col.containerLayout->activate();
+        col.container->setMinimumSize(col.container->sizeHint());
+        col.container->adjustSize();
+        if (col.scrollArea) {
+            col.scrollArea->widget()->adjustSize();
+            col.scrollArea->verticalScrollBar()->setValue(
+                col.scrollArea->verticalScrollBar()->minimum());
+        }
+        scheduleViewportUpdate();
     }
 }
 
@@ -569,18 +582,7 @@ void BrowsePanel::navigateSelection(int delta)
 
 void BrowsePanel::startInterleavedLoading()
 {
-    if (m_interleavedLoadTimer && m_interleavedLoadTimer->isActive()) {
-        return; // Already running
-    }
-
-    if (!m_interleavedLoadTimer) {
-        m_interleavedLoadTimer = new QTimer(this);
-        m_interleavedLoadTimer->setInterval(0);
-        connect(m_interleavedLoadTimer, &QTimer::timeout,
-                this, &BrowsePanel::onInterleavedLoadTick);
-    }
-
-    m_interleavedLoadTimer->start();
+    scheduleViewportUpdate();
 }
 
 void BrowsePanel::stopInterleavedLoading()
@@ -592,24 +594,8 @@ void BrowsePanel::stopInterleavedLoading()
 
 void BrowsePanel::onInterleavedLoadTick()
 {
-    bool anyMoreToLoad = false;
     requestVisibleThumbnailsForAllColumns();
-
-    for (int c = 0; c < m_columns.size(); ++c) {
-        auto &col = m_columns[c];
-        if (col.model && col.model->hasMoreToLoad()) {
-            col.model->loadNextThumbnailBatch(kThumbnailBatchPerTick);
-            anyMoreToLoad = true;
-        }
-    }
-
-    if (m_imageLoader) {
-        m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
-    }
-
-    if (!anyMoreToLoad) {
-        stopInterleavedLoading();
-    }
+    stopInterleavedLoading();
 }
 
 QPair<int, int> BrowsePanel::visibleRangeForColumn(const ColumnInfo &column) const
@@ -621,9 +607,10 @@ QPair<int, int> BrowsePanel::visibleRangeForColumn(const ColumnInfo &column) con
     const int scrollY = column.scrollArea->verticalScrollBar()->value();
     const int viewportH = column.scrollArea->viewport()->height();
     const int itemH = 220;
-    const int firstVisible = qMax(0, scrollY / itemH - 2);
+    const int prefetchItems = qMax(1, (viewportH / itemH) * kPrefetchScreens);
+    const int firstVisible = qMax(0, scrollY / itemH - prefetchItems);
     const int lastVisible = qMin(column.model->imageCount() - 1,
-                                 (scrollY + viewportH) / itemH + 3);
+                                 (scrollY + viewportH) / itemH + prefetchItems);
     return {firstVisible, lastVisible};
 }
 
@@ -656,4 +643,20 @@ QSet<QString> BrowsePanel::aggregateVisiblePaths() const
         }
     }
     return visiblePaths;
+}
+
+void BrowsePanel::scheduleViewportUpdate()
+{
+    if (!m_viewportUpdateTimer) {
+        return;
+    }
+    m_viewportUpdateTimer->start();
+}
+
+void BrowsePanel::onViewportUpdateTick()
+{
+    requestVisibleThumbnailsForAllColumns();
+    if (m_imageLoader) {
+        m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
+    }
 }
