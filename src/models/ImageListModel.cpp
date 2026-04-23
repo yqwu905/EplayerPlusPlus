@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QtConcurrent>
+#include <QMetaObject>
 
 ImageListModel::ImageListModel(QObject *parent)
     : QAbstractListModel(parent)
@@ -70,16 +71,7 @@ void ImageListModel::setFolder(const QString &folderPath)
     m_nextLoadIndex = 0;
     endResetModel();
 
-    // Start async scan
-    m_loading = true;
-    m_scanWatcher = new QFutureWatcher<QStringList>(this);
-    connect(m_scanWatcher, &QFutureWatcher<QStringList>::finished,
-            this, &ImageListModel::onScanFinished);
-
-    QString path = folderPath;
-    m_scanWatcher->setFuture(QtConcurrent::run([path]() {
-        return FileUtils::scanForImages(path, false);
-    }));
+    startScan(folderPath);
 }
 
 QString ImageListModel::folderPath() const
@@ -108,16 +100,7 @@ void ImageListModel::refresh()
         return;
     }
 
-    // Start async scan
-    m_loading = true;
-    m_scanWatcher = new QFutureWatcher<QStringList>(this);
-    connect(m_scanWatcher, &QFutureWatcher<QStringList>::finished,
-            this, &ImageListModel::onScanFinished);
-
-    QString path = m_folderPath;
-    m_scanWatcher->setFuture(QtConcurrent::run([path]() {
-        return FileUtils::scanForImages(path, false);
-    }));
+    startScan(m_folderPath);
 }
 
 bool ImageListModel::isLoading() const
@@ -270,7 +253,6 @@ bool ImageListModel::hasMoreToLoad() const
 
 void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &thumbnail)
 {
-    // O(1) lookup via pre-built hash map
     auto it = m_pathToIndex.constFind(imagePath);
     if (it == m_pathToIndex.constEnd()) {
         return;
@@ -283,39 +265,98 @@ void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &th
     emit dataChanged(mi, mi, {Qt::DecorationRole, ThumbnailRole});
 }
 
-void ImageListModel::onScanFinished()
+void ImageListModel::startScan(const QString &path)
 {
-    if (!m_scanWatcher) {
+    if (path.isEmpty()) {
         return;
     }
 
-    QStringList results = m_scanWatcher->result();
-    m_scanWatcher->deleteLater();
-    m_scanWatcher = nullptr;
-    m_loading = false;
+    m_loading = true;
     m_nextLoadIndex = 0;
+    m_initialPrefetchRemaining = 300;
+    ++m_scanGeneration;
+    const int generation = m_scanGeneration;
+    m_scanCancelToken = std::make_shared<FileUtils::ScanCancelToken>();
+    emit scanProgressChanged(0, false);
 
-    if (!results.isEmpty()) {
-        beginInsertRows(QModelIndex(), 0, results.size() - 1);
-        m_imagePaths = results;
-        // Build path-to-index map for O(1) lookup in onThumbnailReady
-        m_pathToIndex.clear();
-        m_pathToIndex.reserve(results.size());
-        for (int i = 0; i < results.size(); ++i) {
-            m_pathToIndex.insert(results.at(i), i);
-        }
-        endInsertRows();
+    auto cancelToken = m_scanCancelToken;
+    [[maybe_unused]] const auto future = QtConcurrent::run([this, path, generation, cancelToken]() {
+        FileUtils::ScanOptions options;
+        options.recursive = false;
+        options.batchSize = 1000;
+        options.initialBatchSize = 300;
+
+        FileUtils::scanForImagesBatched(
+            path,
+            options,
+            [this, generation](const QStringList &batch, bool /*initialBatch*/) {
+                if (batch.isEmpty()) {
+                    return;
+                }
+                QMetaObject::invokeMethod(this, [this, batch, generation]() {
+                    appendScanBatch(batch, generation);
+                }, Qt::QueuedConnection);
+            },
+            [this, generation](const FileUtils::ScanProgress &progress) {
+                QMetaObject::invokeMethod(this, [this, progress, generation]() {
+                    if (generation != m_scanGeneration) {
+                        return;
+                    }
+                    emit scanProgressChanged(progress.discoveredCount, progress.finished);
+                    if (progress.finished) {
+                        finalizeScan(generation);
+                    }
+                }, Qt::QueuedConnection);
+            },
+            cancelToken);
+    });
+}
+
+void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
+{
+    if (generation != m_scanGeneration || batch.isEmpty()) {
+        return;
     }
 
+    const int beginRow = m_imagePaths.size();
+    const int endRow = beginRow + batch.size() - 1;
+    beginInsertRows(QModelIndex(), beginRow, endRow);
+    for (const QString &path : batch) {
+        m_pathToIndex.insert(path, m_imagePaths.size());
+        m_imagePaths.append(path);
+    }
+    endInsertRows();
+
+    if (m_imageLoader && m_initialPrefetchRemaining > 0) {
+        const int count = qMin(m_initialPrefetchRemaining, batch.size());
+        m_imageLoader->requestThumbnailBatchVisibleFirst(batch.mid(0, count));
+        m_initialPrefetchRemaining -= count;
+    }
+}
+
+void ImageListModel::finalizeScan(int generation)
+{
+    if (generation != m_scanGeneration) {
+        return;
+    }
+
+    if (m_scanCancelToken && m_scanCancelToken->isCancelled()) {
+        return;
+    }
+
+    m_loading = false;
+    m_nextLoadIndex = 0;
     emit folderReady();
 }
 
 void ImageListModel::cancelPendingScan()
 {
-    if (m_scanWatcher) {
-        m_scanWatcher->cancel();
-        m_scanWatcher->deleteLater();
-        m_scanWatcher = nullptr;
+    if (m_scanCancelToken) {
+        m_scanCancelToken->cancel();
+        m_scanCancelToken.reset();
+    }
+
+    if (m_loading) {
         m_loading = false;
     }
 }

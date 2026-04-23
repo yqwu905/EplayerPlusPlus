@@ -302,6 +302,11 @@ void ImageLoader::cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths)
     }
 }
 
+void ImageLoader::cancelAllThumbnailRequests()
+{
+    cancelThumbnailRequestsExcept({});
+}
+
 QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
 {
     QMutexLocker locker(&m_cacheMutex);
