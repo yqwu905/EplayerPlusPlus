@@ -214,6 +214,35 @@ void ImageLoader::finishRequest(const QString &imagePath,
 
 void ImageLoader::requestImage(const QString &imagePath)
 {
+    if (imagePath.isEmpty()) {
+        return;
+    }
+
+    QImage cachedImage;
+    bool hasCached = false;
+    {
+        QMutexLocker locker(&m_cacheMutex);
+        auto it = m_imageCache.constFind(imagePath);
+        if (it != m_imageCache.constEnd()) {
+            cachedImage = *it;
+            hasCached = !cachedImage.isNull();
+        }
+
+        if (!hasCached) {
+            if (m_pendingImageRequests.contains(imagePath)) {
+                return;
+            }
+            m_pendingImageRequests.insert(imagePath);
+        }
+    }
+
+    if (hasCached) {
+        QMetaObject::invokeMethod(this, [this, imagePath, cachedImage]() {
+            emit imageReady(imagePath, cachedImage);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
     auto future = QtConcurrent::run([imagePath]() {
         QImage image(imagePath);
         return image;
@@ -222,11 +251,31 @@ void ImageLoader::requestImage(const QString &imagePath)
     auto *watcher = new QFutureWatcher<QImage>(this);
     connect(watcher, &QFutureWatcher<QImage>::finished, this,
             [this, watcher, imagePath]() {
-        emit imageReady(imagePath, watcher->result());
-        watcher->deleteLater();
-    });
+                QImage image = watcher->result();
+                watcher->deleteLater();
+
+                {
+                    QMutexLocker locker(&m_cacheMutex);
+                    m_pendingImageRequests.remove(imagePath);
+                    if (!image.isNull()) {
+                        m_imageCache.insert(imagePath, image);
+                        while (m_imageCache.size() > m_maxImageCacheSize) {
+                            m_imageCache.erase(m_imageCache.begin());
+                        }
+                    }
+                }
+
+                emit imageReady(imagePath, image);
+            });
 
     watcher->setFuture(future);
+}
+
+void ImageLoader::requestImageBatch(const QStringList &imagePaths)
+{
+    for (const QString &path : imagePaths) {
+        requestImage(path);
+    }
 }
 
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
@@ -249,11 +298,23 @@ QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &th
     return QImage();
 }
 
+QImage ImageLoader::getCachedImage(const QString &imagePath) const
+{
+    QMutexLocker locker(&m_cacheMutex);
+    auto it = m_imageCache.constFind(imagePath);
+    if (it != m_imageCache.constEnd()) {
+        return *it;
+    }
+    return QImage();
+}
+
 void ImageLoader::clearCache()
 {
     QMutexLocker locker(&m_cacheMutex);
     m_thumbnailCache.clear();
+    m_imageCache.clear();
     m_pendingRequests.clear();
+    m_pendingImageRequests.clear();
     m_highPriorityQueue.clear();
     m_normalPriorityQueue.clear();
 }

@@ -53,6 +53,7 @@ public:
      * When loading is complete, the imageReady signal is emitted.
      */
     void requestImage(const QString &imagePath);
+    void requestImageBatch(const QStringList &imagePaths);
 
     /**
      * @brief Check if a thumbnail is available in cache.
@@ -61,6 +62,7 @@ public:
      */
     QImage getCachedThumbnail(const QString &imagePath) const;
     QImage getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize) const;
+    QImage getCachedImage(const QString &imagePath) const;
 
     /**
      * @brief Clear the thumbnail cache.
@@ -110,10 +112,13 @@ private:
 
     mutable QMutex m_cacheMutex;
     QHash<QString, CacheEntry> m_thumbnailCache;
+    QHash<QString, QImage> m_imageCache;
     QSet<QString> m_pendingRequests;
+    QSet<QString> m_pendingImageRequests;
     QQueue<ThumbnailRequest> m_highPriorityQueue;
     QQueue<ThumbnailRequest> m_normalPriorityQueue;
     int m_maxCacheSize = 1000;
+    int m_maxImageCacheSize = 64;
     int m_maxConcurrentLoads = 4;
     int m_activeLoads = 0;
     qint64 m_cacheSequenceCounter = 0;

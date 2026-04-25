@@ -25,6 +25,7 @@ private slots:
     void duplicateFolder_plainClickSelectionsAreIndependent();
     void ctrlClick_alignsSameIndexRowsAcrossColumns();
     void altClick_exactVsFuzzyFileNameMatch();
+    void selection_preloadsPreviousAndNextThreeImages();
 };
 
 void tst_BrowsePanel::duplicateFolder_plainClickSelectionsAreIndependent()
@@ -244,6 +245,60 @@ void tst_BrowsePanel::altClick_exactVsFuzzyFileNameMatch()
 
     QTest::mouseClick(anchorThumb, Qt::LeftButton, Qt::AltModifier);
     QTRY_VERIFY_WITH_TIMEOUT(fuzzyThumb->isSelected(), 2000);
+}
+
+void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QStringList imagePaths;
+    for (int i = 0; i < 10; ++i) {
+        const QString name = QString("img_%1.png").arg(i, 2, 10, QChar('0'));
+        const QString path = dir.filePath(name);
+        QImage image(24, 24, QImage::Format_ARGB32);
+        image.fill(QColor::fromHsv((i * 36) % 360, 255, 210));
+        QVERIFY(image.save(path));
+        imagePaths.append(path);
+    }
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(700, 600);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dir.path()));
+
+    QList<ThumbnailWidget *> thumbnails;
+    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() == 10), 8000);
+
+    ThumbnailWidget *anchorThumb = nullptr;
+    for (auto *thumb : thumbnails) {
+        if (thumb->fileName() == "img_04.png") {
+            anchorThumb = thumb;
+            break;
+        }
+    }
+    QVERIFY(anchorThumb != nullptr);
+
+    QSignalSpy imageSpy(&loader, &ImageLoader::imageReady);
+    QTest::mouseClick(anchorThumb, Qt::LeftButton);
+
+    QTRY_VERIFY_WITH_TIMEOUT(imageSpy.count() >= 6, 5000);
+
+    QSet<QString> loadedPaths;
+    for (const auto &call : imageSpy) {
+        loadedPaths.insert(call.at(0).toString());
+    }
+
+    QVERIFY(loadedPaths.contains(imagePaths.at(1)));
+    QVERIFY(loadedPaths.contains(imagePaths.at(2)));
+    QVERIFY(loadedPaths.contains(imagePaths.at(3)));
+    QVERIFY(loadedPaths.contains(imagePaths.at(5)));
+    QVERIFY(loadedPaths.contains(imagePaths.at(6)));
+    QVERIFY(loadedPaths.contains(imagePaths.at(7)));
 }
 
 QTEST_MAIN(tst_BrowsePanel)

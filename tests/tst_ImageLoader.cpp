@@ -13,6 +13,7 @@ class tst_ImageLoader : public QObject
 private slots:
     void diskCacheHit_afterFirstDecode();
     void cancelThumbnailRequestsExcept_filtersQueue();
+    void requestImageBatch_usesMemoryCacheOnRepeatedLoad();
 };
 
 void tst_ImageLoader::diskCacheHit_afterFirstDecode()
@@ -84,6 +85,36 @@ void tst_ImageLoader::cancelThumbnailRequestsExcept_filtersQueue()
         }
     }
     QVERIFY(hasKeptPath);
+}
+
+void tst_ImageLoader::requestImageBatch_usesMemoryCacheOnRepeatedLoad()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("full_image_cache.png");
+    QImage img(96, 96, QImage::Format_ARGB32);
+    img.fill(Qt::cyan);
+    QVERIFY(img.save(imagePath));
+
+    ImageLoader loader;
+    QSignalSpy spy(&loader, &ImageLoader::imageReady);
+
+    loader.requestImageBatch({imagePath});
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 3000);
+
+    const QImage cached = loader.getCachedImage(imagePath);
+    QVERIFY(!cached.isNull());
+
+    spy.clear();
+    loader.requestImage(imagePath);
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 1000);
+
+    const QList<QVariant> args = spy.takeFirst();
+    QCOMPARE(args.at(0).toString(), imagePath);
+    const QImage secondLoad = args.at(1).value<QImage>();
+    QVERIFY(!secondLoad.isNull());
+    QCOMPARE(secondLoad.size(), QSize(96, 96));
 }
 
 QTEST_MAIN(tst_ImageLoader)
