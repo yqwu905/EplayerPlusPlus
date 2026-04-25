@@ -1,6 +1,7 @@
 #include "ComparePanel.h"
 #include "ZoomableImageWidget.h"
 #include "services/ImageComparer.h"
+#include "services/ImageLoader.h"
 #include "services/SettingsManager.h"
 #include "models/CompareSession.h"
 
@@ -19,12 +20,15 @@
 #include <QEvent>
 #include <QKeyEvent>
 #include <QApplication>
+#include <QSet>
 
 ComparePanel::ComparePanel(CompareSession *session,
                            SettingsManager *settingsManager,
+                           ImageLoader *imageLoader,
                            QWidget *parent)
     : QWidget(parent)
     , m_session(session)
+    , m_imageLoader(imageLoader)
     , m_settingsManager(settingsManager)
 {
     if (m_settingsManager) {
@@ -42,6 +46,11 @@ ComparePanel::ComparePanel(CompareSession *session,
             this, &ComparePanel::onFolderRemoved);
     connect(m_session, &CompareSession::cleared,
             this, &ComparePanel::onSessionCleared);
+
+    if (m_imageLoader) {
+        connect(m_imageLoader, &ImageLoader::imageReady,
+                this, &ComparePanel::onImageReady);
+    }
 }
 
 ComparePanel::~ComparePanel() = default;
@@ -203,6 +212,8 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
     for (const auto &pair : selectedImages) {
         selectionMap[pair.first].append(pair.second);
     }
+
+    preloadImagesForSelection(selectedImages);
 
     for (int i = 0; i < m_cells.size(); ++i) {
         auto it = selectionMap.find(m_cells[i].folderPath);
@@ -446,7 +457,18 @@ void ComparePanel::loadImage(int cellIndex)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
-    cell.originalImage = QImage(cell.imagePath);
+    if (m_imageLoader) {
+        cell.originalImage = m_imageLoader->getCachedImage(cell.imagePath);
+        if (cell.originalImage.isNull()) {
+            cell.imageWidget->setText(tr("Loading image..."));
+            m_imageLoader->requestImage(cell.imagePath);
+            cell.hasImage = false;
+            cell.cachedToleranceImage = QImage();
+            return;
+        }
+    } else {
+        cell.originalImage = QImage(cell.imagePath);
+    }
     cell.hasImage = !cell.originalImage.isNull();
     cell.cachedToleranceImage = QImage();     // Invalidate tolerance cache
 
@@ -455,6 +477,27 @@ void ComparePanel::loadImage(int cellIndex)
     cell.imageWidget->setGeometry(r);
 
     showOriginalImage(cellIndex, true);  // resetView on initial load
+}
+
+void ComparePanel::preloadImagesForSelection(const QList<QPair<QString, QString>> &selectedImages)
+{
+    if (!m_imageLoader) {
+        return;
+    }
+
+    QStringList uniquePaths;
+    QSet<QString> seen;
+    uniquePaths.reserve(selectedImages.size());
+    for (const auto &pair : selectedImages) {
+        if (!pair.second.isEmpty() && !seen.contains(pair.second)) {
+            seen.insert(pair.second);
+            uniquePaths.append(pair.second);
+        }
+    }
+
+    if (!uniquePaths.isEmpty()) {
+        m_imageLoader->requestImageBatch(uniquePaths);
+    }
 }
 
 void ComparePanel::clearImage(int cellIndex)
@@ -716,4 +759,22 @@ void ComparePanel::onCellViewReset()
     }
 
     m_syncingViews = false;
+}
+
+void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
+{
+    if (image.isNull()) {
+        return;
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        if (m_cells[i].imagePath != imagePath) {
+            continue;
+        }
+
+        m_cells[i].originalImage = image;
+        m_cells[i].hasImage = true;
+        m_cells[i].cachedToleranceImage = QImage();
+        showOriginalImage(i, true);
+    }
 }

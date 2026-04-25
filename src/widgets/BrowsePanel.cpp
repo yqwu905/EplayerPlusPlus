@@ -481,6 +481,47 @@ void BrowsePanel::emitSelectionChanged()
     }
 
     emit selectionChanged(selected);
+    preloadNeighborImagesForSelection();
+}
+
+void BrowsePanel::preloadNeighborImagesForSelection()
+{
+    if (!m_imageLoader) {
+        return;
+    }
+
+    QSet<QString> preloadSet;
+    for (const auto &col : m_columns) {
+        if (!col.model) {
+            continue;
+        }
+
+        const QList<int> selectedIndices = col.model->selectedIndices();
+        for (int currentIdx : selectedIndices) {
+            for (int offset = 1; offset <= 3; ++offset) {
+                const int prevIdx = currentIdx - offset;
+                const int nextIdx = currentIdx + offset;
+
+                if (prevIdx >= 0) {
+                    const QString prevPath = col.model->imagePathAt(prevIdx);
+                    if (!prevPath.isEmpty()) {
+                        preloadSet.insert(prevPath);
+                    }
+                }
+
+                if (nextIdx < col.model->imageCount()) {
+                    const QString nextPath = col.model->imagePathAt(nextIdx);
+                    if (!nextPath.isEmpty()) {
+                        preloadSet.insert(nextPath);
+                    }
+                }
+            }
+        }
+    }
+
+    if (!preloadSet.isEmpty()) {
+        m_imageLoader->requestImageBatch(preloadSet.values());
+    }
 }
 
 int BrowsePanel::findFileNameMatchIndex(int column, const QString &targetFileName) const

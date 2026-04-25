@@ -43,7 +43,7 @@ void MainWindow::setupUi()
     m_browsePanel = new BrowsePanel(m_compareSession, m_imageLoader, m_mainSplitter);
 
     // Right panel — Image comparison
-    m_comparePanel = new ComparePanel(m_compareSession, m_settingsManager, m_mainSplitter);
+    m_comparePanel = new ComparePanel(m_compareSession, m_settingsManager, m_imageLoader, m_mainSplitter);
     m_comparePanel->setMinimumWidth(300);
 
     // Add panels to splitter

@@ -97,6 +97,7 @@ private:
     QSet<QString> aggregateVisiblePaths() const;
     void updateColumnProgressLabel(int columnIndex);
     void updateGlobalScanStatus();
+    void preloadNeighborImagesForSelection();
 
     bool findThumbnailPosition(const ThumbnailWidget *thumbnail,
                                int &column,

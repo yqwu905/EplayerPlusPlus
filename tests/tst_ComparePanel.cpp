@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 
 #include "models/CompareSession.h"
+#include "services/ImageLoader.h"
 #include "widgets/ComparePanel.h"
 #include "widgets/ZoomableImageWidget.h"
 
@@ -49,7 +50,8 @@ void tst_ComparePanel::layout_oneToThreeImages_singleRow()
     QVERIFY(root.isValid());
 
     CompareSession session;
-    ComparePanel panel(&session, nullptr);
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
     panel.resize(1200, 800);
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
@@ -82,7 +84,8 @@ void tst_ComparePanel::layout_fourToSixImages_twoRows()
     QVERIFY(root.isValid());
 
     CompareSession session;
-    ComparePanel panel(&session, nullptr);
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
     panel.resize(1400, 900);
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
@@ -115,7 +118,8 @@ void tst_ComparePanel::compareButtons_nMinusOnePerImage()
     QVERIFY(root.isValid());
 
     CompareSession session;
-    ComparePanel panel(&session, nullptr);
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
     panel.resize(1400, 900);
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
@@ -153,7 +157,8 @@ void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
     QVERIFY(root.isValid());
 
     CompareSession session;
-    ComparePanel panel(&session, nullptr);
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
     panel.resize(1400, 900);
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
@@ -193,7 +198,8 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
     QVERIFY(root.isValid());
 
     CompareSession session;
-    ComparePanel panel(&session, nullptr);
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
     panel.resize(1200, 800);
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
@@ -218,8 +224,8 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
 
     const auto widgets = panel.findChildren<ZoomableImageWidget *>();
     QCOMPARE(widgets.size(), 2);
-    QCOMPARE(widgets[0]->image().size(), QSize(32, 32));
-    QCOMPARE(widgets[1]->image().size(), QSize(20, 10));
+    QTRY_COMPARE_WITH_TIMEOUT(widgets[0]->image().size(), QSize(32, 32), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(widgets[1]->image().size(), QSize(20, 10), 2000);
 
     auto *resizeCheckBox = panel.findChild<QCheckBox *>();
     QVERIFY(resizeCheckBox != nullptr);
@@ -228,8 +234,8 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
     resizeCheckBox->setChecked(true);
     QCoreApplication::processEvents();
 
-    QCOMPARE(widgets[0]->image().size(), QSize(32, 32));
-    QCOMPARE(widgets[1]->image().size(), QSize(32, 32));
+    QTRY_COMPARE_WITH_TIMEOUT(widgets[0]->image().size(), QSize(32, 32), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(widgets[1]->image().size(), QSize(32, 32), 2000);
 }
 
 QTEST_MAIN(tst_ComparePanel)

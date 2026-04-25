@@ -17,6 +17,7 @@ class QCheckBox;
 class SettingsManager;
 class CompareSession;
 class ZoomableImageWidget;
+class ImageLoader;
 
 /**
  * @brief Image comparison panel displaying selected images in a grid.
@@ -45,6 +46,7 @@ public:
 
     explicit ComparePanel(CompareSession *session,
                           SettingsManager *settingsManager,
+                          ImageLoader *imageLoader = nullptr,
                           QWidget *parent = nullptr);
     ~ComparePanel() override;
 
@@ -83,6 +85,7 @@ private slots:
     void onCellZoomChanged(double zoomLevel, QPointF focalPoint);
     void onCellPanChanged(QPointF offset);
     void onCellViewReset();
+    void onImageReady(const QString &imagePath, const QImage &image);
 
 private:
     struct ImageCell {
@@ -108,6 +111,7 @@ private:
     void rebuildGrid();
     void setupCompareButtonsForCell(int cellIndex);
     void loadImage(int cellIndex);
+    void preloadImagesForSelection(const QList<QPair<QString, QString>> &selectedImages);
     void clearImage(int cellIndex);
     void showOriginalImage(int cellIndex, bool resetView = false);
     void showToleranceMap(int sourceIndex, int targetIndex);
@@ -123,6 +127,7 @@ private:
     int findCellByWidget(QObject *widget) const;
 
     CompareSession *m_session = nullptr;
+    ImageLoader *m_imageLoader = nullptr;
     CompareMode m_compareMode = SwapMode;
     QToolBar *m_toolBar = nullptr;
     QAction *m_prevAction = nullptr;
