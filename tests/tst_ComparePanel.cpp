@@ -22,6 +22,8 @@ private slots:
     void compareButtons_nMinusOnePerImage();
     void layout_shrinksFromSixToTwo_cellsExpand();
     void resizeToFirstImage_toggleResizesOtherCells();
+    void categoryButtons_ctrlClickMarksAllCells();
+    void categoryShortcut_marksAllCells();
 
 private:
     static QString createImageInFolder(const QString &folderPath, const QString &name, const QColor &color);
@@ -236,6 +238,92 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
 
     QTRY_COMPARE_WITH_TIMEOUT(widgets[0]->image().size(), QSize(32, 32), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(widgets[1]->image().size(), QSize(32, 32), 2000);
+}
+
+void tst_ComparePanel::categoryButtons_ctrlClickMarksAllCells()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 2; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(folder, "img.png", i == 0 ? Qt::red : Qt::green);
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    const auto cells = findCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    auto category2Buttons = panel.findChildren<QPushButton *>();
+    QPushButton *ctrlTarget = nullptr;
+    for (auto *btn : category2Buttons) {
+        if (btn->property("category").toInt() == 2) {
+            ctrlTarget = btn;
+            break;
+        }
+    }
+    QVERIFY(ctrlTarget != nullptr);
+
+    QTest::mouseClick(ctrlTarget, Qt::LeftButton, Qt::ControlModifier);
+    QCoreApplication::processEvents();
+
+    int checkedCount = 0;
+    for (QPushButton *btn : panel.findChildren<QPushButton *>()) {
+        if (btn->property("category").toInt() == 2 && btn->isChecked()) {
+            ++checkedCount;
+        }
+    }
+    QCOMPARE(checkedCount, 2);
+}
+
+void tst_ComparePanel::categoryShortcut_marksAllCells()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 3; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(folder, "img.png", QColor::fromHsv(i * 80, 255, 255));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    panel.setFocus();
+    QCoreApplication::processEvents();
+
+    QTest::keyClick(&panel, Qt::Key_3);
+    QCoreApplication::processEvents();
+
+    int checkedCount = 0;
+    for (QPushButton *btn : panel.findChildren<QPushButton *>()) {
+        if (btn->property("category").toInt() == 3 && btn->isChecked()) {
+            ++checkedCount;
+        }
+    }
+    QCOMPARE(checkedCount, 3);
 }
 
 QTEST_MAIN(tst_ComparePanel)

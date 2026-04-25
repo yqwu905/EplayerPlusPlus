@@ -21,6 +21,7 @@
 #include <QKeyEvent>
 #include <QApplication>
 #include <QSet>
+#include <QSignalBlocker>
 
 ComparePanel::ComparePanel(CompareSession *session,
                            SettingsManager *settingsManager,
@@ -180,6 +181,9 @@ void ComparePanel::onFolderAdded(const QString &folderPath, int /*index*/)
 {
     ImageCell cell = createCell(folderPath);
     m_cells.append(cell);
+    if (m_settingsManager) {
+        m_folderCategoryMap.insert(folderPath, m_settingsManager->loadImageCategories(folderPath));
+    }
     rebuildGrid();
 }
 
@@ -196,6 +200,7 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int /*index*/)
             break;
         }
     }
+    m_folderCategoryMap.remove(folderPath);
     rebuildGrid();
 }
 
@@ -233,6 +238,7 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
             m_cells[i].headerLabel->setText(
                 QStringLiteral("<b>%1</b><br>%2").arg(folderName, fileName));
         }
+        updateCategoryButtonsForCell(i);
     }
 }
 
@@ -262,6 +268,11 @@ void ComparePanel::keyPressEvent(QKeyEvent *event)
         return;
     } else if (event->key() == Qt::Key_Down) {
         emit navigateNextRequested();
+        event->accept();
+        return;
+    } else if (event->key() >= Qt::Key_1 && event->key() <= Qt::Key_4) {
+        const int category = event->key() - Qt::Key_0;
+        markAllCurrentImages(category);
         event->accept();
         return;
     }
@@ -315,6 +326,47 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
+
+    cell.categoryButtonsContainer = new QWidget(cell.imageContainer);
+    cell.categoryButtonsLayout = new QHBoxLayout(cell.categoryButtonsContainer);
+    cell.categoryButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    cell.categoryButtonsLayout->setSpacing(4);
+    cell.categoryButtonsContainer->setStyleSheet(
+        "QWidget { background: rgba(255, 255, 255, 210); border-radius: 6px; }");
+
+    for (int category = 1; category <= 4; ++category) {
+        auto *button = new QPushButton(QString::number(category), cell.categoryButtonsContainer);
+        button->setProperty("category", category);
+        button->setCheckable(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setFixedSize(22, 22);
+        button->setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid #BDBDBD;"
+            "  border-radius: 4px;"
+            "  background-color: #FFFFFF;"
+            "  color: #424242;"
+            "  font-size: 11px;"
+            "  font-weight: 700;"
+            "  padding: 0px;"
+            "}"
+            "QPushButton:hover { background-color: #E3F2FD; border-color: #64B5F6; }"
+            "QPushButton:checked { background-color: #1976D2; color: #FFFFFF; border-color: #1976D2; }");
+        connect(button, &QPushButton::clicked, this, [this, category, button]() {
+            int cellIndex = -1;
+            for (int i = 0; i < m_cells.size(); ++i) {
+                if (m_cells[i].categoryButtons.contains(button)) {
+                    cellIndex = i;
+                    break;
+                }
+            }
+            if (cellIndex >= 0) {
+                onCategoryButtonClicked(cellIndex, category);
+            }
+        });
+        cell.categoryButtons.append(button);
+        cell.categoryButtonsLayout->addWidget(button);
+    }
 
     cellLayout->addWidget(cell.imageContainer, 1);
     cell.imageContainer->installEventFilter(this);
@@ -516,6 +568,7 @@ void ComparePanel::clearImage(int cellIndex)
     QString folderName = QDir(cell.folderPath).dirName();
     cell.headerLabel->setText(
         QStringLiteral("<b>%1</b><br><i>No image selected</i>").arg(folderName));
+    updateCategoryButtonsForCell(cellIndex);
 }
 
 void ComparePanel::resizeImageCell(int cellIndex)
@@ -527,6 +580,12 @@ void ComparePanel::resizeImageCell(int cellIndex)
 
     QRect r = cell.imageContainer->rect();
     cell.imageWidget->setGeometry(r);
+    if (cell.categoryButtonsContainer) {
+        const QSize size = cell.categoryButtonsContainer->sizeHint();
+        cell.categoryButtonsContainer->setGeometry(
+            r.right() - size.width() - 8, r.top() + 8, size.width(), size.height());
+        cell.categoryButtonsContainer->raise();
+    }
 
     // ZoomableImageWidget handles redraw internally on resize
 }
@@ -545,6 +604,7 @@ void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
     cell.imageWidget->setImage(displayImage, resetView);
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
+    updateCategoryButtonsForCell(cellIndex);
 }
 
 void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
@@ -776,5 +836,86 @@ void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
         m_cells[i].hasImage = true;
         m_cells[i].cachedToleranceImage = QImage();
         showOriginalImage(i, true);
+    }
+}
+
+void ComparePanel::onCategoryButtonClicked(int cellIndex, int category)
+{
+    if (QApplication::keyboardModifiers().testFlag(Qt::ControlModifier)) {
+        markAllCurrentImages(category);
+        return;
+    }
+    markImageCategory(cellIndex, category);
+}
+
+void ComparePanel::markImageCategory(int cellIndex, int category)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
+    if (category < 1 || category > 4) return;
+
+    const ImageCell &cell = m_cells[cellIndex];
+    if (cell.folderPath.isEmpty() || cell.imagePath.isEmpty()) {
+        return;
+    }
+
+    auto &folderCategories = m_folderCategoryMap[cell.folderPath];
+    folderCategories.insert(QDir::cleanPath(cell.imagePath), category);
+    if (m_settingsManager) {
+        m_settingsManager->saveImageCategories(cell.folderPath, folderCategories);
+    }
+    updateCategoryButtonsForCell(cellIndex);
+}
+
+void ComparePanel::markAllCurrentImages(int category)
+{
+    if (category < 1 || category > 4) return;
+
+    QSet<QString> touchedFolders;
+    for (int i = 0; i < m_cells.size(); ++i) {
+        const auto &cell = m_cells[i];
+        if (cell.folderPath.isEmpty() || cell.imagePath.isEmpty()) {
+            continue;
+        }
+        auto &folderCategories = m_folderCategoryMap[cell.folderPath];
+        folderCategories.insert(QDir::cleanPath(cell.imagePath), category);
+        touchedFolders.insert(cell.folderPath);
+        updateCategoryButtonsForCell(i);
+    }
+
+    if (m_settingsManager) {
+        for (const QString &folderPath : touchedFolders) {
+            m_settingsManager->saveImageCategories(folderPath, m_folderCategoryMap.value(folderPath));
+        }
+    }
+}
+
+int ComparePanel::currentCategoryForCell(int cellIndex) const
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) return 0;
+
+    const auto &cell = m_cells[cellIndex];
+    if (cell.folderPath.isEmpty() || cell.imagePath.isEmpty()) {
+        return 0;
+    }
+
+    const auto folderIt = m_folderCategoryMap.constFind(cell.folderPath);
+    if (folderIt == m_folderCategoryMap.constEnd()) {
+        return 0;
+    }
+    return folderIt->value(QDir::cleanPath(cell.imagePath), 0);
+}
+
+void ComparePanel::updateCategoryButtonsForCell(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
+    auto &cell = m_cells[cellIndex];
+    const int category = currentCategoryForCell(cellIndex);
+    for (int i = 0; i < cell.categoryButtons.size(); ++i) {
+        QPushButton *button = cell.categoryButtons[i];
+        if (!button) {
+            continue;
+        }
+        const QSignalBlocker blocker(button);
+        button->setChecked((i + 1) == category);
     }
 }

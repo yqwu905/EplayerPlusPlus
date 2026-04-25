@@ -5,6 +5,7 @@
 #include <QList>
 #include <QPair>
 #include <QImage>
+#include <QHash>
 
 class QGridLayout;
 class QSlider;
@@ -18,6 +19,7 @@ class SettingsManager;
 class CompareSession;
 class ZoomableImageWidget;
 class ImageLoader;
+class QMouseEvent;
 
 /**
  * @brief Image comparison panel displaying selected images in a grid.
@@ -86,6 +88,7 @@ private slots:
     void onCellPanChanged(QPointF offset);
     void onCellViewReset();
     void onImageReady(const QString &imagePath, const QImage &image);
+    void onCategoryButtonClicked(int cellIndex, int category);
 
 private:
     struct ImageCell {
@@ -95,6 +98,9 @@ private:
         QWidget *compareButtonsContainer = nullptr;
         QHBoxLayout *compareButtonsLayout = nullptr;
         QList<QPushButton *> compareButtons;
+        QWidget *categoryButtonsContainer = nullptr;
+        QHBoxLayout *categoryButtonsLayout = nullptr;
+        QList<QPushButton *> categoryButtons;
         ZoomableImageWidget *imageWidget = nullptr;
         QString folderPath;
         QString imagePath;
@@ -119,6 +125,10 @@ private:
     void resizeImageCell(int cellIndex);
     void rebuildCompareButtons();
     QImage imageForCompare(int cellIndex) const;
+    void markImageCategory(int cellIndex, int category);
+    void markAllCurrentImages(int category);
+    void updateCategoryButtonsForCell(int cellIndex);
+    int currentCategoryForCell(int cellIndex) const;
 
     /**
      * @brief Find the cell index by its ZoomableImageWidget pointer.
@@ -144,6 +154,7 @@ private:
     int m_threshold = 10;
     bool m_resizeToFirstImageEnabled = false;
     bool m_syncingViews = false; ///< Guard to prevent recursive sync loops
+    QHash<QString, QHash<QString, int>> m_folderCategoryMap;
 };
 
 #endif // COMPAREPANEL_H
