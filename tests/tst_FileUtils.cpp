@@ -25,6 +25,7 @@ private slots:
     void testScanForImages_nonExistentDir();
     void testScanForImages_sorted();
     void testScanForImagesBatched_batches();
+    void testScanForImagesBatched_initialBatchFlushesEarly();
     void testScanForImagesBatched_cancel();
 
     void testGetSubdirectories();
@@ -205,6 +206,47 @@ void tst_FileUtils::testScanForImagesBatched_batches()
 
     QVERIFY(all.size() >= 6);
     QVERIFY(progressUpdates > 0);
+}
+
+void tst_FileUtils::testScanForImagesBatched_initialBatchFlushesEarly()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    for (int i = 0; i < 20; ++i) {
+        QImage img(4, 4, QImage::Format_ARGB32);
+        img.fill(Qt::green);
+        QVERIFY(img.save(dir.filePath(QString("image_%1.png").arg(i, 2, 10, QLatin1Char('0')))));
+    }
+
+    FileUtils::ScanOptions options;
+    options.recursive = false;
+    options.batchSize = 1000;
+    options.initialBatchSize = 5;
+
+    int batchCount = 0;
+    bool sawInitialBatch = false;
+    bool sawNonFinishedProgress = false;
+
+    FileUtils::scanForImagesBatched(
+        dir.path(),
+        options,
+        [&batchCount, &sawInitialBatch](const QStringList &batch, bool initialBatch) {
+            ++batchCount;
+            if (initialBatch) {
+                sawInitialBatch = true;
+                QCOMPARE(batch.size(), 5);
+            }
+        },
+        [&sawNonFinishedProgress](const FileUtils::ScanProgress &progress) {
+            if (!progress.finished) {
+                sawNonFinishedProgress = true;
+            }
+        });
+
+    QVERIFY(sawInitialBatch);
+    QVERIFY(sawNonFinishedProgress);
+    QVERIFY(batchCount >= 2);
 }
 
 void tst_FileUtils::testScanForImagesBatched_cancel()

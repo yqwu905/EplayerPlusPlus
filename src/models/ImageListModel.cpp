@@ -283,8 +283,8 @@ void ImageListModel::startScan(const QString &path)
     [[maybe_unused]] const auto future = QtConcurrent::run([this, path, generation, cancelToken]() {
         FileUtils::ScanOptions options;
         options.recursive = false;
-        options.batchSize = 1000;
-        options.initialBatchSize = 300;
+        options.batchSize = 200;
+        options.initialBatchSize = 32;
 
         FileUtils::scanForImagesBatched(
             path,
