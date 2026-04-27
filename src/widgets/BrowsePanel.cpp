@@ -176,10 +176,16 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     m_columns.append(col);
     int colIdx = m_columns.size() - 1;
 
-    // Connect folderReady signal to build thumbnails when scan completes
+    // Connect folderReady signal for scan/progress state.
     connect(col.model, &ImageListModel::folderReady,
             this, [this, colIdx]() {
         onFolderReady(colIdx);
+    });
+    connect(col.model, &QAbstractItemModel::rowsInserted,
+            this, [this, colIdx](const QModelIndex &parent, int first, int last) {
+        if (!parent.isValid()) {
+            onModelRowsInserted(colIdx, first, last);
+        }
     });
     connect(col.model, &ImageListModel::scanProgressChanged,
             this, [this, colIdx](int discoveredCount, bool finished) {
@@ -226,7 +232,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         }
     });
 
-    // Start async folder scan
+    // Start async folder scan (one worker task per folder).
     col.model->setFolder(folderPath);
     updateGlobalScanStatus();
 }
@@ -249,30 +255,35 @@ void BrowsePanel::onFolderReady(int columnIndex)
     updateColumnProgressLabel(columnIndex);
     updateGlobalScanStatus();
 
-    col.builtCount = 0;
-
-    // Start building thumbnails in batches
-    buildThumbnailsBatch(columnIndex);
-
     // Load visible thumbnails first for instant feedback
     requestVisibleThumbnailsForAllColumns();
+    requestSelectedPriorityThumbnails();
 
     // Start or continue interleaved thumbnail loading across all columns
     startInterleavedLoading();
 }
 
-void BrowsePanel::buildThumbnailsBatch(int columnIndex)
+void BrowsePanel::onModelRowsInserted(int columnIndex, int first, int last)
+{
+    buildThumbnailPlaceholders(columnIndex, first, last);
+    requestVisibleThumbnailsForAllColumns();
+    requestSelectedPriorityThumbnails();
+    startInterleavedLoading();
+}
+
+void BrowsePanel::buildThumbnailPlaceholders(int columnIndex, int first, int last)
 {
     if (columnIndex < 0 || columnIndex >= m_columns.size()) return;
 
     auto &col = m_columns[columnIndex];
     if (!col.model) return;
 
-    int totalImages = col.model->imageCount();
-    int end = qMin(col.builtCount + kBatchSize, totalImages);
+    if (first < 0 || last < first) {
+        return;
+    }
 
     // Remove the trailing stretch before adding widgets
-    if (col.builtCount == 0 && col.containerLayout->count() > 0) {
+    if (col.thumbnailWidgets.isEmpty() && col.containerLayout->count() > 0) {
         QLayoutItem *lastItem = col.containerLayout->itemAt(col.containerLayout->count() - 1);
         if (lastItem && lastItem->spacerItem()) {
             col.containerLayout->removeItem(lastItem);
@@ -280,7 +291,8 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
         }
     }
 
-    for (int i = col.builtCount; i < end; ++i) {
+    int insertIndex = qBound(0, first, col.thumbnailWidgets.size());
+    for (int i = first; i <= last; ++i) {
         auto *thumb = new ThumbnailWidget(col.container);
         thumb->setFilePath(col.model->imagePathAt(i));
         thumb->setFileName(col.model->fileNameAt(i));
@@ -288,19 +300,14 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
         connect(thumb, &ThumbnailWidget::clicked,
                 this, &BrowsePanel::onThumbnailClicked);
 
-        col.containerLayout->addWidget(thumb);
-        col.thumbnailWidgets.append(thumb);
+        col.containerLayout->insertWidget(insertIndex, thumb);
+        col.thumbnailWidgets.insert(insertIndex, thumb);
+        ++insertIndex;
     }
 
-    col.builtCount = end;
-
-    if (col.builtCount < totalImages) {
-        // Schedule next batch
-        QTimer::singleShot(0, this, [this, columnIndex]() {
-            buildThumbnailsBatch(columnIndex);
-        });
-    } else {
-        // All widgets built — add trailing stretch
+    col.builtCount = col.thumbnailWidgets.size();
+    if (col.containerLayout->count() == 0 ||
+        !col.containerLayout->itemAt(col.containerLayout->count() - 1)->spacerItem()) {
         col.containerLayout->addStretch();
     }
 }
@@ -481,7 +488,9 @@ void BrowsePanel::emitSelectionChanged()
     }
 
     emit selectionChanged(selected);
+    requestSelectedPriorityThumbnails();
     preloadNeighborImagesForSelection();
+    startInterleavedLoading();
 }
 
 void BrowsePanel::preloadNeighborImagesForSelection()
@@ -670,6 +679,7 @@ void BrowsePanel::onInterleavedLoadTick()
 {
     bool anyMoreToLoad = false;
     requestVisibleThumbnailsForAllColumns();
+    requestSelectedPriorityThumbnails();
 
     for (int c = 0; c < m_columns.size(); ++c) {
         auto &col = m_columns[c];
@@ -712,6 +722,22 @@ void BrowsePanel::requestVisibleThumbnailsForAllColumns()
         auto [firstVisible, lastVisible] = visibleRangeForColumn(col);
         if (lastVisible >= firstVisible) {
             col.model->loadThumbnailsForRange(firstVisible, lastVisible);
+        }
+    }
+}
+
+void BrowsePanel::requestSelectedPriorityThumbnails()
+{
+    for (auto &col : m_columns) {
+        if (!col.model || col.model->imageCount() <= 0) {
+            continue;
+        }
+
+        const QList<int> selectedIndices = col.model->selectedIndices();
+        for (int selectedIndex : selectedIndices) {
+            const int first = qMax(0, selectedIndex - 3);
+            const int last = qMin(col.model->imageCount() - 1, selectedIndex + 3);
+            col.model->loadThumbnailsForRange(first, last);
         }
     }
 }
