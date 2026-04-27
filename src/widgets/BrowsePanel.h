@@ -60,6 +60,7 @@ private slots:
     void onSessionCleared();
     void onThumbnailClicked(const QString &filePath, Qt::KeyboardModifiers modifiers);
     void onFolderReady(int columnIndex);
+    void onModelRowsInserted(int columnIndex, int first, int last);
 
 private:
     struct ColumnInfo {
@@ -77,7 +78,7 @@ private:
 
     void setupUi();
     void rebuildColumn(int columnIndex);
-    void buildThumbnailsBatch(int columnIndex);
+    void buildThumbnailPlaceholders(int columnIndex, int first, int last);
     void clearAllColumns();
     void clearSelection();
     void navigateSelection(int delta);
@@ -94,6 +95,7 @@ private:
     void onInterleavedLoadTick();
     QPair<int, int> visibleRangeForColumn(const ColumnInfo &column) const;
     void requestVisibleThumbnailsForAllColumns();
+    void requestSelectedPriorityThumbnails();
     QSet<QString> aggregateVisiblePaths() const;
     void updateColumnProgressLabel(int columnIndex);
     void updateGlobalScanStatus();
@@ -112,7 +114,6 @@ private:
     QList<ColumnInfo> m_columns;
     QTimer *m_interleavedLoadTimer = nullptr;
 
-    static constexpr int kBatchSize = 50;
     static constexpr int kThumbnailBatchPerTick = 16;
 };
 

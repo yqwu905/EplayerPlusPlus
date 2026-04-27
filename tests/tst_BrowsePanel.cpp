@@ -7,6 +7,8 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QCheckBox>
+#include <QElapsedTimer>
+#include <QCoreApplication>
 #include <algorithm>
 
 #include "models/CompareSession.h"
@@ -26,6 +28,7 @@ private slots:
     void ctrlClick_alignsSameIndexRowsAcrossColumns();
     void altClick_exactVsFuzzyFileNameMatch();
     void selection_preloadsPreviousAndNextThreeImages();
+    void placeholdersAppearBeforeScanCompletes();
 };
 
 void tst_BrowsePanel::duplicateFolder_plainClickSelectionsAreIndependent()
@@ -299,6 +302,44 @@ void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()
     QVERIFY(loadedPaths.contains(imagePaths.at(5)));
     QVERIFY(loadedPaths.contains(imagePaths.at(6)));
     QVERIFY(loadedPaths.contains(imagePaths.at(7)));
+}
+
+void tst_BrowsePanel::placeholdersAppearBeforeScanCompletes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    for (int i = 0; i < 300; ++i) {
+        const QString name = QString("big_%1.png").arg(i, 3, 10, QChar('0'));
+        const QString path = dir.filePath(name);
+        QImage image(1024, 1024, QImage::Format_ARGB32);
+        image.fill(QColor::fromHsv((i * 7) % 360, 180, 220));
+        QVERIFY(image.save(path));
+    }
+
+    CompareSession session;
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    BrowsePanel panel(&session, &loader);
+    panel.resize(700, 600);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QSignalSpy thumbSpy(&loader, &ImageLoader::thumbnailReady);
+    QVERIFY(session.addFolder(dir.path()));
+
+    bool sawPlaceholdersBeforeAllThumbnailsReady = false;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 8000 && !sawPlaceholdersBeforeAllThumbnailsReady) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        const int placeholderCount = panel.findChildren<ThumbnailWidget *>().size();
+        if (placeholderCount > 0 && thumbSpy.count() < placeholderCount) {
+            sawPlaceholdersBeforeAllThumbnailsReady = true;
+        }
+    }
+    QVERIFY2(sawPlaceholdersBeforeAllThumbnailsReady,
+             "Expected placeholder widgets to appear before all thumbnail decodes complete.");
 }
 
 QTEST_MAIN(tst_BrowsePanel)
