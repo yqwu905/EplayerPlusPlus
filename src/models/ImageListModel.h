@@ -159,6 +159,8 @@ private:
     QString m_folderPath;
     QStringList m_imagePaths;
     QHash<QString, int> m_pathToIndex;   // path -> index for O(1) lookup
+    QStringList m_fileNames;
+    QHash<QString, int> m_fileNameToIndex;
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
     ImageLoader *m_imageLoader = nullptr;

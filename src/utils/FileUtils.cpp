@@ -69,7 +69,10 @@ void scanForImagesBatched(
     }
 
     const int batchSize = qBound(1, options.batchSize, 5000);
-    int initialRemaining = qMax(0, options.initialBatchSize);
+    const int initialBatchSize = options.initialBatchSize > 0
+        ? qMin(options.initialBatchSize, batchSize)
+        : 0;
+    bool initialBatchSent = (initialBatchSize == 0);
     int discoveredCount = 0;
 
     auto cancelled = [&cancelToken]() {
@@ -84,15 +87,11 @@ void scanForImagesBatched(
 
     QStringList buffer;
     buffer.reserve(batchSize);
-    auto flush = [&](bool forceInitial = false) {
+    auto flush = [&](bool initialBatch) {
         if (buffer.isEmpty()) {
             return;
         }
 
-        bool initialBatch = forceInitial;
-        if (!initialBatch && initialRemaining > 0) {
-            initialBatch = true;
-        }
         onBatch(buffer, initialBatch);
         buffer.clear();
         emitProgress(false);
@@ -112,11 +111,11 @@ void scanForImagesBatched(
 
             buffer.push_back(fi.absoluteFilePath());
             ++discoveredCount;
-            if (initialRemaining > 0) {
-                --initialRemaining;
-            }
-            if (buffer.size() >= batchSize) {
-                flush();
+            if (!initialBatchSent && buffer.size() >= initialBatchSize) {
+                flush(true);
+                initialBatchSent = true;
+            } else if (buffer.size() >= batchSize) {
+                flush(false);
             }
         }
         return true;
@@ -154,7 +153,10 @@ void scanForImagesBatched(
         }
     }
 
-    flush();
+    if (!buffer.isEmpty()) {
+        flush(!initialBatchSent);
+        initialBatchSent = true;
+    }
     emitProgress(true);
 }
 

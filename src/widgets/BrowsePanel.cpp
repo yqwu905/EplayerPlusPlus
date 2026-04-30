@@ -14,6 +14,7 @@
 #include <QDir>
 #include <QFontMetrics>
 #include <QTimer>
+#include <QPointer>
 #include <limits>
 #include <vector>
 
@@ -174,29 +175,60 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     m_columnsLayout->insertWidget(insertPos, col.scrollArea, 1);
 
     m_columns.append(col);
-    int colIdx = m_columns.size() - 1;
+    ImageListModel *modelPtr = col.model;
 
-    // Connect folderReady signal to build thumbnails when scan completes
-    connect(col.model, &ImageListModel::folderReady,
-            this, [this, colIdx]() {
-        onFolderReady(colIdx);
-    });
-    connect(col.model, &ImageListModel::scanProgressChanged,
-            this, [this, colIdx](int discoveredCount, bool finished) {
-        if (colIdx < 0 || colIdx >= m_columns.size()) {
+    // Build thumbnails as soon as scan batches arrive instead of waiting for
+    // the complete folder scan on large directories.
+    connect(col.model, &QAbstractItemModel::rowsInserted,
+            this, [this, modelPtr](const QModelIndex &parent, int /*first*/, int last) {
+        if (parent.isValid()) {
             return;
         }
-        auto &column = m_columns[colIdx];
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex < 0) {
+            return;
+        }
+
+        auto &column = m_columns[currentIndex];
+        column.discoveredCount = qMax(column.discoveredCount,
+                                      column.model ? column.model->imageCount() : last + 1);
+        column.buildTargetCount = qMax(column.buildTargetCount, last + 1);
+        updateColumnProgressLabel(currentIndex);
+        updateGlobalScanStatus();
+        scheduleBuildThumbnailsBatch(currentIndex);
+        requestVisibleThumbnailsForAllColumns();
+    });
+
+    // Connect folderReady signal to finalize the column when scan completes
+    connect(col.model, &ImageListModel::folderReady,
+            this, [this, modelPtr]() {
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex >= 0) {
+            onFolderReady(currentIndex);
+        }
+    });
+    connect(col.model, &ImageListModel::scanProgressChanged,
+            this, [this, modelPtr](int discoveredCount, bool finished) {
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex < 0) {
+            return;
+        }
+        auto &column = m_columns[currentIndex];
         column.discoveredCount = discoveredCount;
         column.scanFinished = finished;
-        updateColumnProgressLabel(colIdx);
+        if (column.model) {
+            column.buildTargetCount = qMax(column.buildTargetCount,
+                                           column.model->imageCount());
+        }
+        updateColumnProgressLabel(currentIndex);
         updateGlobalScanStatus();
     });
 
     // Connect scroll to lazy-load more thumbnails
     connect(col.scrollArea->verticalScrollBar(), &QScrollBar::valueChanged,
-            this, [this, colIdx](int /*value*/) {
-        if (colIdx < 0 || colIdx >= m_columns.size()) return;
+            this, [this, modelPtr](int /*value*/) {
+        const int colIdx = columnIndexForModel(modelPtr);
+        if (colIdx < 0) return;
         const auto &c = m_columns[colIdx];
         if (!c.scrollArea || !c.model) return;
 
@@ -206,10 +238,11 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     // Connect model thumbnail updates to widget updates
     connect(col.model, &QAbstractItemModel::dataChanged,
-            this, [this, colIdx](
+            this, [this, modelPtr](
                 const QModelIndex &topLeft, const QModelIndex &bottomRight,
                 const QList<int> &roles) {
-        if (colIdx < 0 || colIdx >= m_columns.size()) return;
+        const int colIdx = columnIndexForModel(modelPtr);
+        if (colIdx < 0) return;
         if (!roles.contains(Qt::DecorationRole) &&
             !roles.contains(ImageListModel::ThumbnailRole)) {
             return;
@@ -239,6 +272,7 @@ void BrowsePanel::onFolderReady(int columnIndex)
 
     col.scanFinished = true;
     col.discoveredCount = col.model ? col.model->imageCount() : col.discoveredCount;
+    col.buildTargetCount = col.discoveredCount;
 
     // Remove loading label
     if (col.loadingLabel) {
@@ -249,16 +283,35 @@ void BrowsePanel::onFolderReady(int columnIndex)
     updateColumnProgressLabel(columnIndex);
     updateGlobalScanStatus();
 
-    col.builtCount = 0;
-
-    // Start building thumbnails in batches
-    buildThumbnailsBatch(columnIndex);
+    // Keep building any rows that arrived after the last incremental batch.
+    scheduleBuildThumbnailsBatch(columnIndex);
 
     // Load visible thumbnails first for instant feedback
     requestVisibleThumbnailsForAllColumns();
 
     // Start or continue interleaved thumbnail loading across all columns
     startInterleavedLoading();
+}
+
+void BrowsePanel::scheduleBuildThumbnailsBatch(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= m_columns.size()) return;
+
+    auto &col = m_columns[columnIndex];
+    if (!col.model || col.buildScheduled) return;
+    if (col.builtCount >= qMin(col.buildTargetCount, col.model->imageCount())) return;
+
+    col.buildScheduled = true;
+    QPointer<ImageListModel> modelPtr(col.model);
+    QTimer::singleShot(kWidgetBuildIntervalMs, this, [this, modelPtr]() {
+        if (!modelPtr) {
+            return;
+        }
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex >= 0) {
+            buildThumbnailsBatch(currentIndex);
+        }
+    });
 }
 
 void BrowsePanel::buildThumbnailsBatch(int columnIndex)
@@ -268,11 +321,20 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
     auto &col = m_columns[columnIndex];
     if (!col.model) return;
 
-    int totalImages = col.model->imageCount();
-    int end = qMin(col.builtCount + kBatchSize, totalImages);
+    col.buildScheduled = false;
+
+    const int totalImages = col.model->imageCount();
+    const int targetImages = qMin(qMax(col.buildTargetCount, col.builtCount), totalImages);
+    const int end = qMin(col.builtCount + kBatchSize, targetImages);
+
+    if (col.loadingLabel && targetImages > 0) {
+        col.containerLayout->removeWidget(col.loadingLabel);
+        delete col.loadingLabel;
+        col.loadingLabel = nullptr;
+    }
 
     // Remove the trailing stretch before adding widgets
-    if (col.builtCount == 0 && col.containerLayout->count() > 0) {
+    if (col.containerLayout->count() > 0) {
         QLayoutItem *lastItem = col.containerLayout->itemAt(col.containerLayout->count() - 1);
         if (lastItem && lastItem->spacerItem()) {
             col.containerLayout->removeItem(lastItem);
@@ -284,6 +346,13 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
         auto *thumb = new ThumbnailWidget(col.container);
         thumb->setFilePath(col.model->imagePathAt(i));
         thumb->setFileName(col.model->fileNameAt(i));
+        thumb->setSelected(col.model->isSelected(i));
+
+        QVariant thumbVar = col.model->data(col.model->index(i),
+                                             ImageListModel::ThumbnailRole);
+        if (thumbVar.canConvert<QImage>()) {
+            thumb->setThumbnail(thumbVar.value<QImage>());
+        }
 
         connect(thumb, &ThumbnailWidget::clicked,
                 this, &BrowsePanel::onThumbnailClicked);
@@ -294,12 +363,9 @@ void BrowsePanel::buildThumbnailsBatch(int columnIndex)
 
     col.builtCount = end;
 
-    if (col.builtCount < totalImages) {
-        // Schedule next batch
-        QTimer::singleShot(0, this, [this, columnIndex]() {
-            buildThumbnailsBatch(columnIndex);
-        });
-    } else {
+    if (col.builtCount < targetImages) {
+        scheduleBuildThumbnailsBatch(columnIndex);
+    } else if (col.scanFinished && col.builtCount >= totalImages) {
         // All widgets built — add trailing stretch
         col.containerLayout->addStretch();
     }
@@ -591,6 +657,21 @@ bool BrowsePanel::findThumbnailPosition(const ThumbnailWidget *thumbnail,
     }
 
     return false;
+}
+
+int BrowsePanel::columnIndexForModel(const ImageListModel *model) const
+{
+    if (!model) {
+        return -1;
+    }
+
+    for (int i = 0; i < m_columns.size(); ++i) {
+        if (m_columns[i].model == model) {
+            return i;
+        }
+    }
+
+    return -1;
 }
 
 void BrowsePanel::navigateNext()

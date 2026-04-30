@@ -71,12 +71,14 @@ private:
         ImageListModel *model = nullptr;
         QList<ThumbnailWidget *> thumbnailWidgets;
         int builtCount = 0;
+        int buildTargetCount = 0;
         int discoveredCount = 0;
         bool scanFinished = false;
+        bool buildScheduled = false;
     };
 
     void setupUi();
-    void rebuildColumn(int columnIndex);
+    void scheduleBuildThumbnailsBatch(int columnIndex);
     void buildThumbnailsBatch(int columnIndex);
     void clearAllColumns();
     void clearSelection();
@@ -102,6 +104,7 @@ private:
     bool findThumbnailPosition(const ThumbnailWidget *thumbnail,
                                int &column,
                                int &indexInColumn) const;
+    int columnIndexForModel(const ImageListModel *model) const;
 
     CompareSession *m_session = nullptr;
     ImageLoader *m_imageLoader = nullptr;
@@ -113,6 +116,7 @@ private:
     QTimer *m_interleavedLoadTimer = nullptr;
 
     static constexpr int kBatchSize = 50;
+    static constexpr int kWidgetBuildIntervalMs = 1;
     static constexpr int kThumbnailBatchPerTick = 16;
 };
 

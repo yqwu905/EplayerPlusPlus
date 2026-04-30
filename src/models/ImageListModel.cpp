@@ -36,7 +36,7 @@ QVariant ImageListModel::data(const QModelIndex &index, int role) const
     switch (role) {
     case Qt::DisplayRole:
     case FileNameRole:
-        return QFileInfo(path).fileName();
+        return m_fileNames.at(index.row());
     case FilePathRole:
         return path;
     case Qt::DecorationRole:
@@ -66,6 +66,8 @@ void ImageListModel::setFolder(const QString &folderPath)
     m_folderPath = folderPath;
     m_imagePaths.clear();
     m_pathToIndex.clear();
+    m_fileNames.clear();
+    m_fileNameToIndex.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
     m_nextLoadIndex = 0;
@@ -91,6 +93,8 @@ void ImageListModel::refresh()
     beginResetModel();
     m_imagePaths.clear();
     m_pathToIndex.clear();
+    m_fileNames.clear();
+    m_fileNameToIndex.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
     m_nextLoadIndex = 0;
@@ -121,7 +125,7 @@ QString ImageListModel::fileNameAt(int index) const
     if (index < 0 || index >= m_imagePaths.size()) {
         return QString();
     }
-    return QFileInfo(m_imagePaths.at(index)).fileName();
+    return m_fileNames.at(index);
 }
 
 int ImageListModel::imageCount() const
@@ -131,12 +135,7 @@ int ImageListModel::imageCount() const
 
 int ImageListModel::indexOfFileName(const QString &fileName) const
 {
-    for (int i = 0; i < m_imagePaths.size(); ++i) {
-        if (QFileInfo(m_imagePaths.at(i)).fileName() == fileName) {
-            return i;
-        }
-    }
-    return -1;
+    return m_fileNameToIndex.value(fileName, -1);
 }
 
 void ImageListModel::setSelected(int index, bool selected)
@@ -320,10 +319,20 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
 
     const int beginRow = m_imagePaths.size();
     const int endRow = beginRow + batch.size() - 1;
+    m_imagePaths.reserve(m_imagePaths.size() + batch.size());
+    m_fileNames.reserve(m_fileNames.size() + batch.size());
+    m_pathToIndex.reserve(m_pathToIndex.size() + batch.size());
+    m_fileNameToIndex.reserve(m_fileNameToIndex.size() + batch.size());
     beginInsertRows(QModelIndex(), beginRow, endRow);
     for (const QString &path : batch) {
-        m_pathToIndex.insert(path, m_imagePaths.size());
+        const int index = m_imagePaths.size();
+        const QString fileName = QFileInfo(path).fileName();
+        m_pathToIndex.insert(path, index);
+        if (!m_fileNameToIndex.contains(fileName)) {
+            m_fileNameToIndex.insert(fileName, index);
+        }
         m_imagePaths.append(path);
+        m_fileNames.append(fileName);
     }
     endInsertRows();
 

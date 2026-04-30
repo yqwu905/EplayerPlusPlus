@@ -413,14 +413,27 @@ QString ImageLoader::makeCacheKey(const QString &imagePath,
 
 QString ImageLoader::cacheRootDir()
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (base.isEmpty()) {
-        base = QDir::tempPath() + QStringLiteral("/ImageCompareCache");
+    QStringList candidates;
+    const QString standardCache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!standardCache.isEmpty()) {
+        candidates.append(standardCache);
+    }
+    candidates.append(QDir::tempPath() + QStringLiteral("/ImageCompareCache"));
+
+    for (const QString &base : candidates) {
+        QDir dir(base);
+        if (!dir.mkpath(QStringLiteral("thumbnails"))) {
+            continue;
+        }
+
+        const QString thumbnailDir = dir.filePath(QStringLiteral("thumbnails"));
+        const QFileInfo info(thumbnailDir);
+        if (info.isDir() && info.isWritable()) {
+            return thumbnailDir;
+        }
     }
 
-    QDir dir(base);
-    dir.mkpath(QStringLiteral("thumbnails"));
-    return dir.filePath(QStringLiteral("thumbnails"));
+    return QDir::tempPath();
 }
 
 QString ImageLoader::cachePathForKey(const QString &cacheKey)
