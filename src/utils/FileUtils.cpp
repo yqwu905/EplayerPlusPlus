@@ -2,7 +2,6 @@
 
 #include <QFileInfo>
 #include <QDirIterator>
-#include <QQueue>
 #include <algorithm>
 
 namespace FileUtils
@@ -92,64 +91,37 @@ void scanForImagesBatched(
             return;
         }
 
+        std::sort(buffer.begin(), buffer.end());
         onBatch(buffer, initialBatch);
         buffer.clear();
         emitProgress(false);
     };
 
-    auto processDir = [&](const QString &folderPath) {
-        QDir folder(folderPath);
-        QFileInfoList files = folder.entryInfoList(
-            QDir::Files | QDir::NoSymLinks, QDir::Name | QDir::IgnoreCase);
-        for (const QFileInfo &fi : files) {
-            if (cancelled()) {
-                return false;
-            }
-            if (!options.extensions.contains(fi.suffix().toLower())) {
-                continue;
-            }
-
-            buffer.push_back(fi.absoluteFilePath());
-            ++discoveredCount;
-            if (!initialBatchSent && buffer.size() >= initialBatchSize) {
-                flush(true);
-                initialBatchSent = true;
-            } else if (buffer.size() >= batchSize) {
-                flush(false);
-            }
-        }
-        return true;
-    };
-
-    if (!processDir(dirPath) || cancelled()) {
-        return;
+    QStringList nameFilters;
+    nameFilters.reserve(options.extensions.size());
+    for (const QString &ext : options.extensions) {
+        nameFilters << QStringLiteral("*.%1").arg(ext);
     }
 
+    QDirIterator::IteratorFlags flags = QDirIterator::NoIteratorFlags;
     if (options.recursive) {
-        QQueue<QString> pendingDirs;
-        pendingDirs.enqueue(dirPath);
+        flags = QDirIterator::Subdirectories;
+    }
 
-        while (!pendingDirs.isEmpty()) {
-            if (cancelled()) {
-                return;
-            }
+    QDirIterator it(dirPath, nameFilters, QDir::Files | QDir::NoSymLinks, flags);
+    while (it.hasNext()) {
+        if (cancelled()) {
+            return;
+        }
 
-            const QString current = pendingDirs.dequeue();
-            QDir dir(current);
-            const QFileInfoList subDirs = dir.entryInfoList(
-                QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
-                QDir::Name | QDir::IgnoreCase);
-
-            for (const QFileInfo &subDir : subDirs) {
-                if (cancelled()) {
-                    return;
-                }
-                const QString absoluteSubDir = subDir.absoluteFilePath();
-                pendingDirs.enqueue(absoluteSubDir);
-                if (!processDir(absoluteSubDir)) {
-                    return;
-                }
-            }
+        it.next();
+        buffer.push_back(it.filePath());
+        ++discoveredCount;
+        if (!initialBatchSent && buffer.size() >= initialBatchSize) {
+            flush(true);
+            initialBatchSent = true;
+        } else if (buffer.size() >= batchSize) {
+            flush(false);
         }
     }
 

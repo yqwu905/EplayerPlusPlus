@@ -423,7 +423,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
                                       column.model ? column.model->imageCount() : last + 1);
         updateColumnProgressLabel(currentIndex);
         updateGlobalScanStatus();
-        requestVisibleThumbnailsForAllColumns();
+        scheduleThumbnailRequest(currentIndex, 0);
     });
 
     connect(col.model, &ImageListModel::folderReady,
@@ -458,8 +458,8 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
             return;
         }
 
-        auto [firstVisible, lastVisible] = visibleRangeForColumn(c);
-        c.model->loadThumbnailsForRange(firstVisible, lastVisible);
+        const int delayMs = c.view->verticalScrollBar()->isSliderDown() ? 80 : 20;
+        scheduleThumbnailRequest(colIdx, delayMs);
     });
 
     connect(col.view, &QListView::clicked,
@@ -488,8 +488,7 @@ void BrowsePanel::onFolderReady(int columnIndex)
 
     updateColumnProgressLabel(columnIndex);
     updateGlobalScanStatus();
-    requestVisibleThumbnailsForAllColumns();
-    startInterleavedLoading();
+    scheduleThumbnailRequest(columnIndex, 0);
 }
 
 void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
@@ -885,24 +884,8 @@ void BrowsePanel::stopInterleavedLoading()
 
 void BrowsePanel::onInterleavedLoadTick()
 {
-    bool anyMoreToLoad = false;
     requestVisibleThumbnailsForAllColumns();
-
-    for (int c = 0; c < m_columns.size(); ++c) {
-        auto &col = m_columns[c];
-        if (col.model && col.model->hasMoreToLoad()) {
-            col.model->loadNextThumbnailBatch(kThumbnailBatchPerTick);
-            anyMoreToLoad = true;
-        }
-    }
-
-    if (m_imageLoader) {
-        m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
-    }
-
-    if (!anyMoreToLoad) {
-        stopInterleavedLoading();
-    }
+    stopInterleavedLoading();
 }
 
 QPair<int, int> BrowsePanel::visibleRangeForColumn(const ColumnInfo &column) const
@@ -937,14 +920,55 @@ QPair<int, int> BrowsePanel::prefetchRangeForColumn(const ColumnInfo &column) co
 
 void BrowsePanel::requestVisibleThumbnailsForAllColumns()
 {
-    for (auto &col : m_columns) {
-        if (!col.model || !col.view || col.model->imageCount() <= 0) {
-            continue;
+    for (int i = 0; i < m_columns.size(); ++i) {
+        requestThumbnailsForColumn(i);
+    }
+
+    if (m_imageLoader) {
+        m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
+    }
+}
+
+void BrowsePanel::scheduleThumbnailRequest(int columnIndex, int delayMs)
+{
+    if (columnIndex < 0 || columnIndex >= m_columns.size()) {
+        return;
+    }
+
+    auto &col = m_columns[columnIndex];
+    if (!col.model || !col.view || col.thumbnailRequestScheduled) {
+        return;
+    }
+
+    col.thumbnailRequestScheduled = true;
+    ImageListModel *modelPtr = col.model;
+    QTimer::singleShot(qMax(0, delayMs), this, [this, modelPtr]() {
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex < 0) {
+            return;
         }
-        auto [firstVisible, lastVisible] = visibleRangeForColumn(col);
-        if (lastVisible >= firstVisible) {
-            col.model->loadThumbnailsForRange(firstVisible, lastVisible);
+        m_columns[currentIndex].thumbnailRequestScheduled = false;
+        requestThumbnailsForColumn(currentIndex);
+        if (m_imageLoader) {
+            m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
         }
+    });
+}
+
+void BrowsePanel::requestThumbnailsForColumn(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= m_columns.size()) {
+        return;
+    }
+
+    auto &col = m_columns[columnIndex];
+    if (!col.model || !col.view || col.model->imageCount() <= 0) {
+        return;
+    }
+
+    auto [firstVisible, lastVisible] = prefetchRangeForColumn(col);
+    if (lastVisible >= firstVisible) {
+        col.model->loadThumbnailsForRange(firstVisible, lastVisible);
     }
 }
 

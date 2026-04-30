@@ -71,6 +71,7 @@ private:
         ImageListModel *model = nullptr;
         int discoveredCount = 0;
         bool scanFinished = false;
+        bool thumbnailRequestScheduled = false;
     };
 
     void setupUi();
@@ -95,6 +96,8 @@ private:
     void onInterleavedLoadTick();
     QPair<int, int> visibleRangeForColumn(const ColumnInfo &column) const;
     QPair<int, int> prefetchRangeForColumn(const ColumnInfo &column) const;
+    void scheduleThumbnailRequest(int columnIndex, int delayMs);
+    void requestThumbnailsForColumn(int columnIndex);
     void requestVisibleThumbnailsForAllColumns();
     QSet<QString> aggregateVisiblePaths() const;
     void updateColumnProgressLabel(int columnIndex);

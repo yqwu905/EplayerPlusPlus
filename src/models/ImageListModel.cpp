@@ -343,7 +343,7 @@ void ImageListModel::startScan(const QString &path)
 
     m_loading = true;
     m_nextLoadIndex = 0;
-    m_initialPrefetchRemaining = 300;
+    m_initialPrefetchRemaining = 0;
     ++m_scanGeneration;
     const int generation = m_scanGeneration;
     m_scanCancelToken = std::make_shared<FileUtils::ScanCancelToken>();
@@ -353,8 +353,8 @@ void ImageListModel::startScan(const QString &path)
     [[maybe_unused]] const auto future = QtConcurrent::run([this, path, generation, cancelToken]() {
         FileUtils::ScanOptions options;
         options.recursive = false;
-        options.batchSize = 1000;
-        options.initialBatchSize = 300;
+        options.batchSize = 64;
+        options.initialBatchSize = 24;
 
         FileUtils::scanForImagesBatched(
             path,

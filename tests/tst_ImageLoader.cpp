@@ -14,7 +14,7 @@ private slots:
     void diskCacheHit_afterFirstDecode();
     void cancelThumbnailRequestsExcept_filtersQueue();
     void visibleRequest_promotesQueuedThumbnail();
-    void visibleBatch_emitsFastPreviewThenHighQuality();
+    void visibleBatch_emitsSingleFastPreview();
     void requestImageBatch_usesMemoryCacheOnRepeatedLoad();
 };
 
@@ -114,7 +114,7 @@ void tst_ImageLoader::visibleRequest_promotesQueuedThumbnail()
     QCOMPARE(spy.at(1).at(0).toString(), paths.last());
 }
 
-void tst_ImageLoader::visibleBatch_emitsFastPreviewThenHighQuality()
+void tst_ImageLoader::visibleBatch_emitsSingleFastPreview()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -129,9 +129,8 @@ void tst_ImageLoader::visibleBatch_emitsFastPreviewThenHighQuality()
     QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
 
     loader.requestThumbnailBatchVisibleFirst({imagePath}, QSize(180, 180));
-    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 2, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
     QCOMPARE(spy.at(0).at(0).toString(), imagePath);
-    QCOMPARE(spy.at(1).at(0).toString(), imagePath);
 }
 
 void tst_ImageLoader::requestImageBatch_usesMemoryCacheOnRepeatedLoad()

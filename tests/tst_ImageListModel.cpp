@@ -448,7 +448,7 @@ void tst_ImageListModel::testScanProgressAndIncrementalInsert()
     QCOMPARE(model.imageCount(), 1200);
     QVERIFY(insertSpy.count() >= 2);
     QCOMPARE(insertSpy.first().at(1).toInt(), 0);
-    QCOMPARE(insertSpy.first().at(2).toInt(), 299);
+    QCOMPARE(insertSpy.first().at(2).toInt(), 23);
     QVERIFY(progressSpy.count() >= 2);
 }
 
