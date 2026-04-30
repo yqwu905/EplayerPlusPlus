@@ -1,5 +1,10 @@
 #include <QtTest>
 #include <QCoreApplication>
+#include <QTemporaryDir>
+#include <QFile>
+#include <QDir>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "services/SettingsManager.h"
 
@@ -23,6 +28,8 @@ private slots:
     void testSetComparisonThreshold_clamped();
     void testResizeToFirstImage_defaultOff();
     void testResizeToFirstImage_setAndRead();
+    void testSaveAndLoadImageCategories_jsonFile();
+    void testLoadImageCategories_ignoresInvalidEntries();
 
 private:
     SettingsManager *m_manager = nullptr;
@@ -138,6 +145,59 @@ void tst_SettingsManager::testResizeToFirstImage_setAndRead()
 
     m_manager->setResizeToFirstImageEnabled(false);
     QCOMPARE(m_manager->resizeToFirstImageEnabled(), false);
+}
+
+void tst_SettingsManager::testSaveAndLoadImageCategories_jsonFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString folderPath = dir.path();
+    const QString imageA = folderPath + "/a.png";
+    const QString imageB = folderPath + "/sub/b.png";
+    QVERIFY(QDir().mkpath(folderPath + "/sub"));
+    QFile(imageA).open(QIODevice::WriteOnly);
+    QFile(imageB).open(QIODevice::WriteOnly);
+
+    QHash<QString, int> categories;
+    categories.insert(imageA, 1);
+    categories.insert(imageB, 4);
+    categories.insert(QStringLiteral("/outside/path.png"), 2);
+    categories.insert(folderPath + "/ignored.png", 8);
+
+    m_manager->saveImageCategories(folderPath, categories);
+
+    const auto loaded = m_manager->loadImageCategories(folderPath);
+    QCOMPARE(loaded.value(imageA), 1);
+    QCOMPARE(loaded.value(imageB), 4);
+    QVERIFY(!loaded.contains(QStringLiteral("/outside/path.png")));
+}
+
+void tst_SettingsManager::testLoadImageCategories_ignoresInvalidEntries()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString folderPath = dir.path();
+    const QString jsonPath = folderPath + "/.image_categories.json";
+
+    QJsonObject items;
+    items.insert(QStringLiteral("a.png"), 2);
+    items.insert(QStringLiteral("bad_low.png"), 0);
+    items.insert(QStringLiteral("bad_high.png"), 9);
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("items"), items);
+
+    QFile file(jsonPath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(QJsonDocument(root).toJson());
+    file.close();
+
+    const auto loaded = m_manager->loadImageCategories(folderPath);
+    QCOMPARE(loaded.size(), 1);
+    QVERIFY(loaded.contains(folderPath + "/a.png"));
+    QCOMPARE(loaded.value(folderPath + "/a.png"), 2);
 }
 
 QTEST_MAIN(tst_SettingsManager)

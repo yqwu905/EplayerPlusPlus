@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QStringList>
+#include <QHash>
 
 /**
  * @brief Manages persistent application settings using QSettings.
@@ -71,10 +72,26 @@ public:
      */
     void setResizeToFirstImageEnabled(bool enabled);
 
+    /**
+     * @brief Load per-image category marks for a folder from JSON.
+     * @param folderPath Folder path where the category JSON is stored.
+     * @return Map of absolute image path -> category (1-4).
+     */
+    QHash<QString, int> loadImageCategories(const QString &folderPath) const;
+
+    /**
+     * @brief Save per-image category marks for a folder to JSON.
+     * @param folderPath Folder path where the category JSON is stored.
+     * @param categories Map of absolute image path -> category (1-4).
+     */
+    void saveImageCategories(const QString &folderPath,
+                             const QHash<QString, int> &categories) const;
+
 private:
     static const QString kFolderListKey;
     static const QString kComparisonThresholdKey;
     static const QString kResizeToFirstImageKey;
+    static const QString kImageCategoryFileName;
 };
 
 #endif // SETTINGSMANAGER_H
