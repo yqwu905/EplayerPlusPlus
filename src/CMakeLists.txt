@@ -26,6 +26,8 @@ set(SOURCES
     utils/ImageUtils.h
     services/SettingsManager.cpp
     services/SettingsManager.h
+    services/ImageMarkManager.cpp
+    services/ImageMarkManager.h
     services/ImageLoader.cpp
     services/ImageLoader.h
     services/ImageComparer.cpp
@@ -62,6 +64,8 @@ set(LIB_SOURCES
     utils/ImageUtils.h
     services/SettingsManager.cpp
     services/SettingsManager.h
+    services/ImageMarkManager.cpp
+    services/ImageMarkManager.h
     services/ImageLoader.cpp
     services/ImageLoader.h
     services/ImageComparer.cpp

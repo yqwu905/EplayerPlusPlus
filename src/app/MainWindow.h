@@ -12,6 +12,7 @@ class ComparePanel;
 class SettingsManager;
 class CompareSession;
 class ImageLoader;
+class ImageMarkManager;
 
 /**
  * @brief The MainWindow class
@@ -42,6 +43,7 @@ private:
     SettingsManager *m_settingsManager = nullptr;
     CompareSession *m_compareSession = nullptr;
     ImageLoader *m_imageLoader = nullptr;
+    ImageMarkManager *m_imageMarkManager = nullptr;
 
     // Panels
     FolderPanel *m_folderPanel = nullptr;

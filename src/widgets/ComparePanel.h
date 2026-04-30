@@ -18,6 +18,7 @@ class SettingsManager;
 class CompareSession;
 class ZoomableImageWidget;
 class ImageLoader;
+class ImageMarkManager;
 
 /**
  * @brief Image comparison panel displaying selected images in a grid.
@@ -52,6 +53,7 @@ public:
 
     void setSelectedImages(const QList<QPair<QString, QString>> &selectedImages);
     void clear();
+    void setImageMarkManager(ImageMarkManager *manager);
 
     CompareMode compareMode() const { return m_compareMode; }
 
@@ -87,12 +89,18 @@ private slots:
     void onCellViewReset();
     void onImageReady(const QString &imagePath, const QImage &image);
     void onThumbnailReady(const QString &imagePath, const QImage &thumbnail);
+    void onMarkChanged(const QString &folderPath,
+                       const QString &imagePath,
+                       const QString &category);
 
 private:
     struct ImageCell {
         QWidget *container = nullptr;
         QWidget *imageContainer = nullptr;
         QLabel *headerLabel = nullptr;
+        QWidget *markButtonsContainer = nullptr;
+        QHBoxLayout *markButtonsLayout = nullptr;
+        QList<QPushButton *> markButtons;
         QWidget *compareButtonsContainer = nullptr;
         QHBoxLayout *compareButtonsLayout = nullptr;
         QList<QPushButton *> compareButtons;
@@ -113,6 +121,13 @@ private:
     void clearCells();
     void rebuildGrid();
     void setupCompareButtonsForCell(int cellIndex);
+    void setupMarkButtonsForCell(int cellIndex);
+    void positionMarkButtonsForCell(int cellIndex);
+    void updateMarkButtonsForCell(int cellIndex);
+    void updateAllMarkButtons();
+    void markCell(int cellIndex, const QString &category);
+    void markAllCurrentImages(const QString &category);
+    QString markForCell(int cellIndex) const;
     void loadImage(int cellIndex);
     void preloadImagesForSelection(const QList<QPair<QString, QString>> &selectedImages);
     void clearImage(int cellIndex);
@@ -132,6 +147,7 @@ private:
 
     CompareSession *m_session = nullptr;
     ImageLoader *m_imageLoader = nullptr;
+    ImageMarkManager *m_markManager = nullptr;
     CompareMode m_compareMode = SwapMode;
     QToolBar *m_toolBar = nullptr;
     QAction *m_prevAction = nullptr;

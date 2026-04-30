@@ -8,6 +8,7 @@
 #include <memory>
 
 class ImageLoader;
+class ImageMarkManager;
 namespace FileUtils {
 class ScanCancelToken;
 }
@@ -27,7 +28,8 @@ public:
         FilePathRole = Qt::UserRole + 1,
         FileNameRole,
         ThumbnailRole,
-        IsSelectedRole
+        IsSelectedRole,
+        MarkRole
     };
 
     explicit ImageListModel(QObject *parent = nullptr);
@@ -109,6 +111,23 @@ public:
      */
     bool isSelected(int index) const;
 
+    // ---- Image mark management ----
+
+    /**
+     * @brief Set the shared image mark manager.
+     */
+    void setImageMarkManager(ImageMarkManager *manager);
+
+    /**
+     * @brief Get the A/B/C/D mark for an image, or an empty string if unmarked.
+     */
+    QString markAt(int index) const;
+
+    /**
+     * @brief Set the A/B/C/D mark for an image.
+     */
+    bool setMarkAt(int index, const QString &category);
+
     // ---- Thumbnail loading ----
 
     /**
@@ -149,6 +168,9 @@ signals:
 
 private slots:
     void onThumbnailReady(const QString &imagePath, const QImage &thumbnail);
+    void onMarkChanged(const QString &folderPath,
+                       const QString &imagePath,
+                       const QString &category);
 
 private:
     void startScan(const QString &path);
@@ -164,6 +186,7 @@ private:
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
     ImageLoader *m_imageLoader = nullptr;
+    ImageMarkManager *m_markManager = nullptr;
     std::shared_ptr<FileUtils::ScanCancelToken> m_scanCancelToken;
     bool m_loading = false;
     int m_nextLoadIndex = 0;

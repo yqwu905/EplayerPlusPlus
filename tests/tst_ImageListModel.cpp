@@ -5,6 +5,7 @@
 
 #include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
+#include "services/ImageMarkManager.h"
 
 class tst_ImageListModel : public QObject
 {
@@ -33,12 +34,14 @@ private slots:
     void testDataFilePathRole();
     void testDataFileNameRole();
     void testDataIsSelectedRole();
+    void testDataMarkRole_loadsExistingJson();
 
     void testSelection();
     void testSelection_outOfRange();
     void testClearSelection();
     void testSelectedIndices();
     void testSelectionSignal();
+    void testSetMarkAt_persistsAndEmitsDataChanged();
 
     void testRowCount();
     void testRowCount_withParent();
@@ -274,6 +277,30 @@ void tst_ImageListModel::testDataIsSelectedRole()
     QVERIFY(model.data(model.index(0), ImageListModel::IsSelectedRole).toBool());
 }
 
+void tst_ImageListModel::testDataMarkRole_loadsExistingJson()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("marked.png");
+    QImage img(10, 10, QImage::Format_ARGB32);
+    img.fill(Qt::cyan);
+    QVERIFY(img.save(imagePath));
+
+    ImageMarkManager writer;
+    QVERIFY(writer.setMarkForImage(dir.path(), imagePath, "C"));
+
+    ImageMarkManager reader;
+    ImageListModel model;
+    model.setImageMarkManager(&reader);
+    setFolderAndWait(model, dir.path());
+
+    QCOMPARE(model.imageCount(), 1);
+    QCOMPARE(model.markAt(0), QStringLiteral("C"));
+    QCOMPARE(model.data(model.index(0), ImageListModel::MarkRole).toString(),
+             QStringLiteral("C"));
+}
+
 void tst_ImageListModel::testSelection()
 {
     ImageListModel model;
@@ -345,6 +372,31 @@ void tst_ImageListModel::testSelectionSignal()
 
     model.setSelected(0, false);
     QCOMPARE(spy.count(), 2);
+}
+
+void tst_ImageListModel::testSetMarkAt_persistsAndEmitsDataChanged()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("image.png");
+    QImage img(10, 10, QImage::Format_ARGB32);
+    img.fill(Qt::magenta);
+    QVERIFY(img.save(imagePath));
+
+    ImageMarkManager manager;
+    ImageListModel model;
+    model.setImageMarkManager(&manager);
+    setFolderAndWait(model, dir.path());
+
+    QSignalSpy dataSpy(&model, &QAbstractItemModel::dataChanged);
+    QVERIFY(model.setMarkAt(0, "D"));
+    QCOMPARE(model.markAt(0), QStringLiteral("D"));
+    QVERIFY(dataSpy.count() >= 1);
+
+    ImageMarkManager reloaded;
+    QVERIFY(reloaded.loadFolder(dir.path()));
+    QCOMPARE(reloaded.markForImage(dir.path(), imagePath), QStringLiteral("D"));
 }
 
 void tst_ImageListModel::testRowCount()

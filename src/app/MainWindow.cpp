@@ -4,6 +4,7 @@
 #include "widgets/ComparePanel.h"
 #include "services/SettingsManager.h"
 #include "services/ImageLoader.h"
+#include "services/ImageMarkManager.h"
 #include "models/CompareSession.h"
 
 #include <QSplitter>
@@ -19,6 +20,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_settingsManager = new SettingsManager(this);
     m_compareSession = new CompareSession(this);
     m_imageLoader = new ImageLoader(this);
+    m_imageMarkManager = new ImageMarkManager(this);
 
     setupUi();
     setupMenuBar();
@@ -41,9 +43,11 @@ void MainWindow::setupUi()
 
     // Center panel — Image browsing
     m_browsePanel = new BrowsePanel(m_compareSession, m_imageLoader, m_mainSplitter);
+    m_browsePanel->setImageMarkManager(m_imageMarkManager);
 
     // Right panel — Image comparison
     m_comparePanel = new ComparePanel(m_compareSession, m_settingsManager, m_imageLoader, m_mainSplitter);
+    m_comparePanel->setImageMarkManager(m_imageMarkManager);
     m_comparePanel->setMinimumWidth(300);
 
     // Add panels to splitter

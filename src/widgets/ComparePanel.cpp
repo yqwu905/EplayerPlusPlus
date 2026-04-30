@@ -2,6 +2,7 @@
 #include "ZoomableImageWidget.h"
 #include "services/ImageComparer.h"
 #include "services/ImageLoader.h"
+#include "services/ImageMarkManager.h"
 #include "services/SettingsManager.h"
 #include "models/CompareSession.h"
 
@@ -19,6 +20,7 @@
 #include <QCheckBox>
 #include <QEvent>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QApplication>
 #include <QSet>
 #include <QSizePolicy>
@@ -57,6 +59,28 @@ ComparePanel::ComparePanel(CompareSession *session,
 }
 
 ComparePanel::~ComparePanel() = default;
+
+void ComparePanel::setImageMarkManager(ImageMarkManager *manager)
+{
+    if (m_markManager) {
+        disconnect(m_markManager, nullptr, this, nullptr);
+    }
+
+    m_markManager = manager;
+
+    if (m_markManager) {
+        connect(m_markManager, &ImageMarkManager::markChanged,
+                this, &ComparePanel::onMarkChanged);
+        for (const QString &folderPath : m_session->folders()) {
+            m_markManager->loadFolder(folderPath);
+        }
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        setupMarkButtonsForCell(i);
+        updateMarkButtonsForCell(i);
+    }
+}
 
 void ComparePanel::setupUi()
 {
@@ -151,6 +175,17 @@ void ComparePanel::setupUi()
 
     scrollArea->setWidget(m_gridContainer);
     mainLayout->addWidget(scrollArea);
+
+    for (const QString &category : ImageMarkManager::categories()) {
+        auto *markAction = new QAction(this);
+        markAction->setShortcut(QKeySequence(category));
+        markAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        markAction->setToolTip(tr("Mark compared images as %1").arg(category));
+        addAction(markAction);
+        connect(markAction, &QAction::triggered, this, [this, category]() {
+            markAllCurrentImages(category);
+        });
+    }
 }
 
 // ---- Mode toggle ----
@@ -181,8 +216,12 @@ void ComparePanel::onModeToggled()
 
 void ComparePanel::onFolderAdded(const QString &folderPath, int /*index*/)
 {
+    if (m_markManager) {
+        m_markManager->loadFolder(folderPath);
+    }
     ImageCell cell = createCell(folderPath);
     m_cells.append(cell);
+    setupMarkButtonsForCell(m_cells.size() - 1);
     rebuildGrid();
 }
 
@@ -238,6 +277,7 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
             m_cells[i].headerLabel->setToolTip(
                 QStringLiteral("%1\n%2").arg(folderName, fileName));
         }
+        updateMarkButtonsForCell(i);
     }
 }
 
@@ -269,6 +309,15 @@ void ComparePanel::keyPressEvent(QKeyEvent *event)
         emit navigateNextRequested();
         event->accept();
         return;
+    }
+
+    if (event->modifiers() == Qt::NoModifier) {
+        const QString category = QKeySequence(event->key()).toString().toUpper();
+        if (ImageMarkManager::isValidCategory(category)) {
+            markAllCurrentImages(category);
+            event->accept();
+            return;
+        }
     }
     QWidget::keyPressEvent(event);
 }
@@ -333,6 +382,14 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
+
+    cell.markButtonsContainer = new QWidget(cell.imageContainer);
+    cell.markButtonsContainer->setObjectName(QStringLiteral("imageMarkButtons"));
+    cell.markButtonsLayout = new QHBoxLayout(cell.markButtonsContainer);
+    cell.markButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    cell.markButtonsLayout->setSpacing(3);
+    cell.markButtonsContainer->setStyleSheet(
+        "QWidget { background-color: transparent; border: none; }");
 
     cellLayout->addWidget(cell.imageContainer, 1);
     cell.imageContainer->installEventFilter(this);
@@ -427,6 +484,7 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
 
         auto *button = new QPushButton(
             QString::number(targetIndex + 1), cell.compareButtonsContainer);
+        button->setObjectName(QStringLiteral("compareTargetButton"));
         const QString folderName = QDir(m_cells[targetIndex].folderPath).dirName();
         button->setToolTip(tr("使用当前图片与“%1”列对比").arg(folderName));
         button->setFixedSize(28, 26);
@@ -463,6 +521,146 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
     }
 
     cell.compareButtonsLayout->addStretch();
+}
+
+void ComparePanel::setupMarkButtonsForCell(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
+
+    ImageCell &cell = m_cells[cellIndex];
+    cell.markButtons.clear();
+
+    while (cell.markButtonsLayout && cell.markButtonsLayout->count() > 0) {
+        QLayoutItem *item = cell.markButtonsLayout->takeAt(0);
+        delete item->widget();
+        delete item;
+    }
+
+    if (!cell.markButtonsContainer || !cell.markButtonsLayout) {
+        return;
+    }
+
+    cell.markButtonsContainer->setVisible(m_markManager != nullptr);
+    if (!m_markManager) {
+        return;
+    }
+
+    QWidget *cellContainer = cell.container;
+    for (const QString &category : ImageMarkManager::categories()) {
+        auto *button = new QPushButton(category, cell.markButtonsContainer);
+        button->setObjectName(QStringLiteral("imageMarkButton_%1").arg(category));
+        button->setToolTip(tr("Mark as %1. Ctrl+click marks all compared images.").arg(category));
+        button->setFixedSize(24, 24);
+        button->setCursor(Qt::PointingHandCursor);
+        connect(button, &QPushButton::clicked, this, [this, cellContainer, category]() {
+            if ((QApplication::keyboardModifiers() & Qt::ControlModifier) != 0) {
+                markAllCurrentImages(category);
+                return;
+            }
+
+            for (int i = 0; i < m_cells.size(); ++i) {
+                if (m_cells[i].container == cellContainer) {
+                    markCell(i, category);
+                    return;
+                }
+            }
+        });
+        cell.markButtonsLayout->addWidget(button);
+        cell.markButtons.append(button);
+    }
+
+    cell.markButtonsContainer->adjustSize();
+    positionMarkButtonsForCell(cellIndex);
+    updateMarkButtonsForCell(cellIndex);
+}
+
+void ComparePanel::positionMarkButtonsForCell(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
+
+    ImageCell &cell = m_cells[cellIndex];
+    if (!cell.imageContainer || !cell.markButtonsContainer) {
+        return;
+    }
+
+    cell.markButtonsContainer->adjustSize();
+    const QSize buttonSize = cell.markButtonsContainer->sizeHint();
+    const int x = qMax(8, cell.imageContainer->width() - buttonSize.width() - 10);
+    const int y = 10;
+    cell.markButtonsContainer->setGeometry(QRect(QPoint(x, y), buttonSize));
+    cell.markButtonsContainer->raise();
+}
+
+void ComparePanel::updateMarkButtonsForCell(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
+
+    ImageCell &cell = m_cells[cellIndex];
+    const QString currentMark = markForCell(cellIndex);
+    for (QPushButton *button : cell.markButtons) {
+        const bool active = (button->text() == currentMark);
+        button->setStyleSheet(active
+            ? QStringLiteral(
+                  "QPushButton { border: 1px solid #0078D4; border-radius: 4px; "
+                  "background-color: #0078D4; color: #FFFFFF; font-weight: 700; "
+                  "padding: 0px; }"
+                  "QPushButton:hover { background-color: #106EBE; }")
+            : QStringLiteral(
+                  "QPushButton { border: 1px solid #C8C8C8; border-radius: 4px; "
+                  "background-color: #FFFFFF; color: #424242; font-weight: 600; "
+                  "padding: 0px; }"
+                  "QPushButton:hover { background-color: #F5F5F5; border-color: #8A8A8A; }"
+                  "QPushButton:pressed { background-color: #E5F1FB; border-color: #0078D4; }"));
+    }
+}
+
+void ComparePanel::updateAllMarkButtons()
+{
+    for (int i = 0; i < m_cells.size(); ++i) {
+        updateMarkButtonsForCell(i);
+    }
+}
+
+void ComparePanel::markCell(int cellIndex, const QString &category)
+{
+    if (!m_markManager || !ImageMarkManager::isValidCategory(category)) {
+        return;
+    }
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) {
+        return;
+    }
+
+    const ImageCell &cell = m_cells[cellIndex];
+    if (cell.folderPath.isEmpty() || cell.imagePath.isEmpty()) {
+        return;
+    }
+
+    m_markManager->setMarkForImage(cell.folderPath, cell.imagePath, category);
+}
+
+void ComparePanel::markAllCurrentImages(const QString &category)
+{
+    if (!m_markManager || !ImageMarkManager::isValidCategory(category)) {
+        return;
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        markCell(i, category);
+    }
+}
+
+QString ComparePanel::markForCell(int cellIndex) const
+{
+    if (!m_markManager || cellIndex < 0 || cellIndex >= m_cells.size()) {
+        return QString();
+    }
+
+    const ImageCell &cell = m_cells[cellIndex];
+    if (cell.folderPath.isEmpty() || cell.imagePath.isEmpty()) {
+        return QString();
+    }
+
+    return m_markManager->markForImage(cell.folderPath, cell.imagePath);
 }
 
 void ComparePanel::loadImage(int cellIndex)
@@ -542,6 +740,7 @@ void ComparePanel::clearImage(int cellIndex)
     cell.headerLabel->setText(
         QStringLiteral("%1 / %2").arg(folderName, tr("No image selected")));
     cell.headerLabel->setToolTip(folderName);
+    updateMarkButtonsForCell(cellIndex);
 }
 
 void ComparePanel::resizeImageCell(int cellIndex)
@@ -553,6 +752,7 @@ void ComparePanel::resizeImageCell(int cellIndex)
 
     QRect r = cell.imageContainer->rect();
     cell.imageWidget->setGeometry(r);
+    positionMarkButtonsForCell(cellIndex);
 
     // ZoomableImageWidget handles redraw internally on resize
 }
@@ -837,5 +1037,23 @@ void ComparePanel::onThumbnailReady(const QString &imagePath, const QImage &thum
         }
 
         showPreviewImage(i, thumbnail, currentPreview.isNull());
+    }
+}
+
+void ComparePanel::onMarkChanged(const QString &folderPath,
+                                 const QString &imagePath,
+                                 const QString &category)
+{
+    Q_UNUSED(category);
+
+    const QString changedFolder = QDir::cleanPath(QFileInfo(folderPath).absoluteFilePath());
+    const QString changedImage = QDir::cleanPath(QFileInfo(imagePath).absoluteFilePath());
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        const QString cellFolder = QDir::cleanPath(QFileInfo(m_cells[i].folderPath).absoluteFilePath());
+        const QString cellImage = QDir::cleanPath(QFileInfo(m_cells[i].imagePath).absoluteFilePath());
+        if (cellFolder == changedFolder && cellImage == changedImage) {
+            updateMarkButtonsForCell(i);
+        }
     }
 }

@@ -12,6 +12,7 @@
 #include "models/CompareSession.h"
 #include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
+#include "services/ImageMarkManager.h"
 #include "widgets/BrowsePanel.h"
 #include "widgets/ThumbnailWidget.h"
 
@@ -26,6 +27,7 @@ private slots:
     void duplicateFolder_plainClickSelectionsAreIndependent();
     void ctrlClick_alignsSameIndexRowsAcrossColumns();
     void altClick_exactVsFuzzyFileNameMatch();
+    void markButtons_clickPersistsAndCtrlClickMarksSameRow();
     void selection_preloadsPreviousAndNextThreeImages();
     void scrollableColumn_keepsHeaderControlsVisible();
     void virtualizedColumn_doesNotCreateThumbnailWidgetsForRows();
@@ -34,6 +36,10 @@ private:
     static QList<QListView *> sortedViews(BrowsePanel &panel);
     static void waitForRows(QListView *view, int rows);
     static void clickRow(QListView *view, int row, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+    static void clickMarkButton(QListView *view,
+                                int row,
+                                int categoryIndex,
+                                Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     static int rowByFileName(QListView *view, const QString &fileName);
     static bool isRowSelected(QListView *view, int row);
 };
@@ -67,6 +73,41 @@ void tst_BrowsePanel::clickRow(QListView *view, int row, Qt::KeyboardModifiers m
     QRect rect = view->visualRect(index);
     QVERIFY2(rect.isValid(), qPrintable(QString("invalid visual rect for row %1").arg(row)));
     QTest::mouseClick(view->viewport(), Qt::LeftButton, modifiers, rect.center());
+}
+
+void tst_BrowsePanel::clickMarkButton(QListView *view,
+                                      int row,
+                                      int categoryIndex,
+                                      Qt::KeyboardModifiers modifiers)
+{
+    QVERIFY(view != nullptr);
+    QVERIFY(categoryIndex >= 0 && categoryIndex < 4);
+
+    auto *model = view->model();
+    QVERIFY(model != nullptr);
+    QVERIFY(row >= 0 && row < model->rowCount());
+
+    const QModelIndex index = model->index(row, 0);
+    view->scrollTo(index, QAbstractItemView::PositionAtCenter);
+    QTest::qWait(30);
+
+    const QRect itemRect = view->visualRect(index);
+    QVERIFY2(itemRect.isValid(), qPrintable(QString("invalid visual rect for row %1").arg(row)));
+
+    constexpr int cardWidth = 194;
+    constexpr int buttonSize = 18;
+    constexpr int buttonGap = 3;
+    constexpr int topMargin = 10;
+    constexpr int rightMargin = 10;
+    const int cardX = itemRect.x() + qMax(0, (itemRect.width() - cardWidth) / 2);
+    const int cardY = itemRect.y() + 2;
+    const int totalWidth = 4 * buttonSize + 3 * buttonGap;
+    const int buttonX = cardX + cardWidth - rightMargin - totalWidth
+                        + categoryIndex * (buttonSize + buttonGap);
+    const QPoint point(buttonX + buttonSize / 2,
+                       cardY + topMargin + buttonSize / 2);
+
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, modifiers, point);
 }
 
 int tst_BrowsePanel::rowByFileName(QListView *view, const QString &fileName)
@@ -263,6 +304,64 @@ void tst_BrowsePanel::altClick_exactVsFuzzyFileNameMatch()
 
     clickRow(anchorView, newAnchorRow, Qt::AltModifier);
     QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(fuzzyView, newFuzzyRow), 2000);
+}
+
+void tst_BrowsePanel::markButtons_clickPersistsAndCtrlClickMarksSameRow()
+{
+    QTemporaryDir dirA;
+    QTemporaryDir dirB;
+    QVERIFY(dirA.isValid());
+    QVERIFY(dirB.isValid());
+
+    QStringList pathsA;
+    QStringList pathsB;
+    for (int i = 0; i < 2; ++i) {
+        const QString name = QString("img_%1.png").arg(i);
+        QImage image(16, 16, QImage::Format_ARGB32);
+        image.fill(QColor::fromHsv(i * 90, 255, 220));
+        pathsA.append(dirA.filePath(name));
+        pathsB.append(dirB.filePath(name));
+        QVERIFY(image.save(pathsA.last()));
+        QVERIFY(image.save(pathsB.last()));
+    }
+
+    CompareSession session;
+    ImageLoader loader;
+    ImageMarkManager marks;
+    BrowsePanel panel(&session, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(900, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dirA.path()));
+    QVERIFY(session.addFolder(dirB.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    waitForRows(views[0], 2);
+    waitForRows(views[1], 2);
+
+    clickMarkButton(views[0], 0, 1); // B
+    QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(dirA.path(), pathsA.at(0)),
+                              QStringLiteral("B"),
+                              1000);
+    QVERIFY(marks.markForImage(dirB.path(), pathsB.at(0)).isEmpty());
+
+    clickMarkButton(views[0], 1, 3, Qt::ControlModifier); // D
+    QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(dirA.path(), pathsA.at(1)),
+                              QStringLiteral("D"),
+                              1000);
+    QCOMPARE(marks.markForImage(dirB.path(), pathsB.at(1)), QStringLiteral("D"));
+
+    clickRow(views[0], 0, Qt::ControlModifier);
+    clickMarkButton(views[0], 1, 0, Qt::ControlModifier); // A, applies to current selection
+    QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(dirA.path(), pathsA.at(0)),
+                              QStringLiteral("A"),
+                              1000);
+    QCOMPARE(marks.markForImage(dirB.path(), pathsB.at(0)), QStringLiteral("A"));
+    QCOMPARE(marks.markForImage(dirA.path(), pathsA.at(1)), QStringLiteral("D"));
+    QCOMPARE(marks.markForImage(dirB.path(), pathsB.at(1)), QStringLiteral("D"));
 }
 
 void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()

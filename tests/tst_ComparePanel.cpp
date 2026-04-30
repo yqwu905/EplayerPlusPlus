@@ -7,9 +7,11 @@
 #include <QLabel>
 #include <QDir>
 #include <QCoreApplication>
+#include <algorithm>
 
 #include "models/CompareSession.h"
 #include "services/ImageLoader.h"
+#include "services/ImageMarkManager.h"
 #include "widgets/ComparePanel.h"
 #include "widgets/ZoomableImageWidget.h"
 
@@ -24,10 +26,14 @@ private slots:
     void compareHeader_placesTitleAndButtonsOnSameRow();
     void layout_shrinksFromSixToTwo_cellsExpand();
     void resizeToFirstImage_toggleResizesOtherCells();
+    void markButton_clickPersistsSingleImage();
+    void markButton_ctrlClickMarksAllCurrentImages();
+    void markShortcut_marksAllCurrentImages();
 
 private:
     static QString createImageInFolder(const QString &folderPath, const QString &name, const QColor &color);
     static QList<QWidget *> findCells(ComparePanel &panel);
+    static QList<QWidget *> sortedCells(ComparePanel &panel);
 };
 
 QString tst_ComparePanel::createImageInFolder(const QString &folderPath, const QString &name, const QColor &color)
@@ -44,6 +50,20 @@ QString tst_ComparePanel::createImageInFolder(const QString &folderPath, const Q
 QList<QWidget *> tst_ComparePanel::findCells(ComparePanel &panel)
 {
     return panel.findChildren<QWidget *>(QStringLiteral("compareCellContainer"));
+}
+
+QList<QWidget *> tst_ComparePanel::sortedCells(ComparePanel &panel)
+{
+    auto cells = findCells(panel);
+    std::sort(cells.begin(), cells.end(), [&panel](QWidget *lhs, QWidget *rhs) {
+        const QPoint lhsPos = lhs->mapTo(&panel, QPoint(0, 0));
+        const QPoint rhsPos = rhs->mapTo(&panel, QPoint(0, 0));
+        if (lhsPos.y() / 20 != rhsPos.y() / 20) {
+            return lhsPos.y() < rhsPos.y();
+        }
+        return lhsPos.x() < rhsPos.x();
+    });
+    return cells;
 }
 
 void tst_ComparePanel::layout_oneToThreeImages_singleRow()
@@ -142,7 +162,8 @@ void tst_ComparePanel::compareButtons_nMinusOnePerImage()
     QCOMPARE(cells.size(), 6);
 
     for (QWidget *cell : cells) {
-        const auto buttons = cell->findChildren<QPushButton *>();
+        const auto buttons = cell->findChildren<QPushButton *>(
+            QStringLiteral("compareTargetButton"));
         int compareButtonCount = 0;
         for (QPushButton *button : buttons) {
             bool isNumber = false;
@@ -190,7 +211,8 @@ void tst_ComparePanel::compareHeader_placesTitleAndButtonsOnSameRow()
         auto *title = cell->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
         QVERIFY(title != nullptr);
 
-        const auto buttons = cell->findChildren<QPushButton *>();
+        const auto buttons = cell->findChildren<QPushButton *>(
+            QStringLiteral("compareTargetButton"));
         QCOMPARE(buttons.size(), 2);
         for (QPushButton *button : buttons) {
             bool isNumber = false;
@@ -292,6 +314,130 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
 
     QTRY_COMPARE_WITH_TIMEOUT(widgets[0]->image().size(), QSize(32, 32), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(widgets[1]->image().size(), QSize(32, 32), 2000);
+}
+
+void tst_ComparePanel::markButton_clickPersistsSingleImage()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ImageMarkManager marks;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    const QString folder0 = root.filePath("folder_0");
+    const QString folder1 = root.filePath("folder_1");
+    QVERIFY(QDir().mkpath(folder0));
+    QVERIFY(QDir().mkpath(folder1));
+    const QString image0Path = createImageInFolder(folder0, "img.png", Qt::red);
+    const QString image1Path = createImageInFolder(folder1, "img.png", Qt::green);
+    QVERIFY(!image0Path.isEmpty());
+    QVERIFY(!image1Path.isEmpty());
+
+    QVERIFY(session.addFolder(folder0));
+    QVERIFY(session.addFolder(folder1));
+    panel.setSelectedImages({{folder0, image0Path}, {folder1, image1Path}});
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *button = cells[0]->findChild<QPushButton *>(QStringLiteral("imageMarkButton_B"));
+    QVERIFY(button != nullptr);
+
+    QTest::mouseClick(button, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(folder0, image0Path),
+                              QStringLiteral("B"),
+                              1000);
+    QVERIFY(marks.markForImage(folder1, image1Path).isEmpty());
+}
+
+void tst_ComparePanel::markButton_ctrlClickMarksAllCurrentImages()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ImageMarkManager marks;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 3; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            "img.png",
+            QColor::fromHsv(i * 70, 255, 230));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 3);
+    auto *button = cells[1]->findChild<QPushButton *>(QStringLiteral("imageMarkButton_D"));
+    QVERIFY(button != nullptr);
+
+    QTest::mouseClick(button, Qt::LeftButton, Qt::ControlModifier);
+
+    for (const auto &pair : selected) {
+        QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(pair.first, pair.second),
+                                  QStringLiteral("D"),
+                                  1000);
+    }
+}
+
+void tst_ComparePanel::markShortcut_marksAllCurrentImages()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ImageMarkManager marks;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 2; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            "img.png",
+            QColor::fromHsv(i * 80, 255, 230));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+
+    panel.setSelectedImages(selected);
+    panel.setFocus();
+    QCoreApplication::processEvents();
+
+    QTest::keyClick(&panel, Qt::Key_C);
+
+    for (const auto &pair : selected) {
+        QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(pair.first, pair.second),
+                                  QStringLiteral("C"),
+                                  1000);
+    }
 }
 
 QTEST_MAIN(tst_ComparePanel)

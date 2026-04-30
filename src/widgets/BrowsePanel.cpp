@@ -2,6 +2,7 @@
 #include "models/CompareSession.h"
 #include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
+#include "services/ImageMarkManager.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -11,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListView>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
@@ -21,6 +23,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <functional>
 #include <limits>
 #include <vector>
 
@@ -32,6 +35,104 @@ constexpr int kThumbnailItemHeight = 222;
 constexpr int kColumnHorizontalMargins = 16;
 constexpr int kScrollAreaSafetyPadding = 4;
 constexpr int kPrefetchMinimumRows = 32;
+constexpr int kMarkButtonSize = 18;
+constexpr int kMarkButtonGap = 3;
+constexpr int kMarkButtonTopMargin = 10;
+constexpr int kMarkButtonRightMargin = 10;
+
+QRect thumbnailCardRect(const QRect &itemRect)
+{
+    const int cardX = itemRect.x() + qMax(0, (itemRect.width() - kThumbnailCardWidth) / 2);
+    return QRect(cardX, itemRect.y() + 2, kThumbnailCardWidth, kThumbnailItemHeight - 4);
+}
+
+QRect markButtonRect(const QRect &itemRect, int categoryIndex)
+{
+    const QRect cardRect = thumbnailCardRect(itemRect);
+    const int categoryCount = ImageMarkManager::categories().size();
+    const int totalWidth = categoryCount * kMarkButtonSize
+                           + (categoryCount - 1) * kMarkButtonGap;
+    const int x = cardRect.x() + cardRect.width() - kMarkButtonRightMargin
+                  - totalWidth + categoryIndex * (kMarkButtonSize + kMarkButtonGap);
+    const int y = cardRect.y() + kMarkButtonTopMargin;
+    return QRect(x, y, kMarkButtonSize, kMarkButtonSize);
+}
+
+QString markCategoryAtPosition(const QRect &itemRect, const QPoint &pos)
+{
+    const QStringList categories = ImageMarkManager::categories();
+    for (int i = 0; i < categories.size(); ++i) {
+        if (markButtonRect(itemRect, i).contains(pos)) {
+            return categories.at(i);
+        }
+    }
+    return QString();
+}
+
+void paintMarkButtons(QPainter *painter,
+                      const QRect &itemRect,
+                      const QString &currentMark)
+{
+    const QStringList categories = ImageMarkManager::categories();
+    QFont buttonFont = painter->font();
+    buttonFont.setPointSize(8);
+    buttonFont.setWeight(QFont::DemiBold);
+    painter->setFont(buttonFont);
+
+    for (int i = 0; i < categories.size(); ++i) {
+        const QString category = categories.at(i);
+        const QRect rect = markButtonRect(itemRect, i);
+        const bool active = (category == currentMark);
+
+        painter->setPen(QPen(active ? QColor(0x00, 0x78, 0xD4) : QColor(0xC8, 0xC8, 0xC8), 1));
+        painter->setBrush(active ? QColor(0x00, 0x78, 0xD4) : QColor(255, 255, 255, 230));
+        painter->drawRoundedRect(rect, 4, 4);
+        painter->setPen(active ? Qt::white : QColor(0x42, 0x42, 0x42));
+        painter->drawText(rect, Qt::AlignCenter, category);
+    }
+}
+
+class ThumbnailListView final : public QListView
+{
+public:
+    using MarkCallback = std::function<void(const QModelIndex &,
+                                            const QString &,
+                                            Qt::KeyboardModifiers)>;
+
+    explicit ThumbnailListView(QWidget *parent = nullptr)
+        : QListView(parent)
+    {
+    }
+
+    void setMarkCallback(MarkCallback callback)
+    {
+        m_markCallback = std::move(callback);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            const QModelIndex modelIndex = indexAt(event->pos());
+            if (modelIndex.isValid()) {
+                const QString category = markCategoryAtPosition(visualRect(modelIndex),
+                                                                event->pos());
+                if (!category.isEmpty()) {
+                    if (m_markCallback) {
+                        m_markCallback(modelIndex, category, event->modifiers());
+                    }
+                    event->accept();
+                    return;
+                }
+            }
+        }
+
+        QListView::mousePressEvent(event);
+    }
+
+private:
+    MarkCallback m_markCallback;
+};
 
 class ThumbnailDelegate final : public QStyledItemDelegate
 {
@@ -55,9 +156,9 @@ public:
         painter->setRenderHint(QPainter::Antialiasing);
 
         const bool selected = index.data(ImageListModel::IsSelectedRole).toBool();
+        const QString currentMark = index.data(ImageListModel::MarkRole).toString();
         const bool hovered = option.state & QStyle::State_MouseOver;
-        const int cardX = option.rect.x() + qMax(0, (option.rect.width() - kThumbnailCardWidth) / 2);
-        const QRect cardRect(cardX, option.rect.y() + 2, kThumbnailCardWidth, kThumbnailItemHeight - 4);
+        const QRect cardRect = thumbnailCardRect(option.rect);
 
         if (selected) {
             painter->setPen(QPen(QColor(0x00, 0x78, 0xD4), 2));
@@ -112,6 +213,8 @@ public:
                           Qt::AlignCenter,
                           fm.elidedText(fileName, Qt::ElideMiddle, textArea.width()));
 
+        paintMarkButtons(painter, option.rect, currentMark);
+
         painter->restore();
     }
 };
@@ -141,6 +244,16 @@ BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
 BrowsePanel::~BrowsePanel()
 {
     stopInterleavedLoading();
+}
+
+void BrowsePanel::setImageMarkManager(ImageMarkManager *manager)
+{
+    m_markManager = manager;
+    for (auto &column : m_columns) {
+        if (column.model) {
+            column.model->setImageMarkManager(m_markManager);
+        }
+    }
 }
 
 void BrowsePanel::setupUi()
@@ -183,6 +296,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     ColumnInfo col;
     col.model = new ImageListModel(this);
     col.model->setImageLoader(m_imageLoader);
+    col.model->setImageMarkManager(m_markManager);
 
     col.columnWidget = new QWidget(this);
     col.columnWidget->setObjectName(QStringLiteral("compareColumnWidget"));
@@ -248,7 +362,8 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         "QLabel { color: #7D7D7D; padding: 4px; background: transparent; border: none; }");
     col.containerLayout->addWidget(col.progressLabel);
 
-    col.view = new QListView(col.columnWidget);
+    auto *thumbnailView = new ThumbnailListView(col.columnWidget);
+    col.view = thumbnailView;
     col.view->setObjectName(QStringLiteral("compareColumnListView"));
     col.view->setModel(col.model);
     col.view->setItemDelegate(new ThumbnailDelegate(col.view));
@@ -281,6 +396,17 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     m_columns.append(col);
     ImageListModel *modelPtr = col.model;
+    thumbnailView->setMarkCallback([this, modelPtr](const QModelIndex &modelIndex,
+                                                    const QString &category,
+                                                    Qt::KeyboardModifiers modifiers) {
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex >= 0 && modelIndex.isValid()) {
+            onThumbnailMarkRequested(currentIndex,
+                                     modelIndex.row(),
+                                     category,
+                                     modifiers);
+        }
+    });
 
     connect(col.model, &QAbstractItemModel::rowsInserted,
             this, [this, modelPtr](const QModelIndex &parent, int /*first*/, int last) {
@@ -439,6 +565,49 @@ void BrowsePanel::onThumbnailActivated(int clickedCol,
     }
 
     emitSelectionChanged();
+}
+
+void BrowsePanel::onThumbnailMarkRequested(int column,
+                                           int row,
+                                           const QString &category,
+                                           Qt::KeyboardModifiers modifiers)
+{
+    if (column < 0 || column >= m_columns.size() || category.isEmpty()) {
+        return;
+    }
+
+    if ((modifiers & Qt::ControlModifier) != 0) {
+        bool markedSelection = false;
+        for (auto &col : m_columns) {
+            if (!col.model) {
+                continue;
+            }
+
+            const QList<int> selected = col.model->selectedIndices();
+            for (int selectedIndex : selected) {
+                col.model->setMarkAt(selectedIndex, category);
+                markedSelection = true;
+            }
+        }
+
+        if (markedSelection) {
+            return;
+        }
+
+        for (auto &col : m_columns) {
+            if (col.model && row >= 0 && row < col.model->imageCount()) {
+                col.model->setMarkAt(row, category);
+            }
+        }
+        return;
+    }
+
+    ImageListModel *model = m_columns[column].model;
+    if (!model || row < 0 || row >= model->imageCount()) {
+        return;
+    }
+
+    model->setMarkAt(row, category);
 }
 
 void BrowsePanel::alignColumnsToAnchor(int anchorColumn,

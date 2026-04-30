@@ -1,5 +1,6 @@
 #include "ImageListModel.h"
 #include "services/ImageLoader.h"
+#include "services/ImageMarkManager.h"
 #include "utils/FileUtils.h"
 
 #include <QDir>
@@ -49,6 +50,8 @@ QVariant ImageListModel::data(const QModelIndex &index, int role) const
     }
     case IsSelectedRole:
         return m_selectedIndices.contains(index.row());
+    case MarkRole:
+        return markAt(index.row());
     default:
         return QVariant();
     }
@@ -72,6 +75,10 @@ void ImageListModel::setFolder(const QString &folderPath)
     m_thumbnails.clear();
     m_nextLoadIndex = 0;
     endResetModel();
+
+    if (m_markManager) {
+        m_markManager->loadFolder(folderPath);
+    }
 
     startScan(folderPath);
 }
@@ -186,6 +193,45 @@ bool ImageListModel::isSelected(int index) const
     return m_selectedIndices.contains(index);
 }
 
+void ImageListModel::setImageMarkManager(ImageMarkManager *manager)
+{
+    if (m_markManager) {
+        disconnect(m_markManager, nullptr, this, nullptr);
+    }
+
+    m_markManager = manager;
+
+    if (m_markManager) {
+        connect(m_markManager, &ImageMarkManager::markChanged,
+                this, &ImageListModel::onMarkChanged);
+        if (!m_folderPath.isEmpty()) {
+            m_markManager->loadFolder(m_folderPath);
+        }
+    }
+
+    if (!m_imagePaths.isEmpty()) {
+        emit dataChanged(index(0), index(m_imagePaths.size() - 1), {MarkRole});
+    }
+}
+
+QString ImageListModel::markAt(int index) const
+{
+    if (!m_markManager || index < 0 || index >= m_imagePaths.size()) {
+        return QString();
+    }
+
+    return m_markManager->markForImage(m_folderPath, m_imagePaths.at(index));
+}
+
+bool ImageListModel::setMarkAt(int index, const QString &category)
+{
+    if (!m_markManager || index < 0 || index >= m_imagePaths.size()) {
+        return false;
+    }
+
+    return m_markManager->setMarkForImage(m_folderPath, m_imagePaths.at(index), category);
+}
+
 void ImageListModel::setImageLoader(ImageLoader *loader)
 {
     if (m_imageLoader) {
@@ -262,6 +308,31 @@ void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &th
 
     QModelIndex mi = this->index(idx);
     emit dataChanged(mi, mi, {Qt::DecorationRole, ThumbnailRole});
+}
+
+void ImageListModel::onMarkChanged(const QString &folderPath,
+                                   const QString &imagePath,
+                                   const QString &category)
+{
+    Q_UNUSED(category);
+
+    const QString currentFolder = QDir::cleanPath(QFileInfo(m_folderPath).absoluteFilePath());
+    const QString changedFolder = QDir::cleanPath(QFileInfo(folderPath).absoluteFilePath());
+    if (currentFolder != changedFolder) {
+        return;
+    }
+
+    const QString normalizedImage = QDir::cleanPath(QFileInfo(imagePath).absoluteFilePath());
+    int idx = m_pathToIndex.value(normalizedImage, -1);
+    if (idx < 0) {
+        idx = m_pathToIndex.value(imagePath, -1);
+    }
+    if (idx < 0) {
+        return;
+    }
+
+    QModelIndex mi = this->index(idx);
+    emit dataChanged(mi, mi, {MarkRole});
 }
 
 void ImageListModel::startScan(const QString &path)

@@ -14,6 +14,7 @@ class QListView;
 class CompareSession;
 class ImageListModel;
 class ImageLoader;
+class ImageMarkManager;
 
 /**
  * @brief Image browsing panel with multi-column thumbnail layout.
@@ -32,6 +33,8 @@ public:
     explicit BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
                          QWidget *parent = nullptr);
     ~BrowsePanel() override;
+
+    void setImageMarkManager(ImageMarkManager *manager);
 
 signals:
     /**
@@ -76,6 +79,10 @@ private:
     void navigateSelection(int delta);
     void clearColumnSelection(int column);
     void onThumbnailActivated(int column, int row, Qt::KeyboardModifiers modifiers);
+    void onThumbnailMarkRequested(int column,
+                                  int row,
+                                  const QString &category,
+                                  Qt::KeyboardModifiers modifiers);
     void alignColumnsToAnchor(int anchorColumn,
                               int anchorIndex,
                               const QList<int> &matchedIndices);
@@ -98,6 +105,7 @@ private:
 
     CompareSession *m_session = nullptr;
     ImageLoader *m_imageLoader = nullptr;
+    ImageMarkManager *m_markManager = nullptr;
     QVBoxLayout *m_rootLayout = nullptr;
     QLabel *m_scanStatusLabel = nullptr;
     QCheckBox *m_fuzzyFileNameCheckBox = nullptr;
