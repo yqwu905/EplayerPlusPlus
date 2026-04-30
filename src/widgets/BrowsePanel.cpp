@@ -15,8 +15,17 @@
 #include <QFontMetrics>
 #include <QTimer>
 #include <QPointer>
+#include <QSizePolicy>
+#include <QStyle>
 #include <limits>
 #include <vector>
+
+namespace
+{
+constexpr int kThumbnailCardWidth = 194;
+constexpr int kColumnHorizontalMargins = 16;
+constexpr int kScrollAreaSafetyPadding = 4;
+}
 
 BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
                          QWidget *parent)
@@ -89,7 +98,15 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     col.scrollArea->setWidgetResizable(true);
     col.scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     col.scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    col.scrollArea->setMinimumWidth(210);
+    const int verticalScrollBarWidth = col.scrollArea->style()->pixelMetric(
+        QStyle::PM_ScrollBarExtent,
+        nullptr,
+        col.scrollArea);
+    col.scrollArea->setMinimumWidth(kThumbnailCardWidth
+                                    + kColumnHorizontalMargins
+                                    + verticalScrollBarWidth
+                                    + kScrollAreaSafetyPadding);
+    col.scrollArea->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
     col.scrollArea->setStyleSheet(
         "QScrollArea { background-color: #F5F5F5; border: none; border-radius: 8px; }");
 
@@ -110,7 +127,10 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     
     // Create an empty label first to set font
     auto *headerLabel = new QLabel(headerWidget);
+    headerLabel->setObjectName(QStringLiteral("compareColumnHeaderLabel"));
     headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    headerLabel->setMinimumWidth(0);
+    headerLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     QFont headerFont = headerLabel->font();
     headerFont.setWeight(QFont::DemiBold);
     headerFont.setPointSize(12);
@@ -128,7 +148,9 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLayout->addWidget(headerLabel, 1);
 
     auto *closeBtn = new QPushButton(QStringLiteral("\u00D7"), headerWidget);
+    closeBtn->setObjectName(QStringLiteral("compareColumnCloseButton"));
     closeBtn->setFixedSize(28, 28);
+    closeBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     closeBtn->setToolTip(tr("Remove from comparison"));
     closeBtn->setCursor(Qt::PointingHandCursor);
     closeBtn->setStyleSheet(

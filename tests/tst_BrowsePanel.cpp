@@ -7,6 +7,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QCheckBox>
+#include <QPushButton>
 #include <algorithm>
 
 #include "models/CompareSession.h"
@@ -26,6 +27,7 @@ private slots:
     void ctrlClick_alignsSameIndexRowsAcrossColumns();
     void altClick_exactVsFuzzyFileNameMatch();
     void selection_preloadsPreviousAndNextThreeImages();
+    void scrollableColumn_keepsHeaderControlsVisible();
 };
 
 void tst_BrowsePanel::duplicateFolder_plainClickSelectionsAreIndependent()
@@ -299,6 +301,52 @@ void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()
     QVERIFY(loadedPaths.contains(imagePaths.at(5)));
     QVERIFY(loadedPaths.contains(imagePaths.at(6)));
     QVERIFY(loadedPaths.contains(imagePaths.at(7)));
+}
+
+void tst_BrowsePanel::scrollableColumn_keepsHeaderControlsVisible()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    for (int i = 0; i < 20; ++i) {
+        const QString name = QString("very_long_image_name_%1.png").arg(i, 2, 10, QChar('0'));
+        QImage image(24, 24, QImage::Format_ARGB32);
+        image.fill(QColor::fromHsv((i * 18) % 360, 255, 210));
+        QVERIFY(image.save(dir.filePath(name)));
+    }
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(260, 420);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dir.path()));
+
+    QList<ThumbnailWidget *> thumbnails;
+    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() == 20), 8000);
+
+    auto *scrollArea = panel.findChild<QScrollArea *>();
+    QVERIFY(scrollArea != nullptr);
+    QVERIFY(scrollArea->verticalScrollBar()->maximum() > 0);
+
+    auto *closeButton = panel.findChild<QPushButton *>("compareColumnCloseButton");
+    QVERIFY(closeButton != nullptr);
+
+    const QRect closeRect(closeButton->mapTo(scrollArea->viewport(), QPoint(0, 0)),
+                          closeButton->size());
+    const QRect viewportRect = scrollArea->viewport()->rect();
+    QVERIFY2(viewportRect.contains(closeRect),
+             qPrintable(QString("closeRect=%1,%2 %3x%4 viewport=%5,%6 %7x%8")
+                            .arg(closeRect.x())
+                            .arg(closeRect.y())
+                            .arg(closeRect.width())
+                            .arg(closeRect.height())
+                            .arg(viewportRect.x())
+                            .arg(viewportRect.y())
+                            .arg(viewportRect.width())
+                            .arg(viewportRect.height())));
 }
 
 QTEST_MAIN(tst_BrowsePanel)
