@@ -21,6 +21,7 @@
 #include <QKeyEvent>
 #include <QApplication>
 #include <QSet>
+#include <QSizePolicy>
 
 ComparePanel::ComparePanel(CompareSession *session,
                            SettingsManager *settingsManager,
@@ -231,7 +232,9 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
             QString folderName = QDir(m_cells[i].folderPath).dirName();
             QString fileName = QFileInfo(newImagePath).fileName();
             m_cells[i].headerLabel->setText(
-                QStringLiteral("<b>%1</b><br>%2").arg(folderName, fileName));
+                QStringLiteral("%1 / %2").arg(folderName, fileName));
+            m_cells[i].headerLabel->setToolTip(
+                QStringLiteral("%1\n%2").arg(folderName, fileName));
         }
     }
 }
@@ -286,26 +289,39 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cellLayout->setContentsMargins(0, 0, 0, 0);
     cellLayout->setSpacing(0);
 
-    // ---- Header — Fluent 2 style ----
+    // ---- Header — title and compare buttons in one row ----
+    auto *headerWidget = new QWidget(cell.container);
+    headerWidget->setStyleSheet(
+        "QWidget { background-color: #FFFFFF; border: none; "
+        "border-top-left-radius: 8px; border-top-right-radius: 8px; "
+        "border-bottom: 1px solid #E0E0E0; }");
+    auto *headerLayout = new QHBoxLayout(headerWidget);
+    headerLayout->setContentsMargins(12, 6, 8, 6);
+    headerLayout->setSpacing(8);
+
     QString folderName = QDir(folderPath).dirName();
     cell.headerLabel = new QLabel(
-        QStringLiteral("<b>%1</b><br><span style='color:#9E9E9E;'>No image selected</span>").arg(folderName),
-        cell.container);
-    cell.headerLabel->setAlignment(Qt::AlignCenter);
+        QStringLiteral("%1 / %2").arg(folderName, tr("No image selected")),
+        headerWidget);
+    cell.headerLabel->setObjectName(QStringLiteral("compareCellHeaderLabel"));
+    cell.headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    cell.headerLabel->setMinimumWidth(0);
+    cell.headerLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    cell.headerLabel->setToolTip(folderName);
     cell.headerLabel->setStyleSheet(
         "QLabel { background-color: #FFFFFF; color: #1A1A1A; "
-        "padding: 8px 12px; border: none; "
-        "border-top-left-radius: 8px; border-top-right-radius: 8px; "
-        "border-bottom: 1px solid #E0E0E0; font-size: 12px; }");
-    cellLayout->addWidget(cell.headerLabel);
+        "padding: 0px; border: none; font-size: 12px; font-weight: 600; }");
+    headerLayout->addWidget(cell.headerLabel, 1);
 
-    cell.compareButtonsContainer = new QWidget(cell.container);
+    cell.compareButtonsContainer = new QWidget(headerWidget);
+    cell.compareButtonsContainer->setObjectName(QStringLiteral("compareCellButtons"));
     cell.compareButtonsLayout = new QHBoxLayout(cell.compareButtonsContainer);
-    cell.compareButtonsLayout->setContentsMargins(8, 6, 8, 6);
-    cell.compareButtonsLayout->setSpacing(6);
+    cell.compareButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    cell.compareButtonsLayout->setSpacing(4);
     cell.compareButtonsContainer->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border-bottom: 1px solid #EEEEEE; }");
-    cellLayout->addWidget(cell.compareButtonsContainer);
+        "QWidget { background-color: #FFFFFF; border: none; }");
+    headerLayout->addWidget(cell.compareButtonsContainer, 0, Qt::AlignRight | Qt::AlignVCenter);
+    cellLayout->addWidget(headerWidget);
 
     // ---- Image container ----
     cell.imageContainer = new QWidget(cell.container);
@@ -408,19 +424,19 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
         }
 
         auto *button = new QPushButton(
-            tr("对比 %1").arg(targetIndex + 1), cell.compareButtonsContainer);
+            QString::number(targetIndex + 1), cell.compareButtonsContainer);
         const QString folderName = QDir(m_cells[targetIndex].folderPath).dirName();
         button->setToolTip(tr("使用当前图片与“%1”列对比").arg(folderName));
-        button->setMinimumHeight(26);
+        button->setFixedSize(28, 26);
         button->setCursor(Qt::PointingHandCursor);
         button->setStyleSheet(
             "QPushButton {"
             "  border: 1px solid #0078D4;"
-            "  border-radius: 6px;"
+            "  border-radius: 4px;"
             "  background-color: #FFFFFF;"
             "  color: #0078D4;"
             "  font-weight: 600;"
-            "  padding: 4px 10px;"
+            "  padding: 0px;"
             "}"
             "QPushButton:hover {"
             "  background-color: #E5F1FB;"
@@ -444,11 +460,6 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
         cell.compareButtons.append(button);
     }
 
-    if (cell.compareButtonsLayout->count() == 0) {
-        auto *hint = new QLabel(tr("至少需要 2 张图片才能对比"), cell.compareButtonsContainer);
-        hint->setStyleSheet("QLabel { color: #9E9E9E; font-size: 12px; }");
-        cell.compareButtonsLayout->addWidget(hint);
-    }
     cell.compareButtonsLayout->addStretch();
 }
 
@@ -515,7 +526,8 @@ void ComparePanel::clearImage(int cellIndex)
 
     QString folderName = QDir(cell.folderPath).dirName();
     cell.headerLabel->setText(
-        QStringLiteral("<b>%1</b><br><i>No image selected</i>").arg(folderName));
+        QStringLiteral("%1 / %2").arg(folderName, tr("No image selected")));
+    cell.headerLabel->setToolTip(folderName);
 }
 
 void ComparePanel::resizeImageCell(int cellIndex)

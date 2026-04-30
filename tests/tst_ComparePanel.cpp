@@ -4,6 +4,7 @@
 #include <QSet>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QLabel>
 #include <QDir>
 #include <QCoreApplication>
 
@@ -20,6 +21,7 @@ private slots:
     void layout_oneToThreeImages_singleRow();
     void layout_fourToSixImages_twoRows();
     void compareButtons_nMinusOnePerImage();
+    void compareHeader_placesTitleAndButtonsOnSameRow();
     void layout_shrinksFromSixToTwo_cellsExpand();
     void resizeToFirstImage_toggleResizesOtherCells();
 
@@ -143,11 +145,65 @@ void tst_ComparePanel::compareButtons_nMinusOnePerImage()
         const auto buttons = cell->findChildren<QPushButton *>();
         int compareButtonCount = 0;
         for (QPushButton *button : buttons) {
-            if (button->text().startsWith(QStringLiteral("对比 "))) {
+            bool isNumber = false;
+            const int targetNumber = button->text().toInt(&isNumber);
+            if (isNumber && targetNumber >= 1 && targetNumber <= 6) {
+                QVERIFY(!button->text().contains(QStringLiteral("对比")));
                 ++compareButtonCount;
             }
         }
         QCOMPARE(compareButtonCount, 5);
+    }
+}
+
+void tst_ComparePanel::compareHeader_placesTitleAndButtonsOnSameRow()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 3; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            QString("image_%1.png").arg(i),
+            QColor::fromHsv((i * 50) % 360, 255, 255));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    const auto cells = findCells(panel);
+    QCOMPARE(cells.size(), 3);
+
+    for (QWidget *cell : cells) {
+        auto *title = cell->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+        QVERIFY(title != nullptr);
+
+        const auto buttons = cell->findChildren<QPushButton *>();
+        QCOMPARE(buttons.size(), 2);
+        for (QPushButton *button : buttons) {
+            bool isNumber = false;
+            button->text().toInt(&isNumber);
+            QVERIFY(isNumber);
+
+            const int titleCenterY = title->mapTo(cell, title->rect().center()).y();
+            const int buttonCenterY = button->mapTo(cell, button->rect().center()).y();
+            QVERIFY2(qAbs(titleCenterY - buttonCenterY) <= 4,
+                     qPrintable(QString("titleCenterY=%1, buttonCenterY=%2")
+                                    .arg(titleCenterY)
+                                    .arg(buttonCenterY)));
+        }
     }
 }
 
