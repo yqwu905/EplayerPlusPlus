@@ -3,14 +3,14 @@
 #include <QTemporaryDir>
 #include <QImage>
 #include <QFile>
-#include <QMap>
-#include <QScrollArea>
-#include <QScrollBar>
 #include <QCheckBox>
+#include <QListView>
 #include <QPushButton>
+#include <QScrollBar>
 #include <algorithm>
 
 #include "models/CompareSession.h"
+#include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
 #include "widgets/BrowsePanel.h"
 #include "widgets/ThumbnailWidget.h"
@@ -28,7 +28,69 @@ private slots:
     void altClick_exactVsFuzzyFileNameMatch();
     void selection_preloadsPreviousAndNextThreeImages();
     void scrollableColumn_keepsHeaderControlsVisible();
+    void virtualizedColumn_doesNotCreateThumbnailWidgetsForRows();
+
+private:
+    static QList<QListView *> sortedViews(BrowsePanel &panel);
+    static void waitForRows(QListView *view, int rows);
+    static void clickRow(QListView *view, int row, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+    static int rowByFileName(QListView *view, const QString &fileName);
+    static bool isRowSelected(QListView *view, int row);
 };
+
+QList<QListView *> tst_BrowsePanel::sortedViews(BrowsePanel &panel)
+{
+    auto views = panel.findChildren<QListView *>(QStringLiteral("compareColumnListView"));
+    std::sort(views.begin(), views.end(), [&panel](QListView *lhs, QListView *rhs) {
+        return lhs->mapTo(&panel, QPoint(0, 0)).x() < rhs->mapTo(&panel, QPoint(0, 0)).x();
+    });
+    return views;
+}
+
+void tst_BrowsePanel::waitForRows(QListView *view, int rows)
+{
+    QVERIFY(view != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(view->model()->rowCount(), rows, 8000);
+}
+
+void tst_BrowsePanel::clickRow(QListView *view, int row, Qt::KeyboardModifiers modifiers)
+{
+    QVERIFY(view != nullptr);
+    auto *model = view->model();
+    QVERIFY(model != nullptr);
+    QVERIFY(row >= 0 && row < model->rowCount());
+
+    const QModelIndex index = model->index(row, 0);
+    view->scrollTo(index, QAbstractItemView::PositionAtCenter);
+    QTest::qWait(30);
+
+    QRect rect = view->visualRect(index);
+    QVERIFY2(rect.isValid(), qPrintable(QString("invalid visual rect for row %1").arg(row)));
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, modifiers, rect.center());
+}
+
+int tst_BrowsePanel::rowByFileName(QListView *view, const QString &fileName)
+{
+    auto *model = qobject_cast<ImageListModel *>(view->model());
+    if (!model) {
+        return -1;
+    }
+    for (int i = 0; i < model->imageCount(); ++i) {
+        if (model->fileNameAt(i) == fileName) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool tst_BrowsePanel::isRowSelected(QListView *view, int row)
+{
+    auto *model = qobject_cast<ImageListModel *>(view->model());
+    if (!model || row < 0 || row >= model->imageCount()) {
+        return false;
+    }
+    return model->isSelected(row);
+}
 
 void tst_BrowsePanel::duplicateFolder_plainClickSelectionsAreIndependent()
 {
@@ -59,30 +121,15 @@ void tst_BrowsePanel::duplicateFolder_plainClickSelectionsAreIndependent()
     QVERIFY(session.addFolder(tempDir.path()));
     QVERIFY(session.addFolder(tempDir.path()));
 
-    QList<ThumbnailWidget *> thumbnails;
-    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() == 4), 5000);
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    waitForRows(views[0], 2);
+    waitForRows(views[1], 2);
 
-    QMap<int, QList<ThumbnailWidget *>> columnMap;
-    for (auto *thumb : thumbnails) {
-        const int x = thumb->mapTo(&panel, QPoint(0, 0)).x();
-        columnMap[x].append(thumb);
-    }
-    QCOMPARE(columnMap.size(), 2);
-
-    auto columns = columnMap.values();
-    for (auto &columnThumbs : columns) {
-        std::sort(columnThumbs.begin(), columnThumbs.end(), [&panel](ThumbnailWidget *lhs, ThumbnailWidget *rhs) {
-            return lhs->mapTo(&panel, QPoint(0, 0)).y() < rhs->mapTo(&panel, QPoint(0, 0)).y();
-        });
-        QCOMPARE(columnThumbs.size(), 2);
-    }
-
-    // Click first image in first column.
-    QTest::mouseClick(columns[0][0], Qt::LeftButton);
+    clickRow(views[0], 0);
     QTRY_VERIFY_WITH_TIMEOUT(selectionSpy.count() >= 1, 2000);
 
-    // Click second image in second column. Plain-click should not clear first column selection.
-    QTest::mouseClick(columns[1][1], Qt::LeftButton);
+    clickRow(views[1], 1);
     QTRY_VERIFY_WITH_TIMEOUT(selectionSpy.count() >= 2, 2000);
 
     const auto latestSelection = qvariant_cast<SelectedImages>(selectionSpy.last().at(0));
@@ -116,45 +163,21 @@ void tst_BrowsePanel::ctrlClick_alignsSameIndexRowsAcrossColumns()
     QVERIFY(session.addFolder(dirA.path()));
     QVERIFY(session.addFolder(dirB.path()));
 
-    QList<ThumbnailWidget *> thumbnails;
-    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() == 32), 8000);
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    waitForRows(views[0], 16);
+    waitForRows(views[1], 16);
 
-    auto columns = panel.findChildren<QScrollArea *>();
-    QCOMPARE(columns.size(), 2);
-    std::sort(columns.begin(), columns.end(), [&panel](QScrollArea *lhs, QScrollArea *rhs) {
-        return lhs->mapTo(&panel, QPoint(0, 0)).x() < rhs->mapTo(&panel, QPoint(0, 0)).x();
-    });
+    views[1]->verticalScrollBar()->setValue(views[1]->verticalScrollBar()->maximum());
+    QVERIFY(views[1]->verticalScrollBar()->value() > 0);
 
-    // Put the second column in a different scroll offset first, then ensure
-    // Ctrl+Click (same-index mode) realigns it to the same visual row.
-    columns[1]->verticalScrollBar()->setValue(columns[1]->verticalScrollBar()->maximum());
-    QVERIFY(columns[1]->verticalScrollBar()->value() > 0);
+    clickRow(views[0], 10, Qt::ControlModifier);
 
-    ThumbnailWidget *anchorThumb = nullptr;
-    for (auto *thumb : thumbnails) {
-        if (thumb->fileName() == "img_10.png" &&
-            thumb->mapTo(&panel, QPoint(0, 0)).x() < panel.width() / 2) {
-            anchorThumb = thumb;
-            break;
-        }
-    }
-    QVERIFY(anchorThumb != nullptr);
-
-    QTest::mouseClick(anchorThumb, Qt::LeftButton, Qt::ControlModifier);
-
-    ThumbnailWidget *matchedThumb = nullptr;
-    for (auto *thumb : panel.findChildren<ThumbnailWidget *>()) {
-        if (thumb->fileName() == "img_10.png" &&
-            thumb->mapTo(&panel, QPoint(0, 0)).x() > panel.width() / 2) {
-            matchedThumb = thumb;
-            break;
-        }
-    }
-    QVERIFY(matchedThumb != nullptr);
-
-    const int anchorY = anchorThumb->mapTo(&panel, QPoint(0, 0)).y();
-    const int matchedY = matchedThumb->mapTo(&panel, QPoint(0, 0)).y();
-    QVERIFY2(qAbs(anchorY - matchedY) <= 2,
+    const QModelIndex anchorIndex = views[0]->model()->index(10, 0);
+    const QModelIndex matchedIndex = views[1]->model()->index(10, 0);
+    const int anchorY = views[0]->visualRect(anchorIndex).top();
+    const int matchedY = views[1]->visualRect(matchedIndex).top();
+    QVERIFY2(qAbs(anchorY - matchedY) <= 4,
              qPrintable(QString("anchorY=%1, matchedY=%2").arg(anchorY).arg(matchedY)));
 }
 
@@ -186,67 +209,60 @@ void tst_BrowsePanel::altClick_exactVsFuzzyFileNameMatch()
     QVERIFY(session.addFolder(dirA.path()));
     QVERIFY(session.addFolder(dirB.path()));
 
-    QList<ThumbnailWidget *> thumbnails;
-    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() == 4), 8000);
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    waitForRows(views[0], 2);
+    waitForRows(views[1], 2);
 
-    ThumbnailWidget *anchorThumb = nullptr;
-    for (auto *thumb : thumbnails) {
-        if (thumb->fileName() == anchorName &&
-            thumb->mapTo(&panel, QPoint(0, 0)).x() < panel.width() / 2) {
-            anchorThumb = thumb;
-            break;
-        }
-    }
-    QVERIFY(anchorThumb != nullptr);
+    const int anchorRow = rowByFileName(views[0], anchorName);
+    const int exactRow = rowByFileName(views[1], exactName);
+    const int fuzzyRow = rowByFileName(views[1], fuzzyName);
+    QVERIFY(anchorRow >= 0);
+    QVERIFY(exactRow >= 0);
+    QVERIFY(fuzzyRow >= 0);
 
-    // Fuzzy OFF by default: should only select exact same filename.
-    QTest::mouseClick(anchorThumb, Qt::LeftButton, Qt::AltModifier);
-    QTRY_VERIFY_WITH_TIMEOUT(anchorThumb->isSelected(), 1000);
+    clickRow(views[0], anchorRow, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], anchorRow), 1000);
+    QVERIFY(isRowSelected(views[1], exactRow));
+    QVERIFY(!isRowSelected(views[1], fuzzyRow));
 
-    ThumbnailWidget *exactThumb = nullptr;
-    ThumbnailWidget *fuzzyThumb = nullptr;
-    for (auto *thumb : panel.findChildren<ThumbnailWidget *>()) {
-        if (thumb->mapTo(&panel, QPoint(0, 0)).x() > panel.width() / 2) {
-            if (thumb->fileName() == exactName) {
-                exactThumb = thumb;
-            } else if (thumb->fileName() == fuzzyName) {
-                fuzzyThumb = thumb;
-            }
-        }
-    }
-    QVERIFY(exactThumb != nullptr);
-    QVERIFY(fuzzyThumb != nullptr);
-    QVERIFY(exactThumb->isSelected());
-    QVERIFY(!fuzzyThumb->isSelected());
-
-    // Remove exact match then enable fuzzy matching, now closest filename should match.
     QVERIFY(QFile::remove(dirB.filePath(exactName)));
     QVERIFY(session.removeFolderAt(1));
     QVERIFY(session.addFolder(dirB.path()));
-    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() >= 3), 8000);
+
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        ((views = sortedViews(panel)),
+         views.size() == 2 &&
+             ((views[0]->model()->rowCount() == 2 && views[1]->model()->rowCount() == 1) ||
+              (views[0]->model()->rowCount() == 1 && views[1]->model()->rowCount() == 2))),
+        8000);
 
     auto *fuzzyCheckBox = panel.findChild<QCheckBox *>("fuzzyFileNameCheckBox");
     QVERIFY(fuzzyCheckBox != nullptr);
     QVERIFY(!fuzzyCheckBox->isChecked());
     fuzzyCheckBox->setChecked(true);
 
-    // Re-find widgets after rebuild.
-    anchorThumb = nullptr;
-    fuzzyThumb = nullptr;
-    for (auto *thumb : panel.findChildren<ThumbnailWidget *>()) {
-        const int x = thumb->mapTo(&panel, QPoint(0, 0)).x();
-        if (thumb->fileName() == anchorName && x < panel.width() / 2) {
-            anchorThumb = thumb;
+    QListView *anchorView = nullptr;
+    QListView *fuzzyView = nullptr;
+    for (auto *view : views) {
+        if (rowByFileName(view, anchorName) >= 0) {
+            anchorView = view;
         }
-        if (thumb->fileName() == fuzzyName && x > panel.width() / 2) {
-            fuzzyThumb = thumb;
+        if (rowByFileName(view, fuzzyName) >= 0) {
+            fuzzyView = view;
         }
     }
-    QVERIFY(anchorThumb != nullptr);
-    QVERIFY(fuzzyThumb != nullptr);
+    QVERIFY(anchorView != nullptr);
+    QVERIFY(fuzzyView != nullptr);
 
-    QTest::mouseClick(anchorThumb, Qt::LeftButton, Qt::AltModifier);
-    QTRY_VERIFY_WITH_TIMEOUT(fuzzyThumb->isSelected(), 2000);
+    const int newAnchorRow = rowByFileName(anchorView, anchorName);
+    const int newFuzzyRow = rowByFileName(fuzzyView, fuzzyName);
+    QVERIFY(newAnchorRow >= 0);
+    QVERIFY(newFuzzyRow >= 0);
+
+    clickRow(anchorView, newAnchorRow, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(fuzzyView, newFuzzyRow), 2000);
 }
 
 void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()
@@ -273,20 +289,12 @@ void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()
 
     QVERIFY(session.addFolder(dir.path()));
 
-    QList<ThumbnailWidget *> thumbnails;
-    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() == 10), 8000);
-
-    ThumbnailWidget *anchorThumb = nullptr;
-    for (auto *thumb : thumbnails) {
-        if (thumb->fileName() == "img_04.png") {
-            anchorThumb = thumb;
-            break;
-        }
-    }
-    QVERIFY(anchorThumb != nullptr);
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
+    waitForRows(views[0], 10);
 
     QSignalSpy imageSpy(&loader, &ImageLoader::imageReady);
-    QTest::mouseClick(anchorThumb, Qt::LeftButton);
+    clickRow(views[0], 4);
 
     QTRY_VERIFY_WITH_TIMEOUT(imageSpy.count() >= 6, 5000);
 
@@ -324,29 +332,55 @@ void tst_BrowsePanel::scrollableColumn_keepsHeaderControlsVisible()
 
     QVERIFY(session.addFolder(dir.path()));
 
-    QList<ThumbnailWidget *> thumbnails;
-    QTRY_VERIFY_WITH_TIMEOUT((thumbnails = panel.findChildren<ThumbnailWidget *>(), thumbnails.size() == 20), 8000);
-
-    auto *scrollArea = panel.findChild<QScrollArea *>();
-    QVERIFY(scrollArea != nullptr);
-    QVERIFY(scrollArea->verticalScrollBar()->maximum() > 0);
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
+    waitForRows(views[0], 20);
+    QVERIFY(views[0]->verticalScrollBar()->maximum() > 0);
 
     auto *closeButton = panel.findChild<QPushButton *>("compareColumnCloseButton");
     QVERIFY(closeButton != nullptr);
 
-    const QRect closeRect(closeButton->mapTo(scrollArea->viewport(), QPoint(0, 0)),
-                          closeButton->size());
-    const QRect viewportRect = scrollArea->viewport()->rect();
-    QVERIFY2(viewportRect.contains(closeRect),
-             qPrintable(QString("closeRect=%1,%2 %3x%4 viewport=%5,%6 %7x%8")
+    views[0]->verticalScrollBar()->setValue(views[0]->verticalScrollBar()->maximum());
+    QTest::qWait(30);
+
+    const QRect closeRect(closeButton->mapTo(&panel, QPoint(0, 0)), closeButton->size());
+    QVERIFY2(panel.rect().contains(closeRect),
+             qPrintable(QString("closeRect=%1,%2 %3x%4 panel=%5,%6 %7x%8")
                             .arg(closeRect.x())
                             .arg(closeRect.y())
                             .arg(closeRect.width())
                             .arg(closeRect.height())
-                            .arg(viewportRect.x())
-                            .arg(viewportRect.y())
-                            .arg(viewportRect.width())
-                            .arg(viewportRect.height())));
+                            .arg(panel.rect().x())
+                            .arg(panel.rect().y())
+                            .arg(panel.rect().width())
+                            .arg(panel.rect().height())));
+}
+
+void tst_BrowsePanel::virtualizedColumn_doesNotCreateThumbnailWidgetsForRows()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    for (int i = 0; i < 200; ++i) {
+        const QString name = QString("img_%1.png").arg(i, 3, 10, QChar('0'));
+        QImage image(12, 12, QImage::Format_ARGB32);
+        image.fill(QColor::fromHsv((i * 11) % 360, 255, 210));
+        QVERIFY(image.save(dir.filePath(name)));
+    }
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(320, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dir.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
+    waitForRows(views[0], 200);
+    QCOMPARE(panel.findChildren<ThumbnailWidget *>().size(), 0);
 }
 
 QTEST_MAIN(tst_BrowsePanel)

@@ -1,30 +1,125 @@
 #include "BrowsePanel.h"
-#include "ThumbnailWidget.h"
 #include "models/CompareSession.h"
 #include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
 
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QScrollArea>
-#include <QLabel>
+#include <QAbstractItemView>
+#include <QApplication>
 #include <QCheckBox>
-#include <QPushButton>
-#include <QScrollBar>
 #include <QDir>
 #include <QFontMetrics>
-#include <QTimer>
-#include <QPointer>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QListView>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPushButton>
+#include <QScrollBar>
 #include <QSizePolicy>
+#include <QStyledItemDelegate>
 #include <QStyle>
+#include <QTimer>
+#include <QVBoxLayout>
+
 #include <limits>
 #include <vector>
 
 namespace
 {
 constexpr int kThumbnailCardWidth = 194;
+constexpr int kThumbnailImageSize = 180;
+constexpr int kThumbnailItemHeight = 222;
 constexpr int kColumnHorizontalMargins = 16;
 constexpr int kScrollAreaSafetyPadding = 4;
+constexpr int kPrefetchMinimumRows = 32;
+
+class ThumbnailDelegate final : public QStyledItemDelegate
+{
+public:
+    explicit ThumbnailDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem & /*option*/,
+                   const QModelIndex & /*index*/) const override
+    {
+        return QSize(kThumbnailCardWidth + 16, kThumbnailItemHeight);
+    }
+
+    void paint(QPainter *painter,
+               const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+
+        const bool selected = index.data(ImageListModel::IsSelectedRole).toBool();
+        const bool hovered = option.state & QStyle::State_MouseOver;
+        const int cardX = option.rect.x() + qMax(0, (option.rect.width() - kThumbnailCardWidth) / 2);
+        const QRect cardRect(cardX, option.rect.y() + 2, kThumbnailCardWidth, kThumbnailItemHeight - 4);
+
+        if (selected) {
+            painter->setPen(QPen(QColor(0x00, 0x78, 0xD4), 2));
+            painter->setBrush(QColor(0xE5, 0xF1, 0xFB));
+        } else if (hovered) {
+            painter->setPen(QPen(QColor(0xD1, 0xD1, 0xD1), 1));
+            painter->setBrush(QColor(0xFF, 0xFF, 0xFF));
+        } else {
+            painter->setPen(QPen(QColor(0xE0, 0xE0, 0xE0), 1));
+            painter->setBrush(QColor(0xFF, 0xFF, 0xFF));
+        }
+        painter->drawRoundedRect(cardRect.adjusted(1, 1, -1, -1), 8, 8);
+
+        const QRect thumbArea(cardRect.x() + 7,
+                              cardRect.y() + 7,
+                              kThumbnailImageSize,
+                              kThumbnailImageSize);
+
+        QPainterPath clipPath;
+        clipPath.addRoundedRect(thumbArea, 6, 6);
+        painter->setClipPath(clipPath);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(0xF5, 0xF5, 0xF5));
+        painter->drawRect(thumbArea);
+
+        const QVariant thumbVar = index.data(ImageListModel::ThumbnailRole);
+        const QImage thumbnail = thumbVar.canConvert<QImage>() ? thumbVar.value<QImage>() : QImage();
+        if (!thumbnail.isNull()) {
+            const int x = thumbArea.x() + (thumbArea.width() - thumbnail.width()) / 2;
+            const int y = thumbArea.y() + (thumbArea.height() - thumbnail.height()) / 2;
+            painter->drawImage(QPoint(x, y), thumbnail);
+        } else {
+            painter->setPen(QColor(0x9E, 0x9E, 0x9E));
+            QFont placeholderFont = painter->font();
+            placeholderFont.setPointSize(10);
+            painter->setFont(placeholderFont);
+            painter->drawText(thumbArea, Qt::AlignCenter, QObject::tr("Loading..."));
+        }
+        painter->setClipping(false);
+
+        const QRect textArea(cardRect.x() + 7,
+                             thumbArea.bottom() + 4,
+                             kThumbnailImageSize,
+                             24);
+        painter->setPen(QColor(0x61, 0x61, 0x61));
+        QFont font = painter->font();
+        font.setPointSize(10);
+        painter->setFont(font);
+        QFontMetrics fm(font);
+        const QString fileName = index.data(ImageListModel::FileNameRole).toString();
+        painter->drawText(textArea,
+                          Qt::AlignCenter,
+                          fm.elidedText(fileName, Qt::ElideMiddle, textArea.width()));
+
+        painter->restore();
+    }
+};
+
+int rowExtent(const QListView *view)
+{
+    return kThumbnailItemHeight + (view ? view->spacing() : 0);
+}
 }
 
 BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
@@ -75,10 +170,8 @@ void BrowsePanel::setupUi()
     m_columnsLayout = new QHBoxLayout();
     m_columnsLayout->setContentsMargins(8, 8, 8, 8);
     m_columnsLayout->setSpacing(8);
-
-    // Add stretch so columns are left-aligned when fewer than max compare count
     m_columnsLayout->addStretch();
-    m_rootLayout->addLayout(m_columnsLayout);
+    m_rootLayout->addLayout(m_columnsLayout, 1);
 
     setStyleSheet("BrowsePanel { background-color: #F5F5F5; }");
 }
@@ -88,44 +181,24 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     Q_UNUSED(index);
 
     ColumnInfo col;
-
-    // Create the model (setFolder is now async)
     col.model = new ImageListModel(this);
     col.model->setImageLoader(m_imageLoader);
 
-    // Create scroll area
-    col.scrollArea = new QScrollArea(this);
-    col.scrollArea->setWidgetResizable(true);
-    col.scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    col.scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    const int verticalScrollBarWidth = col.scrollArea->style()->pixelMetric(
-        QStyle::PM_ScrollBarExtent,
-        nullptr,
-        col.scrollArea);
-    col.scrollArea->setMinimumWidth(kThumbnailCardWidth
-                                    + kColumnHorizontalMargins
-                                    + verticalScrollBarWidth
-                                    + kScrollAreaSafetyPadding);
-    col.scrollArea->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
-    col.scrollArea->setStyleSheet(
-        "QScrollArea { background-color: #F5F5F5; border: none; border-radius: 8px; }");
+    col.columnWidget = new QWidget(this);
+    col.columnWidget->setObjectName(QStringLiteral("compareColumnWidget"));
+    col.columnWidget->setStyleSheet("QWidget#compareColumnWidget { background-color: #F5F5F5; }");
+    col.columnWidget->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
 
-    // Create container widget inside scroll area
-    col.container = new QWidget();
-    col.container->setStyleSheet("QWidget { background-color: #F5F5F5; }");
-    col.containerLayout = new QVBoxLayout(col.container);
+    col.containerLayout = new QVBoxLayout(col.columnWidget);
     col.containerLayout->setContentsMargins(8, 8, 8, 8);
     col.containerLayout->setSpacing(8);
 
-    // Header with folder name and close button — Fluent 2 card style
-    auto *headerWidget = new QWidget(col.container);
+    auto *headerWidget = new QWidget(col.columnWidget);
     auto *headerLayout = new QHBoxLayout(headerWidget);
     headerLayout->setContentsMargins(12, 8, 8, 8);
     headerLayout->setSpacing(8);
 
-    QString displayName = QDir(folderPath).dirName();
-    
-    // Create an empty label first to set font
+    const QString displayName = QDir(folderPath).dirName();
     auto *headerLabel = new QLabel(headerWidget);
     headerLabel->setObjectName(QStringLiteral("compareColumnHeaderLabel"));
     headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -137,20 +210,14 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLabel->setFont(headerFont);
     headerLabel->setStyleSheet(
         "QLabel { color: #1A1A1A; background: transparent; border: none; }");
-        
-    // Elide text to avoid pushing the close button out of view
-    // Available width is approx: 220 (Thumbnail width) - 28 (Close btn) - 44 (Margins/Spacing) ~= 148px
     QFontMetrics fm(headerFont);
-    QString elidedName = fm.elidedText(displayName, Qt::ElideRight, 140);
-    headerLabel->setText(elidedName);
+    headerLabel->setText(fm.elidedText(displayName, Qt::ElideRight, 140));
     headerLabel->setToolTip(displayName);
-    
     headerLayout->addWidget(headerLabel, 1);
 
     auto *closeBtn = new QPushButton(QStringLiteral("\u00D7"), headerWidget);
     closeBtn->setObjectName(QStringLiteral("compareColumnCloseButton"));
     closeBtn->setFixedSize(28, 28);
-    closeBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     closeBtn->setToolTip(tr("Remove from comparison"));
     closeBtn->setCursor(Qt::PointingHandCursor);
     closeBtn->setStyleSheet(
@@ -161,11 +228,10 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         "QPushButton:pressed { background-color: #D1D1D1; color: #1A1A1A; }");
     headerLayout->addWidget(closeBtn);
 
-    QScrollArea *scrollAreaPtr = col.scrollArea;
-    connect(closeBtn, &QPushButton::clicked, this, [this, scrollAreaPtr]() {
-        // Find current index dynamically — indices shift after removals
+    QWidget *columnWidgetPtr = col.columnWidget;
+    connect(closeBtn, &QPushButton::clicked, this, [this, columnWidgetPtr]() {
         for (int i = 0; i < m_columns.size(); ++i) {
-            if (m_columns[i].scrollArea == scrollAreaPtr) {
+            if (m_columns[i].columnWidget == columnWidgetPtr) {
                 m_session->removeFolderAt(i);
                 return;
             }
@@ -176,31 +242,46 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         "QWidget { background-color: #FFFFFF; border-radius: 8px; }");
     col.containerLayout->addWidget(headerWidget);
 
-    // Loading label — shown while async scan is in progress
-    col.loadingLabel = new QLabel(tr("Scanning..."), col.container);
-    col.loadingLabel->setAlignment(Qt::AlignCenter);
-    col.loadingLabel->setStyleSheet(
-        "QLabel { color: #9E9E9E; padding: 20px; background: transparent; border: none; }");
-    col.containerLayout->addWidget(col.loadingLabel);
-
-    col.progressLabel = new QLabel(tr("Discovered: 0"), col.container);
+    col.progressLabel = new QLabel(tr("Discovered: 0"), col.columnWidget);
     col.progressLabel->setAlignment(Qt::AlignCenter);
     col.progressLabel->setStyleSheet(
         "QLabel { color: #7D7D7D; padding: 4px; background: transparent; border: none; }");
     col.containerLayout->addWidget(col.progressLabel);
 
-    col.containerLayout->addStretch();
-    col.scrollArea->setWidget(col.container);
+    col.view = new QListView(col.columnWidget);
+    col.view->setObjectName(QStringLiteral("compareColumnListView"));
+    col.view->setModel(col.model);
+    col.view->setItemDelegate(new ThumbnailDelegate(col.view));
+    col.view->setMouseTracking(true);
+    col.view->setSelectionMode(QAbstractItemView::NoSelection);
+    col.view->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    col.view->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    col.view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    col.view->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    col.view->setUniformItemSizes(true);
+    col.view->setSpacing(8);
+    col.view->setFlow(QListView::TopToBottom);
+    col.view->setWrapping(false);
+    col.view->setResizeMode(QListView::Adjust);
+    col.view->setMovement(QListView::Static);
+    col.view->setStyleSheet(
+        "QListView { background-color: #F5F5F5; border: none; outline: none; }");
+    const int verticalScrollBarWidth = col.view->style()->pixelMetric(
+        QStyle::PM_ScrollBarExtent,
+        nullptr,
+        col.view);
+    col.view->setMinimumWidth(kThumbnailCardWidth
+                              + kColumnHorizontalMargins
+                              + verticalScrollBarWidth
+                              + kScrollAreaSafetyPadding);
+    col.containerLayout->addWidget(col.view, 1);
 
-    // Insert before the stretch at the end
-    int insertPos = m_columnsLayout->count() - 1; // before the trailing stretch
-    m_columnsLayout->insertWidget(insertPos, col.scrollArea, 1);
+    const int insertPos = m_columnsLayout->count() - 1;
+    m_columnsLayout->insertWidget(insertPos, col.columnWidget, 1);
 
     m_columns.append(col);
     ImageListModel *modelPtr = col.model;
 
-    // Build thumbnails as soon as scan batches arrive instead of waiting for
-    // the complete folder scan on large directories.
     connect(col.model, &QAbstractItemModel::rowsInserted,
             this, [this, modelPtr](const QModelIndex &parent, int /*first*/, int last) {
         if (parent.isValid()) {
@@ -214,14 +295,11 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         auto &column = m_columns[currentIndex];
         column.discoveredCount = qMax(column.discoveredCount,
                                       column.model ? column.model->imageCount() : last + 1);
-        column.buildTargetCount = qMax(column.buildTargetCount, last + 1);
         updateColumnProgressLabel(currentIndex);
         updateGlobalScanStatus();
-        scheduleBuildThumbnailsBatch(currentIndex);
         requestVisibleThumbnailsForAllColumns();
     });
 
-    // Connect folderReady signal to finalize the column when scan completes
     connect(col.model, &ImageListModel::folderReady,
             this, [this, modelPtr]() {
         const int currentIndex = columnIndexForModel(modelPtr);
@@ -229,6 +307,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
             onFolderReady(currentIndex);
         }
     });
+
     connect(col.model, &ImageListModel::scanProgressChanged,
             this, [this, modelPtr](int discoveredCount, bool finished) {
         const int currentIndex = columnIndexForModel(modelPtr);
@@ -238,159 +317,53 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         auto &column = m_columns[currentIndex];
         column.discoveredCount = discoveredCount;
         column.scanFinished = finished;
-        if (column.model) {
-            column.buildTargetCount = qMax(column.buildTargetCount,
-                                           column.model->imageCount());
-        }
         updateColumnProgressLabel(currentIndex);
         updateGlobalScanStatus();
     });
 
-    // Connect scroll to lazy-load more thumbnails
-    connect(col.scrollArea->verticalScrollBar(), &QScrollBar::valueChanged,
+    connect(col.view->verticalScrollBar(), &QScrollBar::valueChanged,
             this, [this, modelPtr](int /*value*/) {
         const int colIdx = columnIndexForModel(modelPtr);
-        if (colIdx < 0) return;
+        if (colIdx < 0) {
+            return;
+        }
         const auto &c = m_columns[colIdx];
-        if (!c.scrollArea || !c.model) return;
+        if (!c.view || !c.model) {
+            return;
+        }
 
         auto [firstVisible, lastVisible] = visibleRangeForColumn(c);
         c.model->loadThumbnailsForRange(firstVisible, lastVisible);
     });
 
-    // Connect model thumbnail updates to widget updates
-    connect(col.model, &QAbstractItemModel::dataChanged,
-            this, [this, modelPtr](
-                const QModelIndex &topLeft, const QModelIndex &bottomRight,
-                const QList<int> &roles) {
-        const int colIdx = columnIndexForModel(modelPtr);
-        if (colIdx < 0) return;
-        if (!roles.contains(Qt::DecorationRole) &&
-            !roles.contains(ImageListModel::ThumbnailRole)) {
-            return;
-        }
-        const auto &c = m_columns[colIdx];
-        for (int row = topLeft.row(); row <= bottomRight.row(); ++row) {
-            if (row >= 0 && row < c.thumbnailWidgets.size()) {
-                QVariant thumbVar = c.model->data(c.model->index(row),
-                                                   ImageListModel::ThumbnailRole);
-                if (thumbVar.canConvert<QImage>()) {
-                    c.thumbnailWidgets[row]->setThumbnail(thumbVar.value<QImage>());
-                }
-            }
+    connect(col.view, &QListView::clicked,
+            this, [this, modelPtr](const QModelIndex &modelIndex) {
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex >= 0 && modelIndex.isValid()) {
+            onThumbnailActivated(currentIndex,
+                                 modelIndex.row(),
+                                 QApplication::keyboardModifiers());
         }
     });
 
-    // Start async folder scan
     col.model->setFolder(folderPath);
     updateGlobalScanStatus();
 }
 
 void BrowsePanel::onFolderReady(int columnIndex)
 {
-    if (columnIndex < 0 || columnIndex >= m_columns.size()) return;
+    if (columnIndex < 0 || columnIndex >= m_columns.size()) {
+        return;
+    }
 
     auto &col = m_columns[columnIndex];
-
     col.scanFinished = true;
     col.discoveredCount = col.model ? col.model->imageCount() : col.discoveredCount;
-    col.buildTargetCount = col.discoveredCount;
 
-    // Remove loading label
-    if (col.loadingLabel) {
-        col.containerLayout->removeWidget(col.loadingLabel);
-        delete col.loadingLabel;
-        col.loadingLabel = nullptr;
-    }
     updateColumnProgressLabel(columnIndex);
     updateGlobalScanStatus();
-
-    // Keep building any rows that arrived after the last incremental batch.
-    scheduleBuildThumbnailsBatch(columnIndex);
-
-    // Load visible thumbnails first for instant feedback
     requestVisibleThumbnailsForAllColumns();
-
-    // Start or continue interleaved thumbnail loading across all columns
     startInterleavedLoading();
-}
-
-void BrowsePanel::scheduleBuildThumbnailsBatch(int columnIndex)
-{
-    if (columnIndex < 0 || columnIndex >= m_columns.size()) return;
-
-    auto &col = m_columns[columnIndex];
-    if (!col.model || col.buildScheduled) return;
-    if (col.builtCount >= qMin(col.buildTargetCount, col.model->imageCount())) return;
-
-    col.buildScheduled = true;
-    QPointer<ImageListModel> modelPtr(col.model);
-    QTimer::singleShot(kWidgetBuildIntervalMs, this, [this, modelPtr]() {
-        if (!modelPtr) {
-            return;
-        }
-        const int currentIndex = columnIndexForModel(modelPtr);
-        if (currentIndex >= 0) {
-            buildThumbnailsBatch(currentIndex);
-        }
-    });
-}
-
-void BrowsePanel::buildThumbnailsBatch(int columnIndex)
-{
-    if (columnIndex < 0 || columnIndex >= m_columns.size()) return;
-
-    auto &col = m_columns[columnIndex];
-    if (!col.model) return;
-
-    col.buildScheduled = false;
-
-    const int totalImages = col.model->imageCount();
-    const int targetImages = qMin(qMax(col.buildTargetCount, col.builtCount), totalImages);
-    const int end = qMin(col.builtCount + kBatchSize, targetImages);
-
-    if (col.loadingLabel && targetImages > 0) {
-        col.containerLayout->removeWidget(col.loadingLabel);
-        delete col.loadingLabel;
-        col.loadingLabel = nullptr;
-    }
-
-    // Remove the trailing stretch before adding widgets
-    if (col.containerLayout->count() > 0) {
-        QLayoutItem *lastItem = col.containerLayout->itemAt(col.containerLayout->count() - 1);
-        if (lastItem && lastItem->spacerItem()) {
-            col.containerLayout->removeItem(lastItem);
-            delete lastItem;
-        }
-    }
-
-    for (int i = col.builtCount; i < end; ++i) {
-        auto *thumb = new ThumbnailWidget(col.container);
-        thumb->setFilePath(col.model->imagePathAt(i));
-        thumb->setFileName(col.model->fileNameAt(i));
-        thumb->setSelected(col.model->isSelected(i));
-
-        QVariant thumbVar = col.model->data(col.model->index(i),
-                                             ImageListModel::ThumbnailRole);
-        if (thumbVar.canConvert<QImage>()) {
-            thumb->setThumbnail(thumbVar.value<QImage>());
-        }
-
-        connect(thumb, &ThumbnailWidget::clicked,
-                this, &BrowsePanel::onThumbnailClicked);
-
-        col.containerLayout->addWidget(thumb);
-        col.thumbnailWidgets.append(thumb);
-    }
-
-    col.builtCount = end;
-
-    if (col.builtCount < targetImages) {
-        scheduleBuildThumbnailsBatch(columnIndex);
-    } else if (col.scanFinished && col.builtCount >= totalImages) {
-        // All widgets built — add trailing stretch
-        col.containerLayout->addStretch();
-    }
 }
 
 void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
@@ -402,19 +375,17 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
     }
 
     ColumnInfo &col = m_columns[index];
-    m_columnsLayout->removeWidget(col.scrollArea);
-    delete col.scrollArea;
+    m_columnsLayout->removeWidget(col.columnWidget);
+    delete col.columnWidget;
     delete col.model;
 
     m_columns.removeAt(index);
 
-    // Stop interleaved loading if no columns remain
     if (m_columns.isEmpty()) {
         stopInterleavedLoading();
     }
 
     updateGlobalScanStatus();
-
     emitSelectionChanged();
 }
 
@@ -426,35 +397,30 @@ void BrowsePanel::onSessionCleared()
     emitSelectionChanged();
 }
 
-void BrowsePanel::onThumbnailClicked(const QString &filePath,
-                                      Qt::KeyboardModifiers modifiers)
+void BrowsePanel::onThumbnailActivated(int clickedCol,
+                                       int clickedIdx,
+                                       Qt::KeyboardModifiers modifiers)
 {
-    Q_UNUSED(filePath);
-
-    const auto *clickedThumb = qobject_cast<const ThumbnailWidget *>(sender());
-    int clickedCol = -1;
-    int clickedIdx = -1;
-    if (!clickedThumb || !findThumbnailPosition(clickedThumb, clickedCol, clickedIdx)) {
+    if (clickedCol < 0 || clickedCol >= m_columns.size()) {
+        return;
+    }
+    if (!m_columns[clickedCol].model ||
+        clickedIdx < 0 ||
+        clickedIdx >= m_columns[clickedCol].model->imageCount()) {
         return;
     }
 
     if (modifiers & Qt::ControlModifier) {
-        // Ctrl+Click: select this image + same-index (order) images in all other columns
         clearSelection();
         QList<int> matchedIndices(m_columns.size(), -1);
         for (int c = 0; c < m_columns.size(); ++c) {
             if (clickedIdx < m_columns[c].model->imageCount()) {
                 matchedIndices[c] = clickedIdx;
                 m_columns[c].model->setSelected(clickedIdx, true);
-                if (clickedIdx < m_columns[c].thumbnailWidgets.size()) {
-                    m_columns[c].thumbnailWidgets[clickedIdx]->setSelected(true);
-                }
             }
         }
-
         alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
     } else if (modifiers & Qt::AltModifier) {
-        // Alt+Click: select this image + filename-matched images in all other columns
         clearSelection();
         const QString fileName = m_columns[clickedCol].model->fileNameAt(clickedIdx);
         QList<int> matchedIndices(m_columns.size(), -1);
@@ -464,20 +430,12 @@ void BrowsePanel::onThumbnailClicked(const QString &filePath,
             if (matchIdx >= 0) {
                 matchedIndices[c] = matchIdx;
                 m_columns[c].model->setSelected(matchIdx, true);
-                if (matchIdx < m_columns[c].thumbnailWidgets.size()) {
-                    m_columns[c].thumbnailWidgets[matchIdx]->setSelected(true);
-                }
             }
         }
         alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
     } else {
-        // Plain click: select only this single image in its own column,
-        // without affecting other columns' selections
         clearColumnSelection(clickedCol);
         m_columns[clickedCol].model->setSelected(clickedIdx, true);
-        if (clickedIdx < m_columns[clickedCol].thumbnailWidgets.size()) {
-            m_columns[clickedCol].thumbnailWidgets[clickedIdx]->setSelected(true);
-        }
     }
 
     emitSelectionChanged();
@@ -492,14 +450,20 @@ void BrowsePanel::alignColumnsToAnchor(int anchorColumn,
     }
 
     const auto &anchorCol = m_columns[anchorColumn];
-    if (!anchorCol.scrollArea || anchorIndex < 0 ||
-        anchorIndex >= anchorCol.thumbnailWidgets.size()) {
+    if (!anchorCol.view || !anchorCol.model || anchorIndex < 0 ||
+        anchorIndex >= anchorCol.model->imageCount()) {
         return;
     }
 
-    auto *anchorScrollBar = anchorCol.scrollArea->verticalScrollBar();
-    const int anchorYInViewport =
-        anchorCol.thumbnailWidgets[anchorIndex]->y() - anchorScrollBar->value();
+    const QModelIndex anchorModelIndex = anchorCol.model->index(anchorIndex);
+    QRect anchorRect = anchorCol.view->visualRect(anchorModelIndex);
+    if (!anchorRect.isValid()) {
+        anchorCol.view->scrollTo(anchorModelIndex, QAbstractItemView::PositionAtCenter);
+        anchorRect = anchorCol.view->visualRect(anchorModelIndex);
+    }
+    const int anchorYInViewport = anchorRect.isValid()
+        ? anchorRect.top()
+        : anchorIndex * rowExtent(anchorCol.view) - anchorCol.view->verticalScrollBar()->value();
 
     for (int c = 0; c < m_columns.size(); ++c) {
         if (c == anchorColumn || c >= matchedIndices.size()) {
@@ -508,25 +472,40 @@ void BrowsePanel::alignColumnsToAnchor(int anchorColumn,
 
         const int targetIndex = matchedIndices[c];
         auto &targetCol = m_columns[c];
-        if (!targetCol.scrollArea || targetIndex < 0 ||
-            targetIndex >= targetCol.thumbnailWidgets.size()) {
+        if (!targetCol.view || !targetCol.model || targetIndex < 0 ||
+            targetIndex >= targetCol.model->imageCount()) {
             continue;
         }
 
-        auto *targetScrollBar = targetCol.scrollArea->verticalScrollBar();
-        const int targetY = targetCol.thumbnailWidgets[targetIndex]->y();
+        auto *targetScrollBar = targetCol.view->verticalScrollBar();
         const int desiredScroll = qBound(targetScrollBar->minimum(),
-                                         targetY - anchorYInViewport,
+                                         targetIndex * rowExtent(targetCol.view) - anchorYInViewport,
                                          targetScrollBar->maximum());
         targetScrollBar->setValue(desiredScroll);
+        const QModelIndex targetModelIndex = targetCol.model->index(targetIndex);
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            const QRect targetRect = targetCol.view->visualRect(targetModelIndex);
+            if (!targetRect.isValid()) {
+                targetCol.view->scrollTo(targetModelIndex, QAbstractItemView::PositionAtCenter);
+                continue;
+            }
+            const int delta = targetRect.top() - anchorYInViewport;
+            if (qAbs(delta) <= 2) {
+                break;
+            }
+            targetScrollBar->setValue(qBound(targetScrollBar->minimum(),
+                                             targetScrollBar->value() + delta,
+                                             targetScrollBar->maximum()));
+        }
+        targetCol.model->loadThumbnailsForRange(targetIndex, targetIndex);
     }
 }
 
 void BrowsePanel::clearAllColumns()
 {
     for (auto &col : m_columns) {
-        m_columnsLayout->removeWidget(col.scrollArea);
-        delete col.scrollArea;
+        m_columnsLayout->removeWidget(col.columnWidget);
+        delete col.columnWidget;
         delete col.model;
     }
     m_columns.clear();
@@ -540,21 +519,16 @@ void BrowsePanel::clearSelection()
 {
     for (auto &col : m_columns) {
         col.model->clearSelection();
-        for (auto *thumb : col.thumbnailWidgets) {
-            thumb->setSelected(false);
-        }
     }
 }
 
 void BrowsePanel::clearColumnSelection(int column)
 {
-    if (column < 0 || column >= m_columns.size()) return;
-
-    auto &col = m_columns[column];
-    col.model->clearSelection();
-    for (auto *thumb : col.thumbnailWidgets) {
-        thumb->setSelected(false);
+    if (column < 0 || column >= m_columns.size()) {
+        return;
     }
+
+    m_columns[column].model->clearSelection();
 }
 
 void BrowsePanel::emitSelectionChanged()
@@ -660,27 +634,6 @@ int BrowsePanel::levenshteinDistance(const QString &a, const QString &b) const
     return prev[m];
 }
 
-bool BrowsePanel::findThumbnailPosition(const ThumbnailWidget *thumbnail,
-                                        int &column,
-                                        int &indexInColumn) const
-{
-    if (!thumbnail) {
-        return false;
-    }
-
-    for (int c = 0; c < m_columns.size(); ++c) {
-        const int idx = m_columns[c].thumbnailWidgets.indexOf(
-            const_cast<ThumbnailWidget *>(thumbnail));
-        if (idx >= 0) {
-            column = c;
-            indexInColumn = idx;
-            return true;
-        }
-    }
-
-    return false;
-}
-
 int BrowsePanel::columnIndexForModel(const ImageListModel *model) const
 {
     if (!model) {
@@ -713,35 +666,27 @@ void BrowsePanel::navigateSelection(int delta)
     for (int c = 0; c < m_columns.size(); ++c) {
         auto &col = m_columns[c];
         QList<int> selected = col.model->selectedIndices();
-        if (selected.isEmpty()) continue;
+        if (selected.isEmpty()) {
+            continue;
+        }
 
-        // Use the first selected index as the anchor
-        int currentIdx = selected.first();
-        int newIdx = currentIdx + delta;
+        const int currentIdx = selected.first();
+        const int newIdx = currentIdx + delta;
 
-        if (newIdx < 0 || newIdx >= col.model->imageCount()) continue;
+        if (newIdx < 0 || newIdx >= col.model->imageCount()) {
+            continue;
+        }
 
-        // Clear old selection in this column
         col.model->clearSelection();
-        for (auto *thumb : col.thumbnailWidgets) {
-            thumb->setSelected(false);
-        }
-
-        // Select new index
         col.model->setSelected(newIdx, true);
-        if (newIdx < col.thumbnailWidgets.size()) {
-            col.thumbnailWidgets[newIdx]->setSelected(true);
-
-            // Scroll to make the selected thumbnail visible
-            if (col.scrollArea) {
-                col.scrollArea->ensureWidgetVisible(col.thumbnailWidgets[newIdx], 50, 50);
-            }
+        if (col.view) {
+            col.view->scrollTo(col.model->index(newIdx), QAbstractItemView::PositionAtCenter);
         }
-
         anyChanged = true;
     }
 
     if (anyChanged) {
+        requestVisibleThumbnailsForAllColumns();
         emitSelectionChanged();
     }
 }
@@ -749,7 +694,7 @@ void BrowsePanel::navigateSelection(int delta)
 void BrowsePanel::startInterleavedLoading()
 {
     if (m_interleavedLoadTimer && m_interleavedLoadTimer->isActive()) {
-        return; // Already running
+        return;
     }
 
     if (!m_interleavedLoadTimer) {
@@ -793,23 +738,38 @@ void BrowsePanel::onInterleavedLoadTick()
 
 QPair<int, int> BrowsePanel::visibleRangeForColumn(const ColumnInfo &column) const
 {
-    if (!column.scrollArea || !column.model || column.model->imageCount() <= 0) {
+    if (!column.view || !column.model || column.model->imageCount() <= 0) {
         return {0, -1};
     }
 
-    const int scrollY = column.scrollArea->verticalScrollBar()->value();
-    const int viewportH = column.scrollArea->viewport()->height();
-    const int itemH = 220;
-    const int firstVisible = qMax(0, scrollY / itemH - 2);
+    const int scrollY = column.view->verticalScrollBar()->value();
+    const int viewportH = column.view->viewport()->height();
+    const int extent = qMax(1, rowExtent(column.view));
+    const int firstVisible = qMax(0, scrollY / extent - 2);
     const int lastVisible = qMin(column.model->imageCount() - 1,
-                                 (scrollY + viewportH) / itemH + 3);
+                                 (scrollY + viewportH) / extent + 3);
     return {firstVisible, lastVisible};
+}
+
+QPair<int, int> BrowsePanel::prefetchRangeForColumn(const ColumnInfo &column) const
+{
+    auto [firstVisible, lastVisible] = visibleRangeForColumn(column);
+    if (lastVisible < firstVisible || !column.model) {
+        return {0, -1};
+    }
+
+    const int visibleRows = lastVisible - firstVisible + 1;
+    const int margin = qMax(kPrefetchMinimumRows, visibleRows * 3);
+    return {
+        qMax(0, firstVisible - margin),
+        qMin(column.model->imageCount() - 1, lastVisible + margin)
+    };
 }
 
 void BrowsePanel::requestVisibleThumbnailsForAllColumns()
 {
     for (auto &col : m_columns) {
-        if (!col.model || !col.scrollArea || col.model->imageCount() <= 0) {
+        if (!col.model || !col.view || col.model->imageCount() <= 0) {
             continue;
         }
         auto [firstVisible, lastVisible] = visibleRangeForColumn(col);
@@ -823,12 +783,12 @@ QSet<QString> BrowsePanel::aggregateVisiblePaths() const
 {
     QSet<QString> visiblePaths;
     for (const auto &col : m_columns) {
-        if (!col.model || !col.scrollArea || col.model->imageCount() <= 0) {
+        if (!col.model || !col.view || col.model->imageCount() <= 0) {
             continue;
         }
-        auto [firstVisible, lastVisible] = visibleRangeForColumn(col);
+        auto [firstVisible, lastVisible] = prefetchRangeForColumn(col);
         for (int i = firstVisible; i <= lastVisible; ++i) {
-            QString path = col.model->imagePathAt(i);
+            const QString path = col.model->imagePathAt(i);
             if (!path.isEmpty()) {
                 visiblePaths.insert(path);
             }

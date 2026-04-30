@@ -86,6 +86,7 @@ private slots:
     void onCellPanChanged(QPointF offset);
     void onCellViewReset();
     void onImageReady(const QString &imagePath, const QImage &image);
+    void onThumbnailReady(const QString &imagePath, const QImage &thumbnail);
 
 private:
     struct ImageCell {
@@ -99,8 +100,10 @@ private:
         QString folderPath;
         QString imagePath;
         QImage originalImage;
+        QImage previewImage;
         QImage cachedToleranceImage;   // Cached tolerance map (full res)
         bool hasImage = false;
+        bool showingPreview = false;
         bool showingToleranceMap = false;
         int toleranceSourceIndex = -1;
     };
@@ -113,6 +116,7 @@ private:
     void loadImage(int cellIndex);
     void preloadImagesForSelection(const QList<QPair<QString, QString>> &selectedImages);
     void clearImage(int cellIndex);
+    void showPreviewImage(int cellIndex, const QImage &preview, bool resetView = false);
     void showOriginalImage(int cellIndex, bool resetView = false);
     void showToleranceMap(int sourceIndex, int targetIndex);
     void showSourceOnTarget(int sourceIndex, int targetIndex);

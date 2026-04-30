@@ -7,14 +7,13 @@
 #include <QSet>
 
 class QHBoxLayout;
-class QScrollArea;
 class QLabel;
 class QVBoxLayout;
 class QCheckBox;
+class QListView;
 class CompareSession;
 class ImageListModel;
 class ImageLoader;
-class ThumbnailWidget;
 
 /**
  * @brief Image browsing panel with multi-column thumbnail layout.
@@ -58,32 +57,25 @@ private slots:
     void onFolderAdded(const QString &folderPath, int index);
     void onFolderRemoved(const QString &folderPath, int index);
     void onSessionCleared();
-    void onThumbnailClicked(const QString &filePath, Qt::KeyboardModifiers modifiers);
     void onFolderReady(int columnIndex);
 
 private:
     struct ColumnInfo {
-        QScrollArea *scrollArea = nullptr;
-        QWidget *container = nullptr;
+        QWidget *columnWidget = nullptr;
         QVBoxLayout *containerLayout = nullptr;
-        QLabel *loadingLabel = nullptr;
         QLabel *progressLabel = nullptr;
+        QListView *view = nullptr;
         ImageListModel *model = nullptr;
-        QList<ThumbnailWidget *> thumbnailWidgets;
-        int builtCount = 0;
-        int buildTargetCount = 0;
         int discoveredCount = 0;
         bool scanFinished = false;
-        bool buildScheduled = false;
     };
 
     void setupUi();
-    void scheduleBuildThumbnailsBatch(int columnIndex);
-    void buildThumbnailsBatch(int columnIndex);
     void clearAllColumns();
     void clearSelection();
     void navigateSelection(int delta);
     void clearColumnSelection(int column);
+    void onThumbnailActivated(int column, int row, Qt::KeyboardModifiers modifiers);
     void alignColumnsToAnchor(int anchorColumn,
                               int anchorIndex,
                               const QList<int> &matchedIndices);
@@ -95,15 +87,13 @@ private:
     void stopInterleavedLoading();
     void onInterleavedLoadTick();
     QPair<int, int> visibleRangeForColumn(const ColumnInfo &column) const;
+    QPair<int, int> prefetchRangeForColumn(const ColumnInfo &column) const;
     void requestVisibleThumbnailsForAllColumns();
     QSet<QString> aggregateVisiblePaths() const;
     void updateColumnProgressLabel(int columnIndex);
     void updateGlobalScanStatus();
     void preloadNeighborImagesForSelection();
 
-    bool findThumbnailPosition(const ThumbnailWidget *thumbnail,
-                               int &column,
-                               int &indexInColumn) const;
     int columnIndexForModel(const ImageListModel *model) const;
 
     CompareSession *m_session = nullptr;
@@ -115,8 +105,6 @@ private:
     QList<ColumnInfo> m_columns;
     QTimer *m_interleavedLoadTimer = nullptr;
 
-    static constexpr int kBatchSize = 50;
-    static constexpr int kWidgetBuildIntervalMs = 1;
     static constexpr int kThumbnailBatchPerTick = 16;
 };
 

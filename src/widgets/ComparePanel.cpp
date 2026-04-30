@@ -51,6 +51,8 @@ ComparePanel::ComparePanel(CompareSession *session,
     if (m_imageLoader) {
         connect(m_imageLoader, &ImageLoader::imageReady,
                 this, &ComparePanel::onImageReady);
+        connect(m_imageLoader, &ImageLoader::thumbnailReady,
+                this, &ComparePanel::onThumbnailReady);
     }
 }
 
@@ -468,10 +470,18 @@ void ComparePanel::loadImage(int cellIndex)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
+    cell.previewImage = QImage();
+    cell.showingPreview = false;
     if (m_imageLoader) {
         cell.originalImage = m_imageLoader->getCachedImage(cell.imagePath);
         if (cell.originalImage.isNull()) {
-            cell.imageWidget->setText(tr("Loading image..."));
+            const QImage cachedPreview = m_imageLoader->getCachedThumbnail(cell.imagePath);
+            if (!cachedPreview.isNull()) {
+                showPreviewImage(cellIndex, cachedPreview, true);
+            } else {
+                cell.imageWidget->setText(tr("Loading image..."));
+            }
+            m_imageLoader->requestThumbnail(cell.imagePath, QSize(960, 960));
             m_imageLoader->requestImage(cell.imagePath);
             cell.hasImage = false;
             cell.cachedToleranceImage = QImage();
@@ -481,6 +491,7 @@ void ComparePanel::loadImage(int cellIndex)
         cell.originalImage = QImage(cell.imagePath);
     }
     cell.hasImage = !cell.originalImage.isNull();
+    cell.showingPreview = false;
     cell.cachedToleranceImage = QImage();     // Invalidate tolerance cache
 
     // Update geometry
@@ -507,6 +518,7 @@ void ComparePanel::preloadImagesForSelection(const QList<QPair<QString, QString>
     }
 
     if (!uniquePaths.isEmpty()) {
+        m_imageLoader->cancelImageRequestsExcept(seen);
         m_imageLoader->requestImageBatch(uniquePaths);
     }
 }
@@ -518,8 +530,10 @@ void ComparePanel::clearImage(int cellIndex)
     ImageCell &cell = m_cells[cellIndex];
     cell.imagePath.clear();
     cell.originalImage = QImage();
+    cell.previewImage = QImage();
     cell.cachedToleranceImage = QImage();
     cell.hasImage = false;
+    cell.showingPreview = false;
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
@@ -543,6 +557,16 @@ void ComparePanel::resizeImageCell(int cellIndex)
     // ZoomableImageWidget handles redraw internally on resize
 }
 
+void ComparePanel::showPreviewImage(int cellIndex, const QImage &preview, bool resetView)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size() || preview.isNull()) return;
+
+    ImageCell &cell = m_cells[cellIndex];
+    cell.previewImage = preview;
+    cell.showingPreview = true;
+    cell.imageWidget->setImage(preview, resetView);
+}
+
 void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
 {
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
@@ -555,6 +579,7 @@ void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
     }
 
     cell.imageWidget->setImage(displayImage, resetView);
+    cell.showingPreview = false;
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
 }
@@ -786,7 +811,31 @@ void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
 
         m_cells[i].originalImage = image;
         m_cells[i].hasImage = true;
+        m_cells[i].showingPreview = false;
         m_cells[i].cachedToleranceImage = QImage();
         showOriginalImage(i, true);
+    }
+}
+
+void ComparePanel::onThumbnailReady(const QString &imagePath, const QImage &thumbnail)
+{
+    if (thumbnail.isNull()) {
+        return;
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        ImageCell &cell = m_cells[i];
+        if (cell.imagePath != imagePath || cell.hasImage) {
+            continue;
+        }
+
+        const QImage currentPreview = cell.previewImage;
+        if (!currentPreview.isNull() &&
+            currentPreview.width() * currentPreview.height() >=
+                thumbnail.width() * thumbnail.height()) {
+            continue;
+        }
+
+        showPreviewImage(i, thumbnail, currentPreview.isNull());
     }
 }

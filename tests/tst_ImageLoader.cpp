@@ -13,6 +13,8 @@ class tst_ImageLoader : public QObject
 private slots:
     void diskCacheHit_afterFirstDecode();
     void cancelThumbnailRequestsExcept_filtersQueue();
+    void visibleRequest_promotesQueuedThumbnail();
+    void visibleBatch_emitsFastPreviewThenHighQuality();
     void requestImageBatch_usesMemoryCacheOnRepeatedLoad();
 };
 
@@ -85,6 +87,51 @@ void tst_ImageLoader::cancelThumbnailRequestsExcept_filtersQueue()
         }
     }
     QVERIFY(hasKeptPath);
+}
+
+void tst_ImageLoader::visibleRequest_promotesQueuedThumbnail()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QStringList paths;
+    for (int i = 0; i < 6; ++i) {
+        const QString imagePath = dir.filePath(QString("img_%1.png").arg(i));
+        QImage img(512, 512, QImage::Format_ARGB32);
+        img.fill(QColor::fromHsv((i * 37) % 360, 255, 220));
+        QVERIFY(img.save(imagePath));
+        paths << imagePath;
+    }
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+
+    loader.requestThumbnailBatch(paths, QSize(180, 180));
+    loader.requestThumbnailBatchVisibleFirst({paths.last()}, QSize(180, 180));
+
+    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 2, 5000);
+    QCOMPARE(spy.at(1).at(0).toString(), paths.last());
+}
+
+void tst_ImageLoader::visibleBatch_emitsFastPreviewThenHighQuality()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("two_stage.png");
+    QImage img(512, 512, QImage::Format_ARGB32);
+    img.fill(Qt::magenta);
+    QVERIFY(img.save(imagePath));
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+
+    loader.requestThumbnailBatchVisibleFirst({imagePath}, QSize(180, 180));
+    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 2, 5000);
+    QCOMPARE(spy.at(0).at(0).toString(), imagePath);
+    QCOMPARE(spy.at(1).at(0).toString(), imagePath);
 }
 
 void tst_ImageLoader::requestImageBatch_usesMemoryCacheOnRepeatedLoad()

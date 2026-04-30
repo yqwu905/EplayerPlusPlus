@@ -77,6 +77,7 @@ public:
     void setMaxConcurrentLoads(int maxConcurrentLoads);
     void cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths);
     void cancelAllThumbnailRequests();
+    void cancelImageRequestsExcept(const QSet<QString> &keepPaths);
     QHash<QString, qint64> thumbnailMetrics() const;
 
 signals:
@@ -96,38 +97,60 @@ signals:
 
 private:
     struct CacheEntry {
+        QString imagePath;
         QImage thumbnail;
         QSize requestedSize;
         QDateTime sourceLastModifiedUtc;
         bool highQuality = true;
         qint64 sequence = 0;
+        qint64 byteSize = 0;
+    };
+
+    struct ImageCacheEntry {
+        QImage image;
+        qint64 sequence = 0;
+        qint64 byteSize = 0;
     };
 
     struct ThumbnailRequest {
+        QString key;
         QString imagePath;
         QSize thumbnailSize;
-        bool highPriority = false;
+        int priority = 0;
         bool highQuality = true;
     };
 
     mutable QMutex m_cacheMutex;
     QHash<QString, CacheEntry> m_thumbnailCache;
-    QHash<QString, QImage> m_imageCache;
-    QSet<QString> m_pendingRequests;
+    QHash<QString, ImageCacheEntry> m_imageCache;
+    QHash<QString, ThumbnailRequest> m_pendingRequests;
     QSet<QString> m_pendingImageRequests;
     QQueue<ThumbnailRequest> m_highPriorityQueue;
     QQueue<ThumbnailRequest> m_normalPriorityQueue;
+    QQueue<ThumbnailRequest> m_backgroundPriorityQueue;
+    QQueue<QString> m_imageQueue;
     int m_maxCacheSize = 1000;
+    qint64 m_maxThumbnailCacheBytes = 256LL * 1024LL * 1024LL;
+    qint64 m_currentThumbnailCacheBytes = 0;
     int m_maxImageCacheSize = 64;
+    qint64 m_maxImageCacheBytes = 512LL * 1024LL * 1024LL;
+    qint64 m_currentImageCacheBytes = 0;
     int m_maxConcurrentLoads = 4;
     int m_activeLoads = 0;
+    int m_maxConcurrentImageLoads = 2;
+    int m_activeImageLoads = 0;
     qint64 m_cacheSequenceCounter = 0;
+    qint64 m_imageCacheSequenceCounter = 0;
     qint64 m_metricRequests = 0;
     qint64 m_metricMemoryHits = 0;
     qint64 m_metricDiskHits = 0;
     qint64 m_metricDecodes = 0;
     qint64 m_metricCancelled = 0;
 
+    static QString memoryCacheKey(const QString &imagePath,
+                                  const QSize &thumbnailSize,
+                                  const QDateTime &lastModifiedUtc,
+                                  bool highQuality);
     static QString makeCacheKey(const QString &imagePath,
                                 const QSize &thumbnailSize,
                                 const QDateTime &lastModifiedUtc,
@@ -144,11 +167,13 @@ private:
                                      const QDateTime &lastModifiedUtc,
                                      const QImage &thumbnail,
                                      bool highQuality);
+    static qint64 imageByteSize(const QImage &image);
 
     void enqueueThumbnailRequest(const QString &imagePath,
                                  const QSize &thumbnailSize,
-                                 bool highPriority,
+                                 int priority,
                                  bool highQuality);
+    void enqueueRequestUnlocked(const ThumbnailRequest &request);
     void processQueue();
     void finishRequest(const QString &imagePath,
                        const QSize &thumbnailSize,
@@ -156,8 +181,11 @@ private:
                        const QDateTime &lastModifiedUtc,
                        bool highQuality,
                        bool cancelledBeforeEmit);
+    void processImageQueue();
+    void finishImageRequest(const QString &imagePath, const QImage &image, bool cancelledBeforeEmit);
 
     void trimCache();
+    void trimImageCache();
 };
 
 #endif // IMAGELOADER_H

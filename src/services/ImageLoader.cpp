@@ -10,6 +10,15 @@
 #include <QStandardPaths>
 #include <QCryptographicHash>
 
+#include <tuple>
+
+namespace
+{
+constexpr int kPriorityBackground = 0;
+constexpr int kPriorityPrefetch = 1;
+constexpr int kPriorityVisible = 2;
+}
+
 ImageLoader::ImageLoader(QObject *parent)
     : QObject(parent)
 {
@@ -19,26 +28,27 @@ ImageLoader::~ImageLoader() = default;
 
 void ImageLoader::requestThumbnail(const QString &imagePath, const QSize &thumbnailSize)
 {
-    enqueueThumbnailRequest(imagePath, thumbnailSize, true, false);
+    enqueueThumbnailRequest(imagePath, thumbnailSize, kPriorityVisible, false);
 }
 
 void ImageLoader::requestThumbnailBatch(const QStringList &imagePaths, const QSize &thumbnailSize)
 {
     for (const QString &path : imagePaths) {
-        enqueueThumbnailRequest(path, thumbnailSize, false, true);
+        enqueueThumbnailRequest(path, thumbnailSize, kPriorityBackground, true);
     }
 }
 
 void ImageLoader::requestThumbnailBatchVisibleFirst(const QStringList &imagePaths, const QSize &thumbnailSize)
 {
     for (const QString &path : imagePaths) {
-        enqueueThumbnailRequest(path, thumbnailSize, true, false);
+        enqueueThumbnailRequest(path, thumbnailSize, kPriorityVisible, false);
+        enqueueThumbnailRequest(path, thumbnailSize, kPriorityPrefetch, true);
     }
 }
 
 void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
                                           const QSize &thumbnailSize,
-                                          bool highPriority,
+                                          int priority,
                                           bool highQuality)
 {
     if (imagePath.isEmpty() || !thumbnailSize.isValid()) {
@@ -47,16 +57,23 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
 
     QImage cachedThumbnail;
     bool hasCached = false;
+    bool shouldProcess = false;
+
+    const QDateTime modifiedUtc = sourceLastModifiedUtc(imagePath);
+    const QString key = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, highQuality);
+    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, true);
+    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, false);
 
     {
         QMutexLocker locker(&m_cacheMutex);
         ++m_metricRequests;
 
-        auto it = m_thumbnailCache.constFind(imagePath);
-        if (it != m_thumbnailCache.constEnd() &&
-            it->requestedSize == thumbnailSize &&
-            it->highQuality >= highQuality) {
-            cachedThumbnail = it->thumbnail;
+        auto cacheIt = m_thumbnailCache.constFind(highQualityKey);
+        if (cacheIt == m_thumbnailCache.constEnd() && !highQuality) {
+            cacheIt = m_thumbnailCache.constFind(fastKey);
+        }
+        if (cacheIt != m_thumbnailCache.constEnd()) {
+            cachedThumbnail = cacheIt->thumbnail;
             hasCached = !cachedThumbnail.isNull();
             if (hasCached) {
                 ++m_metricMemoryHits;
@@ -64,16 +81,18 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
         }
 
         if (!hasCached) {
-            if (m_pendingRequests.contains(imagePath)) {
-                return;
-            }
-
-            m_pendingRequests.insert(imagePath);
-            ThumbnailRequest request{imagePath, thumbnailSize, highPriority, highQuality};
-            if (highPriority) {
-                m_highPriorityQueue.enqueue(request);
+            ThumbnailRequest request{key, imagePath, thumbnailSize, priority, highQuality};
+            auto pendingIt = m_pendingRequests.find(key);
+            if (pendingIt != m_pendingRequests.end()) {
+                if (priority > pendingIt->priority) {
+                    pendingIt->priority = priority;
+                    enqueueRequestUnlocked(*pendingIt);
+                    shouldProcess = true;
+                }
             } else {
-                m_normalPriorityQueue.enqueue(request);
+                m_pendingRequests.insert(key, request);
+                enqueueRequestUnlocked(request);
+                shouldProcess = true;
             }
         }
     }
@@ -85,13 +104,27 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
         return;
     }
 
-    processQueue();
+    if (shouldProcess) {
+        processQueue();
+    }
+}
+
+void ImageLoader::enqueueRequestUnlocked(const ThumbnailRequest &request)
+{
+    if (request.priority >= kPriorityVisible) {
+        m_highPriorityQueue.enqueue(request);
+    } else if (request.priority == kPriorityPrefetch) {
+        m_normalPriorityQueue.enqueue(request);
+    } else {
+        m_backgroundPriorityQueue.enqueue(request);
+    }
 }
 
 void ImageLoader::processQueue()
 {
     while (true) {
         ThumbnailRequest request;
+        bool hasRequest = false;
 
         {
             QMutexLocker locker(&m_cacheMutex);
@@ -99,11 +132,30 @@ void ImageLoader::processQueue()
                 return;
             }
 
-            if (!m_highPriorityQueue.isEmpty()) {
-                request = m_highPriorityQueue.dequeue();
-            } else if (!m_normalPriorityQueue.isEmpty()) {
-                request = m_normalPriorityQueue.dequeue();
-            } else {
+            auto tryDequeue = [this, &request, &hasRequest](QQueue<ThumbnailRequest> &queue) {
+                while (!queue.isEmpty()) {
+                    ThumbnailRequest candidate = queue.dequeue();
+                    auto pendingIt = m_pendingRequests.constFind(candidate.key);
+                    if (pendingIt == m_pendingRequests.constEnd()) {
+                        continue;
+                    }
+                    if (pendingIt->priority != candidate.priority) {
+                        continue;
+                    }
+                    request = candidate;
+                    hasRequest = true;
+                    return;
+                }
+            };
+
+            tryDequeue(m_highPriorityQueue);
+            if (!hasRequest) {
+                tryDequeue(m_normalPriorityQueue);
+            }
+            if (!hasRequest) {
+                tryDequeue(m_backgroundPriorityQueue);
+            }
+            if (!hasRequest) {
                 return;
             }
 
@@ -119,7 +171,8 @@ void ImageLoader::processQueue()
                     modifiedUtc,
                     request.highQuality);
                 !disk.isNull()) {
-                return std::make_tuple(request.imagePath,
+                return std::make_tuple(request.key,
+                                       request.imagePath,
                                        request.thumbnailSize,
                                        disk,
                                        modifiedUtc,
@@ -141,7 +194,8 @@ void ImageLoader::processQueue()
                                      request.highQuality);
             }
 
-            return std::make_tuple(request.imagePath,
+            return std::make_tuple(request.key,
+                                   request.imagePath,
                                    request.thumbnailSize,
                                    generated,
                                    modifiedUtc,
@@ -149,12 +203,14 @@ void ImageLoader::processQueue()
                                    false);
         });
 
-        auto *watcher = new QFutureWatcher<std::tuple<QString, QSize, QImage, QDateTime, bool, bool>>(this);
+        auto *watcher =
+            new QFutureWatcher<std::tuple<QString, QString, QSize, QImage, QDateTime, bool, bool>>(this);
         connect(watcher,
-                &QFutureWatcher<std::tuple<QString, QSize, QImage, QDateTime, bool, bool>>::finished,
+                &QFutureWatcher<std::tuple<QString, QString, QSize, QImage, QDateTime, bool, bool>>::finished,
                 this,
                 [this, watcher]() {
-                    auto [imagePath, thumbnailSize, thumbnail, modifiedUtc, highQuality, fromDisk] = watcher->result();
+                    auto [key, imagePath, thumbnailSize, thumbnail, modifiedUtc, highQuality, fromDisk] =
+                        watcher->result();
                     watcher->deleteLater();
 
                     bool cancelledBeforeEmit = false;
@@ -166,8 +222,8 @@ void ImageLoader::processQueue()
                             ++m_metricDecodes;
                         }
 
-                        if (m_pendingRequests.contains(imagePath)) {
-                            m_pendingRequests.remove(imagePath);
+                        if (m_pendingRequests.contains(key)) {
+                            m_pendingRequests.remove(key);
                         } else {
                             cancelledBeforeEmit = true;
                             ++m_metricCancelled;
@@ -198,12 +254,21 @@ void ImageLoader::finishRequest(const QString &imagePath,
 {
     if (!thumbnail.isNull()) {
         QMutexLocker locker(&m_cacheMutex);
-        m_thumbnailCache.insert(imagePath,
-                                {thumbnail,
+        const QString key = memoryCacheKey(imagePath, thumbnailSize, lastModifiedUtc, highQuality);
+        const qint64 bytes = imageByteSize(thumbnail);
+        auto oldIt = m_thumbnailCache.find(key);
+        if (oldIt != m_thumbnailCache.end()) {
+            m_currentThumbnailCacheBytes -= oldIt->byteSize;
+        }
+        m_thumbnailCache.insert(key,
+                                {imagePath,
+                                 thumbnail,
                                  thumbnailSize,
                                  lastModifiedUtc,
                                  highQuality,
-                                 ++m_cacheSequenceCounter});
+                                 ++m_cacheSequenceCounter,
+                                 bytes});
+        m_currentThumbnailCacheBytes += bytes;
         trimCache();
     }
 
@@ -220,19 +285,22 @@ void ImageLoader::requestImage(const QString &imagePath)
 
     QImage cachedImage;
     bool hasCached = false;
+    bool shouldProcess = false;
     {
         QMutexLocker locker(&m_cacheMutex);
-        auto it = m_imageCache.constFind(imagePath);
-        if (it != m_imageCache.constEnd()) {
-            cachedImage = *it;
+        auto it = m_imageCache.find(imagePath);
+        if (it != m_imageCache.end()) {
+            cachedImage = it->image;
             hasCached = !cachedImage.isNull();
+            if (hasCached) {
+                it->sequence = ++m_imageCacheSequenceCounter;
+            }
         }
 
-        if (!hasCached) {
-            if (m_pendingImageRequests.contains(imagePath)) {
-                return;
-            }
+        if (!hasCached && !m_pendingImageRequests.contains(imagePath)) {
             m_pendingImageRequests.insert(imagePath);
+            m_imageQueue.enqueue(imagePath);
+            shouldProcess = true;
         }
     }
 
@@ -243,32 +311,9 @@ void ImageLoader::requestImage(const QString &imagePath)
         return;
     }
 
-    auto future = QtConcurrent::run([imagePath]() {
-        QImage image(imagePath);
-        return image;
-    });
-
-    auto *watcher = new QFutureWatcher<QImage>(this);
-    connect(watcher, &QFutureWatcher<QImage>::finished, this,
-            [this, watcher, imagePath]() {
-                QImage image = watcher->result();
-                watcher->deleteLater();
-
-                {
-                    QMutexLocker locker(&m_cacheMutex);
-                    m_pendingImageRequests.remove(imagePath);
-                    if (!image.isNull()) {
-                        m_imageCache.insert(imagePath, image);
-                        while (m_imageCache.size() > m_maxImageCacheSize) {
-                            m_imageCache.erase(m_imageCache.begin());
-                        }
-                    }
-                }
-
-                emit imageReady(imagePath, image);
-            });
-
-    watcher->setFuture(future);
+    if (shouldProcess) {
+        processImageQueue();
+    }
 }
 
 void ImageLoader::requestImageBatch(const QStringList &imagePaths)
@@ -278,21 +323,118 @@ void ImageLoader::requestImageBatch(const QStringList &imagePaths)
     }
 }
 
+void ImageLoader::processImageQueue()
+{
+    while (true) {
+        QString imagePath;
+
+        {
+            QMutexLocker locker(&m_cacheMutex);
+            if (m_activeImageLoads >= m_maxConcurrentImageLoads) {
+                return;
+            }
+
+            while (!m_imageQueue.isEmpty()) {
+                const QString candidate = m_imageQueue.dequeue();
+                if (m_pendingImageRequests.contains(candidate)) {
+                    imagePath = candidate;
+                    break;
+                }
+            }
+
+            if (imagePath.isEmpty()) {
+                return;
+            }
+
+            ++m_activeImageLoads;
+        }
+
+        auto future = QtConcurrent::run([imagePath]() {
+            return QImage(imagePath);
+        });
+
+        auto *watcher = new QFutureWatcher<QImage>(this);
+        connect(watcher, &QFutureWatcher<QImage>::finished, this,
+                [this, watcher, imagePath]() {
+                    QImage image = watcher->result();
+                    watcher->deleteLater();
+
+                    bool cancelledBeforeEmit = false;
+                    {
+                        QMutexLocker locker(&m_cacheMutex);
+                        if (m_pendingImageRequests.contains(imagePath)) {
+                            m_pendingImageRequests.remove(imagePath);
+                        } else {
+                            cancelledBeforeEmit = true;
+                        }
+                        m_activeImageLoads = qMax(0, m_activeImageLoads - 1);
+                    }
+
+                    finishImageRequest(imagePath, image, cancelledBeforeEmit);
+                    processImageQueue();
+                });
+
+        watcher->setFuture(future);
+    }
+}
+
+void ImageLoader::finishImageRequest(const QString &imagePath,
+                                     const QImage &image,
+                                     bool cancelledBeforeEmit)
+{
+    if (!image.isNull()) {
+        QMutexLocker locker(&m_cacheMutex);
+        const qint64 bytes = imageByteSize(image);
+        auto oldIt = m_imageCache.find(imagePath);
+        if (oldIt != m_imageCache.end()) {
+            m_currentImageCacheBytes -= oldIt->byteSize;
+        }
+        m_imageCache.insert(imagePath,
+                            {image,
+                             ++m_imageCacheSequenceCounter,
+                             bytes});
+        m_currentImageCacheBytes += bytes;
+        trimImageCache();
+    }
+
+    if (!cancelledBeforeEmit) {
+        emit imageReady(imagePath, image);
+    }
+}
+
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
 {
     QMutexLocker locker(&m_cacheMutex);
-    auto it = m_thumbnailCache.constFind(imagePath);
-    if (it != m_thumbnailCache.constEnd()) {
-        return it->thumbnail;
+    const QDateTime modifiedUtc = sourceLastModifiedUtc(imagePath);
+    CacheEntry best;
+    bool hasBest = false;
+    for (auto it = m_thumbnailCache.constBegin(); it != m_thumbnailCache.constEnd(); ++it) {
+        if (it->imagePath != imagePath ||
+            it->sourceLastModifiedUtc != modifiedUtc ||
+            it->thumbnail.isNull()) {
+            continue;
+        }
+        if (!hasBest || (it->highQuality && !best.highQuality) ||
+            imageByteSize(it->thumbnail) > imageByteSize(best.thumbnail)) {
+            best = *it;
+            hasBest = true;
+        }
     }
-    return QImage();
+    return hasBest ? best.thumbnail : QImage();
 }
 
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize) const
 {
     QMutexLocker locker(&m_cacheMutex);
-    auto it = m_thumbnailCache.constFind(imagePath);
-    if (it != m_thumbnailCache.constEnd() && it->requestedSize == thumbnailSize) {
+    const QDateTime modifiedUtc = sourceLastModifiedUtc(imagePath);
+    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, true);
+    auto it = m_thumbnailCache.constFind(highQualityKey);
+    if (it != m_thumbnailCache.constEnd()) {
+        return it->thumbnail;
+    }
+    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, false);
+    it = m_thumbnailCache.constFind(fastKey);
+    if (it != m_thumbnailCache.constEnd()) {
         return it->thumbnail;
     }
     return QImage();
@@ -303,7 +445,7 @@ QImage ImageLoader::getCachedImage(const QString &imagePath) const
     QMutexLocker locker(&m_cacheMutex);
     auto it = m_imageCache.constFind(imagePath);
     if (it != m_imageCache.constEnd()) {
-        return *it;
+        return it->image;
     }
     return QImage();
 }
@@ -317,12 +459,17 @@ void ImageLoader::clearCache()
     m_pendingImageRequests.clear();
     m_highPriorityQueue.clear();
     m_normalPriorityQueue.clear();
+    m_backgroundPriorityQueue.clear();
+    m_imageQueue.clear();
+    m_currentThumbnailCacheBytes = 0;
+    m_currentImageCacheBytes = 0;
 }
 
 void ImageLoader::setMaxCacheSize(int maxSize)
 {
     m_maxCacheSize = qMax(1, maxSize);
     QMutexLocker locker(&m_cacheMutex);
+    m_maxThumbnailCacheBytes = qMax<qint64>(1, static_cast<qint64>(m_maxCacheSize) * 512LL * 1024LL);
     trimCache();
 }
 
@@ -352,9 +499,10 @@ void ImageLoader::cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths)
 
     filterQueue(m_highPriorityQueue);
     filterQueue(m_normalPriorityQueue);
+    filterQueue(m_backgroundPriorityQueue);
 
     for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end();) {
-        if (keepPaths.contains(*it)) {
+        if (keepPaths.contains(it->imagePath)) {
             ++it;
         } else {
             it = m_pendingRequests.erase(it);
@@ -368,6 +516,28 @@ void ImageLoader::cancelAllThumbnailRequests()
     cancelThumbnailRequestsExcept({});
 }
 
+void ImageLoader::cancelImageRequestsExcept(const QSet<QString> &keepPaths)
+{
+    QMutexLocker locker(&m_cacheMutex);
+
+    QQueue<QString> filtered;
+    while (!m_imageQueue.isEmpty()) {
+        const QString path = m_imageQueue.dequeue();
+        if (keepPaths.contains(path)) {
+            filtered.enqueue(path);
+        }
+    }
+    m_imageQueue = filtered;
+
+    for (auto it = m_pendingImageRequests.begin(); it != m_pendingImageRequests.end();) {
+        if (keepPaths.contains(*it)) {
+            ++it;
+        } else {
+            it = m_pendingImageRequests.erase(it);
+        }
+    }
+}
+
 QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
 {
     QMutexLocker locker(&m_cacheMutex);
@@ -376,21 +546,56 @@ QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
         {QStringLiteral("memoryHits"), m_metricMemoryHits},
         {QStringLiteral("diskHits"), m_metricDiskHits},
         {QStringLiteral("decodes"), m_metricDecodes},
-        {QStringLiteral("cancelled"), m_metricCancelled}
+        {QStringLiteral("cancelled"), m_metricCancelled},
+        {QStringLiteral("thumbnailCacheBytes"), m_currentThumbnailCacheBytes},
+        {QStringLiteral("imageCacheBytes"), m_currentImageCacheBytes}
     };
 }
 
 void ImageLoader::trimCache()
 {
-    while (m_thumbnailCache.size() > m_maxCacheSize) {
+    while (m_thumbnailCache.size() > m_maxCacheSize ||
+           m_currentThumbnailCacheBytes > m_maxThumbnailCacheBytes) {
         auto oldestIt = m_thumbnailCache.begin();
         for (auto it = m_thumbnailCache.begin(); it != m_thumbnailCache.end(); ++it) {
             if (it->sequence < oldestIt->sequence) {
                 oldestIt = it;
             }
         }
+        m_currentThumbnailCacheBytes -= oldestIt->byteSize;
         m_thumbnailCache.erase(oldestIt);
     }
+}
+
+void ImageLoader::trimImageCache()
+{
+    while (m_imageCache.size() > m_maxImageCacheSize ||
+           m_currentImageCacheBytes > m_maxImageCacheBytes) {
+        auto oldestIt = m_imageCache.begin();
+        for (auto it = m_imageCache.begin(); it != m_imageCache.end(); ++it) {
+            if (it->sequence < oldestIt->sequence) {
+                oldestIt = it;
+            }
+        }
+        m_currentImageCacheBytes -= oldestIt->byteSize;
+        m_imageCache.erase(oldestIt);
+    }
+}
+
+QString ImageLoader::memoryCacheKey(const QString &imagePath,
+                                    const QSize &thumbnailSize,
+                                    const QDateTime &lastModifiedUtc,
+                                    bool highQuality)
+{
+    return imagePath
+        + QLatin1Char('|')
+        + QString::number(thumbnailSize.width())
+        + QLatin1Char('x')
+        + QString::number(thumbnailSize.height())
+        + QLatin1Char('|')
+        + QString::number(lastModifiedUtc.toMSecsSinceEpoch())
+        + QLatin1Char('|')
+        + (highQuality ? QStringLiteral("hq") : QStringLiteral("fast"));
 }
 
 QString ImageLoader::makeCacheKey(const QString &imagePath,
@@ -413,27 +618,30 @@ QString ImageLoader::makeCacheKey(const QString &imagePath,
 
 QString ImageLoader::cacheRootDir()
 {
-    QStringList candidates;
-    const QString standardCache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (!standardCache.isEmpty()) {
-        candidates.append(standardCache);
-    }
-    candidates.append(QDir::tempPath() + QStringLiteral("/ImageCompareCache"));
+    static const QString root = []() {
+        QStringList candidates;
+        const QString standardCache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        if (!standardCache.isEmpty()) {
+            candidates.append(standardCache);
+        }
+        candidates.append(QDir::tempPath() + QStringLiteral("/ImageCompareCache"));
 
-    for (const QString &base : candidates) {
-        QDir dir(base);
-        if (!dir.mkpath(QStringLiteral("thumbnails"))) {
-            continue;
+        for (const QString &base : candidates) {
+            QDir dir(base);
+            if (!dir.mkpath(QStringLiteral("thumbnails"))) {
+                continue;
+            }
+
+            const QString thumbnailDir = dir.filePath(QStringLiteral("thumbnails"));
+            const QFileInfo info(thumbnailDir);
+            if (info.isDir() && info.isWritable()) {
+                return thumbnailDir;
+            }
         }
 
-        const QString thumbnailDir = dir.filePath(QStringLiteral("thumbnails"));
-        const QFileInfo info(thumbnailDir);
-        if (info.isDir() && info.isWritable()) {
-            return thumbnailDir;
-        }
-    }
-
-    return QDir::tempPath();
+        return QDir::tempPath();
+    }();
+    return root;
 }
 
 QString ImageLoader::cachePathForKey(const QString &cacheKey)
@@ -479,4 +687,9 @@ void ImageLoader::persistDiskThumbnail(const QString &imagePath,
     QFileInfo fi(path);
     QDir().mkpath(fi.absolutePath());
     thumbnail.save(path, "PNG");
+}
+
+qint64 ImageLoader::imageByteSize(const QImage &image)
+{
+    return image.isNull() ? 0 : static_cast<qint64>(image.sizeInBytes());
 }

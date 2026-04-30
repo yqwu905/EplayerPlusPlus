@@ -4,9 +4,13 @@
 #include <QElapsedTimer>
 #include <QSignalSpy>
 #include <QCoreApplication>
+#include <QListView>
 
 #include "services/ImageLoader.h"
 #include "models/ImageListModel.h"
+#include "models/CompareSession.h"
+#include "widgets/BrowsePanel.h"
+#include "widgets/ThumbnailWidget.h"
 #include "utils/ImageUtils.h"
 
 /**
@@ -198,6 +202,37 @@ private slots:
         qDebug() << "[End-to-end] Thumbnails:" << thumbTime << "ms for" << received << "images"
                  << "(" << (double(thumbTime) / qMax(1, received)) << "ms/image)";
         qDebug() << "[End-to-end] Total:" << (scanTime + thumbTime) << "ms";
+    }
+
+    void benchBrowsePanelVirtualizedFirstViewport()
+    {
+        CompareSession session;
+        ImageLoader loader;
+        BrowsePanel panel(&session, &loader);
+        panel.resize(360, 640);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+        QElapsedTimer timer;
+        timer.start();
+
+        QSignalSpy thumbnailSpy(&loader, &ImageLoader::thumbnailReady);
+        QVERIFY(session.addFolder(m_tempDir.path()));
+
+        QList<QListView *> views;
+        QTRY_VERIFY_WITH_TIMEOUT((views = panel.findChildren<QListView *>(
+                                      QStringLiteral("compareColumnListView")),
+                                  views.size() == 1),
+                                 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(views.first()->model()->rowCount(), kImageCount, 10000);
+        const qint64 rowsReadyMs = timer.elapsed();
+
+        QTRY_VERIFY_WITH_TIMEOUT(thumbnailSpy.count() >= 4, 10000);
+        const qint64 firstViewportMs = timer.elapsed();
+
+        qDebug() << "[BrowsePanel virtualized] rows ready:" << rowsReadyMs << "ms,"
+                 << "first thumbnails:" << firstViewportMs << "ms,"
+                 << "thumbnail widget count:" << panel.findChildren<ThumbnailWidget *>().size();
     }
 };
 
