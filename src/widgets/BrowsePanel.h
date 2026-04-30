@@ -59,6 +59,9 @@ public slots:
 private slots:
     void onFolderAdded(const QString &folderPath, int index);
     void onFolderRemoved(const QString &folderPath, int index);
+    void onFolderDisplayNameChanged(const QString &folderPath,
+                                    int index,
+                                    const QString &displayName);
     void onSessionCleared();
     void onFolderReady(int columnIndex);
 
@@ -66,6 +69,7 @@ private:
     struct ColumnInfo {
         QWidget *columnWidget = nullptr;
         QVBoxLayout *containerLayout = nullptr;
+        QLabel *headerLabel = nullptr;
         QLabel *progressLabel = nullptr;
         QListView *view = nullptr;
         ImageListModel *model = nullptr;

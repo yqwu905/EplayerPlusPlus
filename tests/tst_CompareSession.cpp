@@ -22,11 +22,14 @@ private slots:
     void testIsFull();
     void testIndexOf();
     void testFolderCount();
+    void testFolderDisplayName_defaultAndSet();
+    void testFolderDisplayName_removeKeepsRemainingNames();
 
     void testSignal_folderAdded();
     void testSignal_folderRemoved();
     void testSignal_cleared();
     void testSignal_sessionChanged();
+    void testSignal_folderDisplayNameChanged();
 };
 
 void tst_CompareSession::testInitialState()
@@ -178,6 +181,41 @@ void tst_CompareSession::testFolderCount()
     QCOMPARE(session.folderCount(), 1);
 }
 
+void tst_CompareSession::testFolderDisplayName_defaultAndSet()
+{
+    CompareSession session;
+    QVERIFY(session.addFolder("/path/folder_a"));
+
+    QCOMPARE(session.folderDisplayNameAt(0), QString("folder_a"));
+    QVERIFY(session.setFolderDisplayNameAt(0, "Baseline"));
+    QCOMPARE(session.folderDisplayNameAt(0), QString("Baseline"));
+
+    QVERIFY(session.setFolderDisplayNameAt(0, "  Candidate  "));
+    QCOMPARE(session.folderDisplayNameAt(0), QString("Candidate"));
+
+    QVERIFY(session.setFolderDisplayNameAt(0, "   "));
+    QCOMPARE(session.folderDisplayNameAt(0), QString("folder_a"));
+    QVERIFY(!session.setFolderDisplayNameAt(10, "Invalid"));
+    QVERIFY(session.folderDisplayNameAt(10).isEmpty());
+}
+
+void tst_CompareSession::testFolderDisplayName_removeKeepsRemainingNames()
+{
+    CompareSession session;
+    QVERIFY(session.addFolder("/path/a"));
+    QVERIFY(session.addFolder("/path/b"));
+    QVERIFY(session.addFolder("/path/c"));
+    QVERIFY(session.setFolderDisplayNameAt(0, "A"));
+    QVERIFY(session.setFolderDisplayNameAt(1, "B"));
+    QVERIFY(session.setFolderDisplayNameAt(2, "C"));
+
+    QVERIFY(session.removeFolderAt(1));
+
+    QCOMPARE(session.folders(), QStringList({"/path/a", "/path/c"}));
+    QCOMPARE(session.folderDisplayNameAt(0), QString("A"));
+    QCOMPARE(session.folderDisplayNameAt(1), QString("C"));
+}
+
 void tst_CompareSession::testSignal_folderAdded()
 {
     CompareSession session;
@@ -234,6 +272,26 @@ void tst_CompareSession::testSignal_sessionChanged()
 
     session.clear();
     QCOMPARE(spy.count(), 4);
+}
+
+void tst_CompareSession::testSignal_folderDisplayNameChanged()
+{
+    CompareSession session;
+    QVERIFY(session.addFolder("/path/a"));
+
+    QSignalSpy nameSpy(&session, &CompareSession::folderDisplayNameChanged);
+    QSignalSpy sessionSpy(&session, &CompareSession::sessionChanged);
+
+    QVERIFY(session.setFolderDisplayNameAt(0, "Reference"));
+    QCOMPARE(nameSpy.count(), 1);
+    QCOMPARE(nameSpy.at(0).at(0).toString(), QString("/path/a"));
+    QCOMPARE(nameSpy.at(0).at(1).toInt(), 0);
+    QCOMPARE(nameSpy.at(0).at(2).toString(), QString("Reference"));
+    QCOMPARE(sessionSpy.count(), 1);
+
+    QVERIFY(session.setFolderDisplayNameAt(0, "Reference"));
+    QCOMPARE(nameSpy.count(), 1);
+    QCOMPARE(sessionSpy.count(), 1);
 }
 
 QTEST_MAIN(tst_CompareSession)

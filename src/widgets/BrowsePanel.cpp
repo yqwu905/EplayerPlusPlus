@@ -267,6 +267,8 @@ BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
             this, &BrowsePanel::onFolderAdded);
     connect(m_session, &CompareSession::folderRemoved,
             this, &BrowsePanel::onFolderRemoved);
+    connect(m_session, &CompareSession::folderDisplayNameChanged,
+            this, &BrowsePanel::onFolderDisplayNameChanged);
     connect(m_session, &CompareSession::cleared,
             this, &BrowsePanel::onSessionCleared);
 }
@@ -321,8 +323,6 @@ void BrowsePanel::setupUi()
 
 void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 {
-    Q_UNUSED(index);
-
     ColumnInfo col;
     col.model = new ImageListModel(this);
     col.model->setImageLoader(m_imageLoader);
@@ -342,22 +342,23 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLayout->setContentsMargins(12, 8, 8, 8);
     headerLayout->setSpacing(8);
 
-    const QString displayName = QDir(folderPath).dirName();
-    auto *headerLabel = new QLabel(headerWidget);
-    headerLabel->setObjectName(QStringLiteral("compareColumnHeaderLabel"));
-    headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    headerLabel->setMinimumWidth(0);
-    headerLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    QFont headerFont = headerLabel->font();
+    const QString displayName = m_session ? m_session->folderDisplayNameAt(index)
+                                          : QDir(folderPath).dirName();
+    col.headerLabel = new QLabel(headerWidget);
+    col.headerLabel->setObjectName(QStringLiteral("compareColumnHeaderLabel"));
+    col.headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    col.headerLabel->setMinimumWidth(0);
+    col.headerLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    QFont headerFont = col.headerLabel->font();
     headerFont.setWeight(QFont::DemiBold);
     headerFont.setPointSize(12);
-    headerLabel->setFont(headerFont);
-    headerLabel->setStyleSheet(
+    col.headerLabel->setFont(headerFont);
+    col.headerLabel->setStyleSheet(
         "QLabel { color: #1A1A1A; background: transparent; border: none; }");
     QFontMetrics fm(headerFont);
-    headerLabel->setText(fm.elidedText(displayName, Qt::ElideRight, 140));
-    headerLabel->setToolTip(displayName);
-    headerLayout->addWidget(headerLabel, 1);
+    col.headerLabel->setText(fm.elidedText(displayName, Qt::ElideRight, 140));
+    col.headerLabel->setToolTip(QStringLiteral("%1\n%2").arg(displayName, folderPath));
+    headerLayout->addWidget(col.headerLabel, 1);
 
     auto *closeBtn = new QPushButton(QStringLiteral("\u00D7"), headerWidget);
     closeBtn->setObjectName(QStringLiteral("compareColumnCloseButton"));
@@ -555,6 +556,24 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
 
     updateGlobalScanStatus();
     emitSelectionChanged();
+}
+
+void BrowsePanel::onFolderDisplayNameChanged(const QString &folderPath,
+                                             int index,
+                                             const QString &displayName)
+{
+    if (index < 0 || index >= m_columns.size()) {
+        return;
+    }
+
+    ColumnInfo &col = m_columns[index];
+    if (!col.headerLabel) {
+        return;
+    }
+
+    QFontMetrics fm(col.headerLabel->font());
+    col.headerLabel->setText(fm.elidedText(displayName, Qt::ElideRight, 140));
+    col.headerLabel->setToolTip(QStringLiteral("%1\n%2").arg(displayName, folderPath));
 }
 
 void BrowsePanel::onSessionCleared()

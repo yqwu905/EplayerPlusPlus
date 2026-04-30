@@ -52,6 +52,22 @@ public:
     QStringList folders() const;
 
     /**
+     * @brief Get the user-visible name for a folder slot.
+     * @return Custom name if set, otherwise the folder's default display name.
+     */
+    QString folderDisplayNameAt(int index) const;
+
+    /**
+     * @brief Change the user-visible name for a folder slot.
+     *
+     * Passing an empty or whitespace-only value resets the slot to its default
+     * folder name.
+     *
+     * @return true if the index is valid and the name was updated.
+     */
+    bool setFolderDisplayNameAt(int index, const QString &displayName);
+
+    /**
      * @brief Get the number of folders in the session.
      */
     int folderCount() const;
@@ -97,8 +113,21 @@ signals:
      */
     void sessionChanged();
 
+    /**
+     * @brief Emitted when a folder slot display name changes.
+     * @param folderPath The folder path for the changed slot.
+     * @param index The slot index whose display name changed.
+     * @param displayName The effective display name after the change.
+     */
+    void folderDisplayNameChanged(const QString &folderPath,
+                                  int index,
+                                  const QString &displayName);
+
 private:
+    QString defaultDisplayNameForFolder(const QString &folderPath) const;
+
     QStringList m_folders;
+    QStringList m_displayNames;
 };
 
 #endif // COMPARESESSION_H

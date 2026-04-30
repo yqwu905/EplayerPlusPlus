@@ -75,6 +75,9 @@ protected:
 private slots:
     void onFolderAdded(const QString &folderPath, int index);
     void onFolderRemoved(const QString &folderPath, int index);
+    void onFolderDisplayNameChanged(const QString &folderPath,
+                                    int index,
+                                    const QString &displayName);
     void onSessionCleared();
     void onComparePressed(int sourceIndex, int targetIndex);
     void onCompareReleased(int sourceIndex, int targetIndex);
@@ -101,6 +104,7 @@ private:
         QWidget *markButtonsContainer = nullptr;
         QHBoxLayout *markButtonsLayout = nullptr;
         QList<QPushButton *> markButtons;
+        QPushButton *renameButton = nullptr;
         QWidget *compareButtonsContainer = nullptr;
         QHBoxLayout *compareButtonsLayout = nullptr;
         QList<QPushButton *> compareButtons;
@@ -117,7 +121,7 @@ private:
     };
 
     void setupUi();
-    ImageCell createCell(const QString &folderPath);
+    ImageCell createCell(const QString &folderPath, int sessionIndex);
     void clearCells();
     void rebuildGrid();
     void setupCompareButtonsForCell(int cellIndex);
@@ -137,6 +141,9 @@ private:
     void showSourceOnTarget(int sourceIndex, int targetIndex);
     void resizeImageCell(int cellIndex);
     void rebuildCompareButtons();
+    void renameCell(int cellIndex);
+    void updateCellHeader(int cellIndex);
+    QString cellDisplayName(int cellIndex) const;
     QImage imageForCompare(int cellIndex) const;
 
     /**

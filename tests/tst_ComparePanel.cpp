@@ -24,6 +24,7 @@ private slots:
     void layout_fourToSixImages_twoRows();
     void compareButtons_nMinusOnePerImage();
     void compareHeader_placesTitleAndButtonsOnSameRow();
+    void customGridName_updatesHeadersAndCompareTooltips();
     void layout_shrinksFromSixToTwo_cellsExpand();
     void resizeToFirstImage_toggleResizesOtherCells();
     void markButton_clickPersistsSingleImage();
@@ -227,6 +228,53 @@ void tst_ComparePanel::compareHeader_placesTitleAndButtonsOnSameRow()
                                     .arg(buttonCenterY)));
         }
     }
+}
+
+void tst_ComparePanel::customGridName_updatesHeadersAndCompareTooltips()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 2; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            QString("image_%1.png").arg(i),
+            QColor::fromHsv(i * 80, 255, 230));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    QVERIFY(session.setFolderDisplayNameAt(0, "Baseline"));
+    QVERIFY(session.setFolderDisplayNameAt(1, "Candidate"));
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    auto *firstTitle = cells[0]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    auto *secondTitle = cells[1]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    QVERIFY(firstTitle != nullptr);
+    QVERIFY(secondTitle != nullptr);
+    QVERIFY(firstTitle->text().contains(QStringLiteral("Baseline")));
+    QVERIFY(secondTitle->text().contains(QStringLiteral("Candidate")));
+
+    const auto firstButtons = cells[0]->findChildren<QPushButton *>(
+        QStringLiteral("compareTargetButton"));
+    QCOMPARE(firstButtons.size(), 1);
+    QVERIFY(firstButtons.first()->toolTip().contains(QStringLiteral("Candidate")));
 }
 
 void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
