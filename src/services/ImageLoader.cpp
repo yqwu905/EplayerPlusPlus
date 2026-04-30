@@ -42,7 +42,6 @@ void ImageLoader::requestThumbnailBatchVisibleFirst(const QStringList &imagePath
 {
     for (const QString &path : imagePaths) {
         enqueueThumbnailRequest(path, thumbnailSize, kPriorityVisible, false);
-        enqueueThumbnailRequest(path, thumbnailSize, kPriorityPrefetch, true);
     }
 }
 
@@ -59,10 +58,9 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
     bool hasCached = false;
     bool shouldProcess = false;
 
-    const QDateTime modifiedUtc = sourceLastModifiedUtc(imagePath);
-    const QString key = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, highQuality);
-    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, true);
-    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, false);
+    const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality);
+    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true);
+    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, false);
 
     {
         QMutexLocker locker(&m_cacheMutex);
@@ -254,7 +252,7 @@ void ImageLoader::finishRequest(const QString &imagePath,
 {
     if (!thumbnail.isNull()) {
         QMutexLocker locker(&m_cacheMutex);
-        const QString key = memoryCacheKey(imagePath, thumbnailSize, lastModifiedUtc, highQuality);
+        const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality);
         const qint64 bytes = imageByteSize(thumbnail);
         auto oldIt = m_thumbnailCache.find(key);
         if (oldIt != m_thumbnailCache.end()) {
@@ -405,13 +403,10 @@ void ImageLoader::finishImageRequest(const QString &imagePath,
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
 {
     QMutexLocker locker(&m_cacheMutex);
-    const QDateTime modifiedUtc = sourceLastModifiedUtc(imagePath);
     CacheEntry best;
     bool hasBest = false;
     for (auto it = m_thumbnailCache.constBegin(); it != m_thumbnailCache.constEnd(); ++it) {
-        if (it->imagePath != imagePath ||
-            it->sourceLastModifiedUtc != modifiedUtc ||
-            it->thumbnail.isNull()) {
+        if (it->imagePath != imagePath || it->thumbnail.isNull()) {
             continue;
         }
         if (!hasBest || (it->highQuality && !best.highQuality) ||
@@ -426,13 +421,12 @@ QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize) const
 {
     QMutexLocker locker(&m_cacheMutex);
-    const QDateTime modifiedUtc = sourceLastModifiedUtc(imagePath);
-    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, true);
+    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true);
     auto it = m_thumbnailCache.constFind(highQualityKey);
     if (it != m_thumbnailCache.constEnd()) {
         return it->thumbnail;
     }
-    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, modifiedUtc, false);
+    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, false);
     it = m_thumbnailCache.constFind(fastKey);
     if (it != m_thumbnailCache.constEnd()) {
         return it->thumbnail;
@@ -584,7 +578,6 @@ void ImageLoader::trimImageCache()
 
 QString ImageLoader::memoryCacheKey(const QString &imagePath,
                                     const QSize &thumbnailSize,
-                                    const QDateTime &lastModifiedUtc,
                                     bool highQuality)
 {
     return imagePath
@@ -592,8 +585,6 @@ QString ImageLoader::memoryCacheKey(const QString &imagePath,
         + QString::number(thumbnailSize.width())
         + QLatin1Char('x')
         + QString::number(thumbnailSize.height())
-        + QLatin1Char('|')
-        + QString::number(lastModifiedUtc.toMSecsSinceEpoch())
         + QLatin1Char('|')
         + (highQuality ? QStringLiteral("hq") : QStringLiteral("fast"));
 }

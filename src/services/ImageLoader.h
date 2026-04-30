@@ -149,7 +149,6 @@ private:
 
     static QString memoryCacheKey(const QString &imagePath,
                                   const QSize &thumbnailSize,
-                                  const QDateTime &lastModifiedUtc,
                                   bool highQuality);
     static QString makeCacheKey(const QString &imagePath,
                                 const QSize &thumbnailSize,

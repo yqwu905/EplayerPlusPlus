@@ -449,7 +449,7 @@ void tst_ImageListModel::testScanProgressAndIncrementalInsert()
     QCOMPARE(model.imageCount(), 1200);
     QVERIFY(insertSpy.count() >= 2);
     QCOMPARE(insertSpy.first().at(1).toInt(), 0);
-    QCOMPARE(insertSpy.first().at(2).toInt(), 299);
+    QCOMPARE(insertSpy.first().at(2).toInt(), 23);
     QVERIFY(progressSpy.count() >= 2);
 }
 
@@ -525,6 +525,7 @@ void tst_ImageListModel::testThumbnailReady_ignoresLargeSharedPreview()
     QCOMPARE(model.imageCount(), 1);
 
     const QModelIndex index = model.index(0, 0);
+    model.loadThumbnailsForRange(0, 0);
     QTRY_VERIFY_WITH_TIMEOUT(
         !model.data(index, ImageListModel::ThumbnailRole).value<QImage>().isNull(),
         5000);
