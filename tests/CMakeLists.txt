@@ -23,6 +23,7 @@ add_unit_test(tst_ImageListModel tst_ImageListModel.cpp)
 add_unit_test(tst_ZoomableImageWidget tst_ZoomableImageWidget.cpp)
 add_unit_test(tst_BrowsePanel tst_BrowsePanel.cpp)
 add_unit_test(tst_ImageLoader tst_ImageLoader.cpp)
+add_unit_test(tst_ImageContextMenu tst_ImageContextMenu.cpp)
 add_unit_test(tst_FolderPanel tst_FolderPanel.cpp)
 add_unit_test(tst_ComparePanel tst_ComparePanel.cpp)
 

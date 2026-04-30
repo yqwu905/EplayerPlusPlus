@@ -1,4 +1,5 @@
 #include "ComparePanel.h"
+#include "ImageContextMenu.h"
 #include "ZoomableImageWidget.h"
 #include "services/ImageComparer.h"
 #include "services/ImageLoader.h"
@@ -382,6 +383,26 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
+    cell.imageWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(cell.imageWidget, &QWidget::customContextMenuRequested,
+            this, [this, imageWidget = cell.imageWidget](const QPoint &pos) {
+        const int cellIndex = findCellByWidget(imageWidget);
+        if (cellIndex < 0 || cellIndex >= m_cells.size()) {
+            return;
+        }
+
+        const QString imagePath = m_cells[cellIndex].imagePath;
+        if (imagePath.isEmpty()) {
+            return;
+        }
+
+        ImageContextMenu::showMenu(imageWidget,
+                                   imageWidget->mapToGlobal(pos),
+                                   imagePath,
+                                   [imageWidget]() {
+            return imageWidget ? imageWidget->image() : QImage();
+        });
+    });
 
     cell.markButtonsContainer = new QWidget(cell.imageContainer);
     cell.markButtonsContainer->setObjectName(QStringLiteral("imageMarkButtons"));

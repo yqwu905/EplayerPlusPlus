@@ -14,6 +14,8 @@ set(SOURCES
     widgets/BrowsePanel.h
     widgets/ComparePanel.cpp
     widgets/ComparePanel.h
+    widgets/ImageContextMenu.cpp
+    widgets/ImageContextMenu.h
     widgets/ThumbnailWidget.cpp
     widgets/ThumbnailWidget.h
     widgets/ArrowOverlay.cpp
@@ -52,6 +54,8 @@ set(LIB_SOURCES
     widgets/BrowsePanel.h
     widgets/ComparePanel.cpp
     widgets/ComparePanel.h
+    widgets/ImageContextMenu.cpp
+    widgets/ImageContextMenu.h
     widgets/ThumbnailWidget.cpp
     widgets/ThumbnailWidget.h
     widgets/ArrowOverlay.cpp
