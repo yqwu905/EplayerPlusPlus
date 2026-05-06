@@ -7,6 +7,10 @@
 #include <QLabel>
 #include <QDir>
 #include <QCoreApplication>
+#include <QApplication>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <QTimer>
 #include <algorithm>
 
 #include "models/CompareSession.h"
@@ -24,6 +28,7 @@ private slots:
     void layout_fourToSixImages_twoRows();
     void compareButtons_nMinusOnePerImage();
     void compareHeader_placesTitleAndButtonsOnSameRow();
+    void customGridName_updatesOnlyThatCellAndCompareTooltips();
     void layout_shrinksFromSixToTwo_cellsExpand();
     void resizeToFirstImage_toggleResizesOtherCells();
     void markButton_clickPersistsSingleImage();
@@ -34,6 +39,7 @@ private:
     static QString createImageInFolder(const QString &folderPath, const QString &name, const QColor &color);
     static QList<QWidget *> findCells(ComparePanel &panel);
     static QList<QWidget *> sortedCells(ComparePanel &panel);
+    static void acceptNextRenameDialog(const QString &name);
 };
 
 QString tst_ComparePanel::createImageInFolder(const QString &folderPath, const QString &name, const QColor &color)
@@ -64,6 +70,30 @@ QList<QWidget *> tst_ComparePanel::sortedCells(ComparePanel &panel)
         return lhsPos.x() < rhsPos.x();
     });
     return cells;
+}
+
+void tst_ComparePanel::acceptNextRenameDialog(const QString &name)
+{
+    QTimer::singleShot(0, [name]() {
+        QInputDialog *dialog = qobject_cast<QInputDialog *>(QApplication::activeModalWidget());
+        if (!dialog) {
+            for (QWidget *widget : QApplication::topLevelWidgets()) {
+                dialog = qobject_cast<QInputDialog *>(widget);
+                if (dialog) {
+                    break;
+                }
+            }
+        }
+
+        if (!dialog) {
+            return;
+        }
+
+        if (auto *lineEdit = dialog->findChild<QLineEdit *>()) {
+            lineEdit->setText(name);
+        }
+        dialog->accept();
+    });
 }
 
 void tst_ComparePanel::layout_oneToThreeImages_singleRow()
@@ -227,6 +257,68 @@ void tst_ComparePanel::compareHeader_placesTitleAndButtonsOnSameRow()
                                     .arg(buttonCenterY)));
         }
     }
+}
+
+void tst_ComparePanel::customGridName_updatesOnlyThatCellAndCompareTooltips()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 2; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            QString("image_%1.png").arg(i),
+            QColor::fromHsv(i * 80, 255, 230));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    auto *firstRename = cells[0]->findChild<QPushButton *>(
+        QStringLiteral("compareCellRenameButton"));
+    auto *secondRename = cells[1]->findChild<QPushButton *>(
+        QStringLiteral("compareCellRenameButton"));
+    QVERIFY(firstRename != nullptr);
+    QVERIFY(secondRename != nullptr);
+
+    acceptNextRenameDialog(QStringLiteral("Baseline"));
+    QTest::mouseClick(firstRename, Qt::LeftButton);
+    acceptNextRenameDialog(QStringLiteral("Candidate"));
+    QTest::mouseClick(secondRename, Qt::LeftButton);
+    QCoreApplication::processEvents();
+
+    auto *firstTitle = cells[0]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    auto *secondTitle = cells[1]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    QVERIFY(firstTitle != nullptr);
+    QVERIFY(secondTitle != nullptr);
+    QVERIFY(firstTitle->text().contains(QStringLiteral("Baseline")));
+    QVERIFY(!firstTitle->text().contains(QStringLiteral("Candidate")));
+    QVERIFY(secondTitle->text().contains(QStringLiteral("Candidate")));
+    QVERIFY(!secondTitle->text().contains(QStringLiteral("Baseline")));
+
+    const auto firstButtons = cells[0]->findChildren<QPushButton *>(
+        QStringLiteral("compareTargetButton"));
+    const auto secondButtons = cells[1]->findChildren<QPushButton *>(
+        QStringLiteral("compareTargetButton"));
+    QCOMPARE(firstButtons.size(), 1);
+    QCOMPARE(secondButtons.size(), 1);
+    QVERIFY(firstButtons.first()->toolTip().contains(QStringLiteral("Candidate")));
+    QVERIFY(secondButtons.first()->toolTip().contains(QStringLiteral("Baseline")));
 }
 
 void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()

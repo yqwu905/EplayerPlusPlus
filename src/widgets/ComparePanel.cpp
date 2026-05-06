@@ -24,6 +24,8 @@
 #include <QApplication>
 #include <QSet>
 #include <QSizePolicy>
+#include <QInputDialog>
+#include <QLineEdit>
 
 ComparePanel::ComparePanel(CompareSession *session,
                            SettingsManager *settingsManager,
@@ -270,12 +272,7 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
             m_cells[i].toleranceSourceIndex = -1;
             loadImage(i);
 
-            QString folderName = QDir(m_cells[i].folderPath).dirName();
-            QString fileName = QFileInfo(newImagePath).fileName();
-            m_cells[i].headerLabel->setText(
-                QStringLiteral("%1 / %2").arg(folderName, fileName));
-            m_cells[i].headerLabel->setToolTip(
-                QStringLiteral("%1\n%2").arg(folderName, fileName));
+            updateCellHeader(i);
         }
         updateMarkButtonsForCell(i);
     }
@@ -363,6 +360,41 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
         "QLabel { background-color: #FFFFFF; color: #1A1A1A; "
         "padding: 0px; border: none; font-size: 12px; font-weight: 600; }");
     headerLayout->addWidget(cell.headerLabel, 1);
+
+    cell.renameButton = new QPushButton(QStringLiteral("\u270E"), headerWidget);
+    cell.renameButton->setObjectName(QStringLiteral("compareCellRenameButton"));
+    cell.renameButton->setFixedSize(26, 26);
+    cell.renameButton->setToolTip(tr("Rename this comparison grid"));
+    cell.renameButton->setCursor(Qt::PointingHandCursor);
+    cell.renameButton->setStyleSheet(
+        "QPushButton {"
+        "  border: 1px solid transparent;"
+        "  border-radius: 4px;"
+        "  background-color: transparent;"
+        "  color: #616161;"
+        "  font-weight: 600;"
+        "  padding: 0px;"
+        "}"
+        "QPushButton:hover {"
+        "  background-color: #F5F5F5;"
+        "  border-color: #D1D1D1;"
+        "  color: #1A1A1A;"
+        "}"
+        "QPushButton:pressed {"
+        "  background-color: #E5F1FB;"
+        "  border-color: #0078D4;"
+        "  color: #0078D4;"
+        "}");
+    QWidget *cellContainer = cell.container;
+    connect(cell.renameButton, &QPushButton::clicked, this, [this, cellContainer]() {
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (m_cells[i].container == cellContainer) {
+                renameCell(i);
+                return;
+            }
+        }
+    });
+    headerLayout->addWidget(cell.renameButton, 0, Qt::AlignRight | Qt::AlignVCenter);
 
     cell.compareButtonsContainer = new QWidget(headerWidget);
     cell.compareButtonsContainer->setObjectName(QStringLiteral("compareCellButtons"));
@@ -485,8 +517,7 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
         auto *button = new QPushButton(
             QString::number(targetIndex + 1), cell.compareButtonsContainer);
         button->setObjectName(QStringLiteral("compareTargetButton"));
-        const QString folderName = QDir(m_cells[targetIndex].folderPath).dirName();
-        button->setToolTip(tr("使用当前图片与“%1”列对比").arg(folderName));
+        button->setToolTip(tr("使用当前图片与“%1”列对比").arg(cellDisplayName(targetIndex)));
         button->setFixedSize(28, 26);
         button->setCursor(Qt::PointingHandCursor);
         button->setStyleSheet(
@@ -736,10 +767,7 @@ void ComparePanel::clearImage(int cellIndex)
     cell.toleranceSourceIndex = -1;
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
 
-    QString folderName = QDir(cell.folderPath).dirName();
-    cell.headerLabel->setText(
-        QStringLiteral("%1 / %2").arg(folderName, tr("No image selected")));
-    cell.headerLabel->setToolTip(folderName);
+    updateCellHeader(cellIndex);
     updateMarkButtonsForCell(cellIndex);
 }
 
@@ -892,6 +920,75 @@ void ComparePanel::onResizeToFirstImageToggled(bool enabled)
             showOriginalImage(i);
         }
     }
+}
+
+void ComparePanel::renameCell(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) {
+        return;
+    }
+
+    bool accepted = false;
+    const QString newName = QInputDialog::getText(
+        this,
+        tr("Rename Comparison Grid"),
+        tr("Grid name:"),
+        QLineEdit::Normal,
+        cellDisplayName(cellIndex),
+        &accepted);
+
+    if (!accepted) {
+        return;
+    }
+
+    m_cells[cellIndex].customDisplayName = newName.trimmed();
+    updateCellHeader(cellIndex);
+    rebuildCompareButtons();
+}
+
+void ComparePanel::updateCellHeader(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) {
+        return;
+    }
+
+    ImageCell &cell = m_cells[cellIndex];
+    if (!cell.headerLabel) {
+        return;
+    }
+
+    const QString displayName = cellDisplayName(cellIndex);
+    if (cell.imagePath.isEmpty()) {
+        cell.headerLabel->setText(
+            QStringLiteral("%1 / %2").arg(displayName, tr("No image selected")));
+        cell.headerLabel->setToolTip(QStringLiteral("%1\n%2")
+                                         .arg(displayName, cell.folderPath));
+        return;
+    }
+
+    const QString fileName = QFileInfo(cell.imagePath).fileName();
+    cell.headerLabel->setText(QStringLiteral("%1 / %2").arg(displayName, fileName));
+    cell.headerLabel->setToolTip(QStringLiteral("%1\n%2\n%3")
+                                     .arg(displayName, fileName, cell.imagePath));
+}
+
+QString ComparePanel::cellDisplayName(int cellIndex) const
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) {
+        return QString();
+    }
+
+    const ImageCell &cell = m_cells[cellIndex];
+    if (!cell.customDisplayName.isEmpty()) {
+        return cell.customDisplayName;
+    }
+
+    const QString folderName = QDir(cell.folderPath).dirName();
+    if (!folderName.isEmpty()) {
+        return folderName;
+    }
+
+    return cell.folderPath;
 }
 
 QImage ComparePanel::imageForCompare(int cellIndex) const

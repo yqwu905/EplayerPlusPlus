@@ -101,12 +101,14 @@ private:
         QWidget *markButtonsContainer = nullptr;
         QHBoxLayout *markButtonsLayout = nullptr;
         QList<QPushButton *> markButtons;
+        QPushButton *renameButton = nullptr;
         QWidget *compareButtonsContainer = nullptr;
         QHBoxLayout *compareButtonsLayout = nullptr;
         QList<QPushButton *> compareButtons;
         ZoomableImageWidget *imageWidget = nullptr;
         QString folderPath;
         QString imagePath;
+        QString customDisplayName;
         QImage originalImage;
         QImage previewImage;
         QImage cachedToleranceImage;   // Cached tolerance map (full res)
@@ -137,6 +139,9 @@ private:
     void showSourceOnTarget(int sourceIndex, int targetIndex);
     void resizeImageCell(int cellIndex);
     void rebuildCompareButtons();
+    void renameCell(int cellIndex);
+    void updateCellHeader(int cellIndex);
+    QString cellDisplayName(int cellIndex) const;
     QImage imageForCompare(int cellIndex) const;
 
     /**
