@@ -182,30 +182,12 @@ QWidget *MainWindow::createCommandBar()
         return button;
     };
 
-    addButton(new QAction(QStringLiteral("☰"), bar));
-    layout->addWidget(separator());
-
     addButton(addCommandAction(QStringLiteral("⊞  添加"), tr("添加文件夹"),
                                m_folderPanel, SLOT(addFolderViaDialog())));
     addButton(addCommandAction(QStringLiteral("⟳  刷新"), tr("刷新文件夹"),
                                m_folderPanel, SLOT(refreshFolders())));
     addButton(addCommandAction(QStringLiteral("⌫  清空"), tr("清空文件夹"),
                                m_folderPanel, SLOT(clearFolders())));
-
-    layout->addWidget(separator());
-
-    auto *browseAction = new QAction(QStringLiteral("▦  浏览"), bar);
-    browseAction->setCheckable(true);
-    browseAction->setChecked(true);
-    browseAction->setToolTip(tr("显示图片浏览区"));
-    connect(browseAction, &QAction::triggered, this, [this](bool checked) {
-        const QList<int> sizes = m_mainSplitter->sizes();
-        const bool currentlyVisible = sizes.size() > 1 && sizes.at(1) > 0;
-        if (currentlyVisible != checked) {
-            togglePanel(1);
-        }
-    });
-    addButton(browseAction);
 
     m_swapModeAction = new QAction(QStringLiteral("交换"), bar);
     m_swapModeAction->setCheckable(true);
@@ -258,9 +240,9 @@ QWidget *MainWindow::createCommandBar()
 
     layout->addWidget(separator());
 
-    addButton(addCommandAction(QStringLiteral("⌃"), tr("上一张"),
+    addButton(addCommandAction(QStringLiteral("↑  上一张"), tr("上一张"),
                                m_browsePanel, SLOT(navigatePrevious())));
-    addButton(addCommandAction(QStringLiteral("⌄"), tr("下一张"),
+    addButton(addCommandAction(QStringLiteral("↓  下一张"), tr("下一张"),
                                m_browsePanel, SLOT(navigateNext())));
 
     m_resizeToFirstAction = new QAction(QStringLiteral("同步尺寸"), bar);

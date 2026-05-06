@@ -84,31 +84,6 @@ void FolderPanel::setupUi()
         "QLineEdit#folderPathInput:focus { background-color: #FFFFFF; border-color: #2D7FF9; }"
         "QLabel#folderStatusLabel { color: #5E6A7A; font-size: 11px; border: none; background: transparent; }");
 
-    auto *headerWidget = new QWidget(this);
-    headerWidget->setFixedHeight(46);
-    auto *headerLayout = new QVBoxLayout(headerWidget);
-    headerLayout->setContentsMargins(0, 0, 0, 0);
-    headerLayout->setSpacing(3);
-
-    auto *titleRow = new QHBoxLayout();
-    titleRow->setContentsMargins(0, 0, 0, 0);
-    titleRow->setSpacing(6);
-    auto *titleLabel = new QLabel(tr("文件夹"), headerWidget);
-    titleLabel->setObjectName(QStringLiteral("folderTitle"));
-    titleRow->addWidget(titleLabel);
-    titleRow->addStretch();
-    auto *pinLabel = new QLabel(QStringLiteral("◇"), headerWidget);
-    pinLabel->setStyleSheet("QLabel { color: #7C8797; font-size: 14px; border: none; background: transparent; }");
-    titleRow->addWidget(pinLabel);
-    headerLayout->addLayout(titleRow);
-
-    auto *subtitleLabel = new QLabel(tr("最多 6 个文件夹"), headerWidget);
-    subtitleLabel->setObjectName(QStringLiteral("folderSubtitle"));
-    headerLayout->addWidget(subtitleLabel);
-    headerLayout->addStretch();
-
-    layout->addWidget(headerWidget);
-
     // ---- Toolbar retained for command actions, hidden visually in the new shell ----
     m_toolBar = new QToolBar(this);
     m_toolBar->setVisible(false);

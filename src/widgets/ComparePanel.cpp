@@ -1129,24 +1129,28 @@ QImage ComparePanel::imageForCompare(int cellIndex) const
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return QImage();
 
     const QImage &original = m_cells[cellIndex].originalImage;
-    if (original.isNull()) return QImage();
+    const QImage &preview = m_cells[cellIndex].previewImage;
+    const QImage baseImage = original.isNull() ? preview : original;
+    if (baseImage.isNull()) return QImage();
 
     if (!m_resizeToFirstImageEnabled || cellIndex == 0 || m_cells.isEmpty()) {
-        return original;
+        return baseImage;
     }
 
     const QImage &firstImage = m_cells.first().originalImage;
-    if (firstImage.isNull()) {
-        return original;
+    const QImage &firstPreview = m_cells.first().previewImage;
+    const QImage firstBaseImage = firstImage.isNull() ? firstPreview : firstImage;
+    if (firstBaseImage.isNull()) {
+        return baseImage;
     }
 
-    if (original.size() == firstImage.size()) {
-        return original;
+    if (baseImage.size() == firstBaseImage.size()) {
+        return baseImage;
     }
 
-    return original.scaled(firstImage.size(),
-                           Qt::IgnoreAspectRatio,
-                           Qt::SmoothTransformation);
+    return baseImage.scaled(firstBaseImage.size(),
+                            Qt::IgnoreAspectRatio,
+                            Qt::SmoothTransformation);
 }
 
 // ---- Zoom/pan synchronization ----

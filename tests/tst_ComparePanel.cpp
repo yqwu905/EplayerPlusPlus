@@ -30,6 +30,8 @@ private slots:
     void compareHeader_placesTitleAndButtonsInHeaderBlock();
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
     void layout_shrinksFromSixToTwo_cellsExpand();
+    void toleranceMode_compareButtonTogglesTargetImage();
+    void toleranceMode_usesPreviewWhenFullImageIsNotLoaded();
     void resizeToFirstImage_toggleResizesOtherCells();
     void markButton_clickPersistsSingleImage();
     void markButton_ctrlClickMarksAllCurrentImages();
@@ -365,6 +367,110 @@ void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
 
     int widthAfter = cells.first()->width();
     QVERIFY(widthAfter > widthBefore);
+}
+
+void tst_ComparePanel::toleranceMode_compareButtonTogglesTargetImage()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr, nullptr);
+    panel.resize(900, 600);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    const QString folderA = root.filePath(QStringLiteral("folder_a"));
+    const QString folderB = root.filePath(QStringLiteral("folder_b"));
+    QVERIFY(QDir().mkpath(folderA));
+    QVERIFY(QDir().mkpath(folderB));
+    const QString imageA = createImageInFolder(folderA, QStringLiteral("img.png"), Qt::red);
+    const QString imageB = createImageInFolder(folderB, QStringLiteral("img.png"), Qt::blue);
+    QVERIFY(!imageA.isEmpty());
+    QVERIFY(!imageB.isEmpty());
+    QVERIFY(session.addFolder(folderA));
+    QVERIFY(session.addFolder(folderB));
+    selected.append({folderA, imageA});
+    selected.append({folderB, imageB});
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    auto *targetImageWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(targetImageWidget != nullptr);
+    QCOMPARE(targetImageWidget->image().pixelColor(0, 0), QColor(Qt::blue));
+
+    panel.setCompareMode(ComparePanel::ToleranceMode);
+    auto *compareToSecondButton = cells.at(0)->findChild<QPushButton *>(
+        QStringLiteral("compareTargetButton"));
+    QVERIFY(compareToSecondButton != nullptr);
+    QCOMPARE(compareToSecondButton->text(), QStringLiteral("2"));
+
+    QTest::mouseClick(compareToSecondButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QVERIFY(targetImageWidget->image().pixelColor(0, 0) != QColor(Qt::blue));
+
+    QTest::mouseClick(compareToSecondButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QCOMPARE(targetImageWidget->image().pixelColor(0, 0), QColor(Qt::blue));
+}
+
+void tst_ComparePanel::toleranceMode_usesPreviewWhenFullImageIsNotLoaded()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(900, 600);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    const QString folderA = root.filePath(QStringLiteral("folder_a"));
+    const QString folderB = root.filePath(QStringLiteral("folder_b"));
+    QVERIFY(QDir().mkpath(folderA));
+    QVERIFY(QDir().mkpath(folderB));
+    QVERIFY(session.addFolder(folderA));
+    QVERIFY(session.addFolder(folderB));
+
+    const QString imageA = folderA + QStringLiteral("/not_loaded_a.png");
+    const QString imageB = folderB + QStringLiteral("/not_loaded_b.png");
+    panel.setSelectedImages({{folderA, imageA}, {folderB, imageB}});
+
+    QImage previewA(32, 32, QImage::Format_ARGB32);
+    previewA.fill(Qt::red);
+    QImage previewB(32, 32, QImage::Format_ARGB32);
+    previewB.fill(Qt::blue);
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onThumbnailReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, imageA),
+                                      Q_ARG(QImage, previewA)));
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onThumbnailReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, imageB),
+                                      Q_ARG(QImage, previewB)));
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    auto *targetImageWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(targetImageWidget != nullptr);
+    QCOMPARE(targetImageWidget->image().pixelColor(0, 0), QColor(Qt::blue));
+
+    panel.setCompareMode(ComparePanel::ToleranceMode);
+    auto *compareToSecondButton = cells.at(0)->findChild<QPushButton *>(
+        QStringLiteral("compareTargetButton"));
+    QVERIFY(compareToSecondButton != nullptr);
+    QCOMPARE(compareToSecondButton->text(), QStringLiteral("2"));
+
+    QTest::mouseClick(compareToSecondButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+    QVERIFY(targetImageWidget->image().pixelColor(0, 0) != QColor(Qt::blue));
 }
 
 void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
