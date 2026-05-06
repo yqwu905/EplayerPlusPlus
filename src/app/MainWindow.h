@@ -6,6 +6,8 @@
 
 class QSplitter;
 class QAction;
+class QSlider;
+class QLabel;
 class FolderPanel;
 class BrowsePanel;
 class ComparePanel;
@@ -33,9 +35,15 @@ public:
 private:
     void setupUi();
     void setupMenuBar();
+    QWidget *createCommandBar();
+    QAction *addCommandAction(const QString &text,
+                              const QString &toolTip,
+                              const QObject *receiver,
+                              const char *member);
     void setupConnections();
     void togglePanel(int panelIndex);
     void saveSplitterSizes();
+    void updateCompareModeActions();
 
     QSplitter *m_mainSplitter = nullptr;
 
@@ -52,6 +60,11 @@ private:
     // View menu toggle actions
     QAction *m_toggleFolderPanelAction = nullptr;
     QAction *m_toggleBrowsePanelAction = nullptr;
+    QAction *m_swapModeAction = nullptr;
+    QAction *m_toleranceModeAction = nullptr;
+    QAction *m_resizeToFirstAction = nullptr;
+    QLabel *m_thresholdValueLabel = nullptr;
+    QSlider *m_thresholdSlider = nullptr;
 
     // Saved sizes for restoring collapsed panels
     QList<int> m_savedSplitterSizes;

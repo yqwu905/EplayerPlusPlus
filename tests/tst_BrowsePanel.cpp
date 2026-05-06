@@ -94,7 +94,7 @@ void tst_BrowsePanel::clickMarkButton(QListView *view,
     const QRect itemRect = view->visualRect(index);
     QVERIFY2(itemRect.isValid(), qPrintable(QString("invalid visual rect for row %1").arg(row)));
 
-    constexpr int cardWidth = 194;
+    constexpr int cardWidth = 166;
     constexpr int buttonSize = 18;
     constexpr int buttonGap = 3;
     constexpr int topMargin = 10;

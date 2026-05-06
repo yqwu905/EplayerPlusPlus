@@ -26,6 +26,30 @@
 #include <QSizePolicy>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QSignalBlocker>
+
+namespace
+{
+const QColor kCompareColors[] = {
+    QColor(0x18, 0x6F, 0xD7),
+    QColor(0x22, 0x8A, 0x46),
+    QColor(0xF7, 0x73, 0x13),
+    QColor(0x74, 0x55, 0xC8),
+    QColor(0x0F, 0x7B, 0x93),
+    QColor(0xC5, 0x0F, 0x1F)
+};
+const int kCompareColorCount = sizeof(kCompareColors) / sizeof(kCompareColors[0]);
+
+QColor compareColor(int index)
+{
+    return kCompareColors[qMax(0, index) % kCompareColorCount];
+}
+
+QString colorStyle(const QColor &color)
+{
+    return color.name(QColor::HexRgb);
+}
+}
 
 ComparePanel::ComparePanel(CompareSession *session,
                            SettingsManager *settingsManager,
@@ -84,10 +108,124 @@ void ComparePanel::setImageMarkManager(ImageMarkManager *manager)
     }
 }
 
+void ComparePanel::setControlsVisible(bool visible)
+{
+    if (m_toolBar) {
+        m_toolBar->setVisible(visible);
+    }
+}
+
+void ComparePanel::setCompareMode(CompareMode mode)
+{
+    if (m_compareMode == mode) {
+        if (m_modeAction) {
+            m_modeAction->setChecked(mode == ToleranceMode);
+        }
+        if (m_thresholdContainer) {
+            m_thresholdContainer->setVisible(mode == ToleranceMode && m_toolBar && m_toolBar->isVisible());
+        }
+        return;
+    }
+
+    m_compareMode = mode;
+
+    if (m_modeAction) {
+        m_modeAction->setText(mode == ToleranceMode ? tr("容差图") : tr("交换"));
+        m_modeAction->setChecked(mode == ToleranceMode);
+    }
+    if (m_thresholdContainer) {
+        m_thresholdContainer->setVisible(mode == ToleranceMode && m_toolBar && m_toolBar->isVisible());
+    }
+
+    if (mode == SwapMode) {
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (m_cells[i].showingToleranceMap) {
+                showOriginalImage(i);
+            }
+        }
+    }
+
+    emit compareModeChanged(mode);
+}
+
+void ComparePanel::setComparisonThreshold(int value)
+{
+    const int clamped = qBound(0, value, 255);
+    if (m_threshold == clamped) {
+        if (m_thresholdSlider && m_thresholdSlider->value() != clamped) {
+            const QSignalBlocker blocker(m_thresholdSlider);
+            m_thresholdSlider->setValue(clamped);
+        }
+        if (m_thresholdValueLabel) {
+            m_thresholdValueLabel->setText(QString::number(clamped));
+        }
+        return;
+    }
+
+    m_threshold = clamped;
+
+    if (m_thresholdSlider && m_thresholdSlider->value() != clamped) {
+        const QSignalBlocker blocker(m_thresholdSlider);
+        m_thresholdSlider->setValue(clamped);
+    }
+    if (m_thresholdValueLabel) {
+        m_thresholdValueLabel->setText(QString::number(clamped));
+    }
+
+    if (m_settingsManager) {
+        m_settingsManager->setComparisonThreshold(clamped);
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
+            m_cells[i].cachedToleranceImage = QImage();
+            showToleranceMap(m_cells[i].toleranceSourceIndex, i);
+        }
+    }
+
+    emit comparisonThresholdChanged(clamped);
+}
+
+void ComparePanel::setResizeToFirstImageEnabled(bool enabled)
+{
+    if (m_resizeToFirstImageEnabled == enabled) {
+        if (m_resizeToFirstImageCheckBox && m_resizeToFirstImageCheckBox->isChecked() != enabled) {
+            const QSignalBlocker blocker(m_resizeToFirstImageCheckBox);
+            m_resizeToFirstImageCheckBox->setChecked(enabled);
+        }
+        return;
+    }
+
+    m_resizeToFirstImageEnabled = enabled;
+
+    if (m_resizeToFirstImageCheckBox && m_resizeToFirstImageCheckBox->isChecked() != enabled) {
+        const QSignalBlocker blocker(m_resizeToFirstImageCheckBox);
+        m_resizeToFirstImageCheckBox->setChecked(enabled);
+    }
+
+    if (m_settingsManager) {
+        m_settingsManager->setResizeToFirstImageEnabled(enabled);
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        m_cells[i].cachedToleranceImage = QImage();
+        if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
+            showToleranceMap(m_cells[i].toleranceSourceIndex, i);
+        } else if (m_cells[i].hasImage) {
+            showOriginalImage(i);
+        }
+    }
+
+    emit resizeToFirstImageChanged(enabled);
+}
+
 void ComparePanel::setupUi()
 {
+    setObjectName(QStringLiteral("comparePanelRoot"));
+    setStyleSheet(
+        "QWidget#comparePanelRoot { background-color: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }");
     auto *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setContentsMargins(16, 16, 16, 16);
     mainLayout->setSpacing(0);
 
     // ---- Toolbar — Fluent 2 style ----
@@ -112,7 +250,7 @@ void ComparePanel::setupUi()
 
     m_toolBar->addSeparator();
 
-    m_resizeToFirstImageCheckBox = new QCheckBox(tr("Resize others to first"), m_toolBar);
+    m_resizeToFirstImageCheckBox = new QCheckBox(tr("同步尺寸"), m_toolBar);
     m_resizeToFirstImageCheckBox->setChecked(m_resizeToFirstImageEnabled);
     m_resizeToFirstImageCheckBox->setToolTip(
         tr("When enabled, non-primary images are resized to match the first image size"));
@@ -123,7 +261,7 @@ void ComparePanel::setupUi()
     m_toolBar->addSeparator();
 
     // Mode toggle button — Fluent 2 pill / toggle style
-    m_modeAction = m_toolBar->addAction(tr("Mode: Swap"));
+    m_modeAction = m_toolBar->addAction(tr("交换"));
     m_modeAction->setToolTip(tr("Click to switch between Swap and Tolerance mode"));
     m_modeAction->setCheckable(true);
     connect(m_modeAction, &QAction::triggered, this, &ComparePanel::onModeToggled);
@@ -136,7 +274,7 @@ void ComparePanel::setupUi()
     thresholdLayout->setContentsMargins(0, 0, 0, 0);
     thresholdLayout->setSpacing(8);
 
-    auto *thresholdLabel = new QLabel(tr("Threshold"), m_thresholdContainer);
+    auto *thresholdLabel = new QLabel(tr("阈值"), m_thresholdContainer);
     thresholdLabel->setStyleSheet(
         "QLabel { color: #616161; font-size: 12px; background: transparent; }");
     thresholdLayout->addWidget(thresholdLabel);
@@ -167,13 +305,13 @@ void ComparePanel::setupUi()
     auto *scrollArea = new QScrollArea(this);
     scrollArea->setWidgetResizable(true);
     scrollArea->setStyleSheet(
-        "QScrollArea { background-color: #F5F5F5; border: none; }");
+        "QScrollArea { background-color: #FFFFFF; border: none; }");
 
     m_gridContainer = new QWidget(scrollArea);
-    m_gridContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
+    m_gridContainer->setStyleSheet("QWidget { background-color: #FFFFFF; }");
     m_gridLayout = new QGridLayout(m_gridContainer);
-    m_gridLayout->setContentsMargins(12, 12, 12, 12);
-    m_gridLayout->setSpacing(12);
+    m_gridLayout->setContentsMargins(0, 0, 0, 0);
+    m_gridLayout->setSpacing(22);
 
     scrollArea->setWidget(m_gridContainer);
     mainLayout->addWidget(scrollArea);
@@ -194,24 +332,7 @@ void ComparePanel::setupUi()
 
 void ComparePanel::onModeToggled()
 {
-    if (m_compareMode == SwapMode) {
-        m_compareMode = ToleranceMode;
-        m_modeAction->setText(tr("Mode: Tolerance"));
-        m_modeAction->setChecked(true);
-        m_thresholdContainer->setVisible(true);
-    } else {
-        m_compareMode = SwapMode;
-        m_modeAction->setText(tr("Mode: Swap"));
-        m_modeAction->setChecked(false);
-        m_thresholdContainer->setVisible(false);
-
-        // Restore all images showing tolerance maps back to original
-        for (int i = 0; i < m_cells.size(); ++i) {
-            if (m_cells[i].showingToleranceMap) {
-                showOriginalImage(i);
-            }
-        }
-    }
+    setCompareMode(m_compareMode == SwapMode ? ToleranceMode : SwapMode);
 }
 
 // ---- Session change handlers ----
@@ -331,45 +452,54 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.container = new QWidget(m_gridContainer);
     cell.container->setStyleSheet(
         "QWidget#compareCellContainer { background-color: #FFFFFF; "
-        "border: 1px solid #E0E0E0; border-radius: 8px; }");
+        "border: none; border-radius: 8px; }");
     cell.container->setObjectName("compareCellContainer");
     auto *cellLayout = new QVBoxLayout(cell.container);
     cellLayout->setContentsMargins(0, 0, 0, 0);
     cellLayout->setSpacing(0);
 
-    // ---- Header — title and compare buttons in one row ----
+    // ---- Header — image identity, compare buttons, and mark buttons ----
     auto *headerWidget = new QWidget(cell.container);
+    headerWidget->setFixedHeight(72);
     headerWidget->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border: none; "
-        "border-top-left-radius: 8px; border-top-right-radius: 8px; "
-        "border-bottom: 1px solid #E0E0E0; }");
-    auto *headerLayout = new QHBoxLayout(headerWidget);
-    headerLayout->setContentsMargins(12, 6, 8, 6);
+        "QWidget { background-color: #FFFFFF; border: none; }");
+    auto *headerLayout = new QVBoxLayout(headerWidget);
+    headerLayout->setContentsMargins(0, 0, 0, 8);
     headerLayout->setSpacing(8);
+
+    auto *identityRow = new QHBoxLayout();
+    identityRow->setContentsMargins(0, 0, 0, 0);
+    identityRow->setSpacing(8);
+
+    cell.indexBadge = new QLabel(headerWidget);
+    cell.indexBadge->setObjectName(QStringLiteral("compareCellIndexBadge"));
+    cell.indexBadge->setAlignment(Qt::AlignCenter);
+    cell.indexBadge->setFixedSize(22, 22);
+    identityRow->addWidget(cell.indexBadge, 0, Qt::AlignTop);
 
     QString folderName = QDir(folderPath).dirName();
     cell.headerLabel = new QLabel(
-        QStringLiteral("%1 / %2").arg(folderName, tr("No image selected")),
+        QStringLiteral("%1\n%2").arg(tr("未选择图片"), folderName),
         headerWidget);
     cell.headerLabel->setObjectName(QStringLiteral("compareCellHeaderLabel"));
-    cell.headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    cell.headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     cell.headerLabel->setMinimumWidth(0);
     cell.headerLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     cell.headerLabel->setToolTip(folderName);
     cell.headerLabel->setStyleSheet(
-        "QLabel { background-color: #FFFFFF; color: #1A1A1A; "
-        "padding: 0px; border: none; font-size: 12px; font-weight: 600; }");
-    headerLayout->addWidget(cell.headerLabel, 1);
+        "QLabel { background-color: #FFFFFF; color: #263241; "
+        "padding: 0px; border: none; font-size: 11px; font-weight: 500; line-height: 16px; }");
+    identityRow->addWidget(cell.headerLabel, 1);
 
-    cell.renameButton = new QPushButton(QStringLiteral("\u270E"), headerWidget);
+    cell.renameButton = new QPushButton(QStringLiteral("✎"), headerWidget);
     cell.renameButton->setObjectName(QStringLiteral("compareCellRenameButton"));
-    cell.renameButton->setFixedSize(26, 26);
+    cell.renameButton->setFixedSize(24, 24);
     cell.renameButton->setToolTip(tr("Rename this comparison grid"));
     cell.renameButton->setCursor(Qt::PointingHandCursor);
     cell.renameButton->setStyleSheet(
         "QPushButton {"
         "  border: 1px solid transparent;"
-        "  border-radius: 4px;"
+        "  border-radius: 5px;"
         "  background-color: transparent;"
         "  color: #616161;"
         "  font-weight: 600;"
@@ -394,34 +524,45 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
             }
         }
     });
-    headerLayout->addWidget(cell.renameButton, 0, Qt::AlignRight | Qt::AlignVCenter);
+    identityRow->addWidget(cell.renameButton, 0, Qt::AlignTop);
+    headerLayout->addLayout(identityRow);
+
+    auto *controlsRow = new QHBoxLayout();
+    controlsRow->setContentsMargins(0, 0, 0, 0);
+    controlsRow->setSpacing(8);
 
     cell.compareButtonsContainer = new QWidget(headerWidget);
     cell.compareButtonsContainer->setObjectName(QStringLiteral("compareCellButtons"));
     cell.compareButtonsLayout = new QHBoxLayout(cell.compareButtonsContainer);
     cell.compareButtonsLayout->setContentsMargins(0, 0, 0, 0);
-    cell.compareButtonsLayout->setSpacing(4);
+    cell.compareButtonsLayout->setSpacing(3);
     cell.compareButtonsContainer->setStyleSheet(
         "QWidget { background-color: #FFFFFF; border: none; }");
-    headerLayout->addWidget(cell.compareButtonsContainer, 0, Qt::AlignRight | Qt::AlignVCenter);
-    cellLayout->addWidget(headerWidget);
+    controlsRow->addWidget(cell.compareButtonsContainer, 0, Qt::AlignLeft | Qt::AlignVCenter);
+    controlsRow->addStretch();
 
-    // ---- Image container ----
-    cell.imageContainer = new QWidget(cell.container);
-    cell.imageContainer->setMinimumSize(200, 200);
-    cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    cell.imageContainer->setStyleSheet("QWidget { background-color: #F5F5F5; }");
-
-    cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
-    cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
-
-    cell.markButtonsContainer = new QWidget(cell.imageContainer);
+    cell.markButtonsContainer = new QWidget(headerWidget);
     cell.markButtonsContainer->setObjectName(QStringLiteral("imageMarkButtons"));
     cell.markButtonsLayout = new QHBoxLayout(cell.markButtonsContainer);
     cell.markButtonsLayout->setContentsMargins(0, 0, 0, 0);
     cell.markButtonsLayout->setSpacing(3);
     cell.markButtonsContainer->setStyleSheet(
         "QWidget { background-color: transparent; border: none; }");
+    controlsRow->addWidget(cell.markButtonsContainer, 0, Qt::AlignRight | Qt::AlignVCenter);
+
+    headerLayout->addLayout(controlsRow);
+    cellLayout->addWidget(headerWidget);
+
+    // ---- Image container ----
+    cell.imageContainer = new QWidget(cell.container);
+    cell.imageContainer->setMinimumSize(200, 200);
+    cell.imageContainer->setMaximumHeight(300);
+    cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    cell.imageContainer->setStyleSheet(
+        "QWidget { background-color: #F8FAFC; border: 1px solid #EEF1F5; border-radius: 6px; }");
+
+    cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
+    cell.imageWidget->setText(tr("点击缩略图\n开始对比"));
 
     cellLayout->addWidget(cell.imageContainer, 1);
     cell.imageContainer->installEventFilter(this);
@@ -475,6 +616,15 @@ void ComparePanel::rebuildGrid()
     for (int i = 0; i < count; ++i) {
         int row = i / cols;
         int col = i % cols;
+        const QColor color = compareColor(i);
+        if (m_cells[i].indexBadge) {
+            m_cells[i].indexBadge->setText(QString::number(i + 1));
+            m_cells[i].indexBadge->setStyleSheet(
+                QStringLiteral("QLabel { background: %1; color: #FFFFFF; "
+                               "border: none; border-radius: 5px; font-size: 12px; "
+                               "font-weight: 700; }")
+                    .arg(colorStyle(color)));
+        }
         m_gridLayout->addWidget(m_cells[i].container, row, col);
     }
 
@@ -518,22 +668,26 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
             QString::number(targetIndex + 1), cell.compareButtonsContainer);
         button->setObjectName(QStringLiteral("compareTargetButton"));
         button->setToolTip(tr("使用当前图片与“%1”列对比").arg(cellDisplayName(targetIndex)));
-        button->setFixedSize(28, 26);
+        button->setFixedSize(24, 22);
         button->setCursor(Qt::PointingHandCursor);
         button->setStyleSheet(
             "QPushButton {"
-            "  border: 1px solid #0078D4;"
+            "  border: 1px solid #D5DCE6;"
             "  border-radius: 4px;"
             "  background-color: #FFFFFF;"
-            "  color: #0078D4;"
+            "  color: #283447;"
             "  font-weight: 600;"
+            "  font-size: 11px;"
             "  padding: 0px;"
             "}"
             "QPushButton:hover {"
-            "  background-color: #E5F1FB;"
+            "  background-color: #EFF6FF;"
+            "  border-color: #2D7FF9;"
+            "  color: #186FD7;"
             "}"
             "QPushButton:pressed {"
-            "  background-color: #0078D4;"
+            "  background-color: #2D7FF9;"
+            "  border-color: #2D7FF9;"
             "  color: #FFFFFF;"
             "}");
 
@@ -581,7 +735,7 @@ void ComparePanel::setupMarkButtonsForCell(int cellIndex)
         auto *button = new QPushButton(category, cell.markButtonsContainer);
         button->setObjectName(QStringLiteral("imageMarkButton_%1").arg(category));
         button->setToolTip(tr("Mark as %1. Ctrl+click marks all compared images.").arg(category));
-        button->setFixedSize(24, 24);
+        button->setFixedSize(24, 22);
         button->setCursor(Qt::PointingHandCursor);
         connect(button, &QPushButton::clicked, this, [this, cellContainer, category]() {
             if ((QApplication::keyboardModifiers() & Qt::ControlModifier) != 0) {
@@ -614,6 +768,11 @@ void ComparePanel::positionMarkButtonsForCell(int cellIndex)
         return;
     }
 
+    if (cell.markButtonsContainer->parentWidget() != cell.imageContainer) {
+        cell.markButtonsContainer->adjustSize();
+        return;
+    }
+
     cell.markButtonsContainer->adjustSize();
     const QSize buttonSize = cell.markButtonsContainer->sizeHint();
     const int x = qMax(8, cell.imageContainer->width() - buttonSize.width() - 10);
@@ -632,16 +791,16 @@ void ComparePanel::updateMarkButtonsForCell(int cellIndex)
         const bool active = (button->text() == currentMark);
         button->setStyleSheet(active
             ? QStringLiteral(
-                  "QPushButton { border: 1px solid #0078D4; border-radius: 4px; "
-                  "background-color: #0078D4; color: #FFFFFF; font-weight: 700; "
-                  "padding: 0px; }"
-                  "QPushButton:hover { background-color: #106EBE; }")
+                  "QPushButton { border: 1px solid #2D7FF9; border-radius: 4px; "
+                  "background-color: #EAF4FF; color: #186FD7; font-weight: 700; "
+                  "font-size: 11px; padding: 0px; }"
+                  "QPushButton:hover { background-color: #DDEEFF; }")
             : QStringLiteral(
-                  "QPushButton { border: 1px solid #C8C8C8; border-radius: 4px; "
-                  "background-color: #FFFFFF; color: #424242; font-weight: 600; "
-                  "padding: 0px; }"
-                  "QPushButton:hover { background-color: #F5F5F5; border-color: #8A8A8A; }"
-                  "QPushButton:pressed { background-color: #E5F1FB; border-color: #0078D4; }"));
+                  "QPushButton { border: 1px solid #E0E5ED; border-radius: 4px; "
+                  "background-color: #FFFFFF; color: #344054; font-weight: 600; "
+                  "font-size: 11px; padding: 0px; }"
+                  "QPushButton:hover { background-color: #F7FAFD; border-color: #B9C4D3; }"
+                  "QPushButton:pressed { background-color: #EAF4FF; border-color: #2D7FF9; }"));
     }
 }
 
@@ -888,38 +1047,12 @@ void ComparePanel::onCompareClicked(int sourceIndex, int targetIndex)
 
 void ComparePanel::onThresholdChanged(int value)
 {
-    m_threshold = value;
-    m_thresholdValueLabel->setText(QString("%1").arg(value));
-
-    if (m_settingsManager) {
-        m_settingsManager->setComparisonThreshold(value);
-    }
-
-    // Invalidate cached tolerance maps and regenerate
-    for (int i = 0; i < m_cells.size(); ++i) {
-        if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
-            m_cells[i].cachedToleranceImage = QImage(); // Force regeneration
-            showToleranceMap(m_cells[i].toleranceSourceIndex, i);
-        }
-    }
+    setComparisonThreshold(value);
 }
 
 void ComparePanel::onResizeToFirstImageToggled(bool enabled)
 {
-    m_resizeToFirstImageEnabled = enabled;
-
-    if (m_settingsManager) {
-        m_settingsManager->setResizeToFirstImageEnabled(enabled);
-    }
-
-    for (int i = 0; i < m_cells.size(); ++i) {
-        m_cells[i].cachedToleranceImage = QImage();
-        if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
-            showToleranceMap(m_cells[i].toleranceSourceIndex, i);
-        } else {
-            showOriginalImage(i);
-        }
-    }
+    setResizeToFirstImageEnabled(enabled);
 }
 
 void ComparePanel::renameCell(int cellIndex)
@@ -960,14 +1093,14 @@ void ComparePanel::updateCellHeader(int cellIndex)
     const QString displayName = cellDisplayName(cellIndex);
     if (cell.imagePath.isEmpty()) {
         cell.headerLabel->setText(
-            QStringLiteral("%1 / %2").arg(displayName, tr("No image selected")));
+            QStringLiteral("%1\n%2").arg(tr("未选择图片"), displayName));
         cell.headerLabel->setToolTip(QStringLiteral("%1\n%2")
                                          .arg(displayName, cell.folderPath));
         return;
     }
 
     const QString fileName = QFileInfo(cell.imagePath).fileName();
-    cell.headerLabel->setText(QStringLiteral("%1 / %2").arg(displayName, fileName));
+    cell.headerLabel->setText(QStringLiteral("%1\n%2").arg(fileName, displayName));
     cell.headerLabel->setToolTip(QStringLiteral("%1\n%2\n%3")
                                      .arg(displayName, fileName, cell.imagePath));
 }

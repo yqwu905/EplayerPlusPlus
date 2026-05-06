@@ -27,7 +27,7 @@ private slots:
     void layout_oneToThreeImages_singleRow();
     void layout_fourToSixImages_twoRows();
     void compareButtons_nMinusOnePerImage();
-    void compareHeader_placesTitleAndButtonsOnSameRow();
+    void compareHeader_placesTitleAndButtonsInHeaderBlock();
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
     void layout_shrinksFromSixToTwo_cellsExpand();
     void resizeToFirstImage_toggleResizesOtherCells();
@@ -207,7 +207,7 @@ void tst_ComparePanel::compareButtons_nMinusOnePerImage()
     }
 }
 
-void tst_ComparePanel::compareHeader_placesTitleAndButtonsOnSameRow()
+void tst_ComparePanel::compareHeader_placesTitleAndButtonsInHeaderBlock()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -249,12 +249,17 @@ void tst_ComparePanel::compareHeader_placesTitleAndButtonsOnSameRow()
             button->text().toInt(&isNumber);
             QVERIFY(isNumber);
 
-            const int titleCenterY = title->mapTo(cell, title->rect().center()).y();
-            const int buttonCenterY = button->mapTo(cell, button->rect().center()).y();
-            QVERIFY2(qAbs(titleCenterY - buttonCenterY) <= 4,
-                     qPrintable(QString("titleCenterY=%1, buttonCenterY=%2")
-                                    .arg(titleCenterY)
-                                    .arg(buttonCenterY)));
+            const int titleTop = title->mapTo(cell, title->rect().topLeft()).y();
+            const int titleBottom = title->mapTo(cell, title->rect().bottomLeft()).y();
+            const int buttonTop = button->mapTo(cell, button->rect().topLeft()).y();
+            QVERIFY2(buttonTop >= titleTop,
+                     qPrintable(QString("titleTop=%1, buttonTop=%2")
+                                    .arg(titleTop)
+                                    .arg(buttonTop)));
+            QVERIFY2(buttonTop - titleBottom <= 28,
+                     qPrintable(QString("titleBottom=%1, buttonTop=%2")
+                                    .arg(titleBottom)
+                                    .arg(buttonTop)));
         }
     }
 }

@@ -56,6 +56,12 @@ public:
     void setImageMarkManager(ImageMarkManager *manager);
 
     CompareMode compareMode() const { return m_compareMode; }
+    int comparisonThreshold() const { return m_threshold; }
+    bool resizeToFirstImageEnabled() const { return m_resizeToFirstImageEnabled; }
+    void setCompareMode(CompareMode mode);
+    void setComparisonThreshold(int value);
+    void setResizeToFirstImageEnabled(bool enabled);
+    void setControlsVisible(bool visible);
 
 signals:
     /**
@@ -67,6 +73,10 @@ signals:
      * @brief Request navigation to the next image set.
      */
     void navigateNextRequested();
+
+    void compareModeChanged(CompareMode mode);
+    void comparisonThresholdChanged(int value);
+    void resizeToFirstImageChanged(bool enabled);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -97,6 +107,7 @@ private:
     struct ImageCell {
         QWidget *container = nullptr;
         QWidget *imageContainer = nullptr;
+        QLabel *indexBadge = nullptr;
         QLabel *headerLabel = nullptr;
         QWidget *markButtonsContainer = nullptr;
         QHBoxLayout *markButtonsLayout = nullptr;

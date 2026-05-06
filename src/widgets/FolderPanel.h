@@ -6,6 +6,8 @@
 class QTreeView;
 class QToolBar;
 class QLineEdit;
+class QLabel;
+class QListWidget;
 class FolderModel;
 class SettingsManager;
 
@@ -29,6 +31,11 @@ public:
      */
     FolderModel *folderModel() const { return m_folderModel; }
 
+public slots:
+    void addFolderViaDialog();
+    void refreshFolders();
+    void clearFolders();
+
 signals:
     /**
      * @brief Emitted when a folder is requested to be added to comparison.
@@ -37,21 +44,23 @@ signals:
     void addToCompareRequested(const QString &path);
 
 private slots:
-    void onAddFolder();
     void onPathSubmitted();
-    void onRefreshAll();
-    void onClearAll();
     void onContextMenu(const QPoint &pos);
+    void onRootListContextMenu(const QPoint &pos);
 
 private:
     void setupUi();
     void setupConnections();
     void saveFolderList();
     void restoreFolderList();
+    void syncRootList();
+    QString rootItemText(const QString &path) const;
 
     QTreeView *m_treeView = nullptr;
     QToolBar *m_toolBar = nullptr;
     QLineEdit *m_pathInput = nullptr;
+    QListWidget *m_rootListWidget = nullptr;
+    QLabel *m_statusLabel = nullptr;
     FolderModel *m_folderModel = nullptr;
     SettingsManager *m_settingsManager = nullptr;
 };

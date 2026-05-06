@@ -29,9 +29,10 @@
 
 namespace
 {
-constexpr int kThumbnailCardWidth = 194;
-constexpr int kThumbnailImageSize = 180;
-constexpr int kThumbnailItemHeight = 222;
+constexpr int kThumbnailCardWidth = 166;
+constexpr int kThumbnailImageWidth = 154;
+constexpr int kThumbnailImageHeight = 96;
+constexpr int kThumbnailItemHeight = 142;
 constexpr int kColumnHorizontalMargins = 16;
 constexpr int kScrollAreaSafetyPadding = 4;
 constexpr int kPrefetchMinimumRows = 32;
@@ -39,6 +40,21 @@ constexpr int kMarkButtonSize = 18;
 constexpr int kMarkButtonGap = 3;
 constexpr int kMarkButtonTopMargin = 10;
 constexpr int kMarkButtonRightMargin = 10;
+
+const QColor kBrowseColors[] = {
+    QColor(0x18, 0x6F, 0xD7),
+    QColor(0x22, 0x8A, 0x46),
+    QColor(0xF7, 0x73, 0x13),
+    QColor(0x74, 0x55, 0xC8),
+    QColor(0x0F, 0x7B, 0x93),
+    QColor(0xC5, 0x0F, 0x1F)
+};
+const int kBrowseColorCount = sizeof(kBrowseColors) / sizeof(kBrowseColors[0]);
+
+QColor browseColor(int index)
+{
+    return kBrowseColors[qMax(0, index) % kBrowseColorCount];
+}
 
 QRect thumbnailCardRect(const QRect &itemRect)
 {
@@ -71,8 +87,13 @@ QString markCategoryAtPosition(const QRect &itemRect, const QPoint &pos)
 
 void paintMarkButtons(QPainter *painter,
                       const QRect &itemRect,
-                      const QString &currentMark)
+                      const QString &currentMark,
+                      bool hovered)
 {
+    if (currentMark.isEmpty() && !hovered) {
+        return;
+    }
+
     const QStringList categories = ImageMarkManager::categories();
     QFont buttonFont = painter->font();
     buttonFont.setPointSize(8);
@@ -137,8 +158,9 @@ private:
 class ThumbnailDelegate final : public QStyledItemDelegate
 {
 public:
-    explicit ThumbnailDelegate(QObject *parent = nullptr)
+    explicit ThumbnailDelegate(int colorIndex, QObject *parent = nullptr)
         : QStyledItemDelegate(parent)
+        , m_accentColor(browseColor(colorIndex))
     {
     }
 
@@ -161,8 +183,8 @@ public:
         const QRect cardRect = thumbnailCardRect(option.rect);
 
         if (selected) {
-            painter->setPen(QPen(QColor(0x00, 0x78, 0xD4), 2));
-            painter->setBrush(QColor(0xE5, 0xF1, 0xFB));
+            painter->setPen(QPen(m_accentColor, 2));
+            painter->setBrush(QColor(0xFF, 0xFF, 0xFF));
         } else if (hovered) {
             painter->setPen(QPen(QColor(0xD1, 0xD1, 0xD1), 1));
             painter->setBrush(QColor(0xFF, 0xFF, 0xFF));
@@ -172,10 +194,10 @@ public:
         }
         painter->drawRoundedRect(cardRect.adjusted(1, 1, -1, -1), 8, 8);
 
-        const QRect thumbArea(cardRect.x() + 7,
-                              cardRect.y() + 7,
-                              kThumbnailImageSize,
-                              kThumbnailImageSize);
+        const QRect thumbArea(cardRect.x() + 6,
+                              cardRect.y() + 6,
+                              kThumbnailImageWidth,
+                              kThumbnailImageHeight);
 
         QPainterPath clipPath;
         clipPath.addRoundedRect(thumbArea, 6, 6);
@@ -187,9 +209,12 @@ public:
         const QVariant thumbVar = index.data(ImageListModel::ThumbnailRole);
         const QImage thumbnail = thumbVar.canConvert<QImage>() ? thumbVar.value<QImage>() : QImage();
         if (!thumbnail.isNull()) {
-            const int x = thumbArea.x() + (thumbArea.width() - thumbnail.width()) / 2;
-            const int y = thumbArea.y() + (thumbArea.height() - thumbnail.height()) / 2;
-            painter->drawImage(QPoint(x, y), thumbnail);
+            const QImage cover = thumbnail.scaled(thumbArea.size(),
+                                                  Qt::KeepAspectRatioByExpanding,
+                                                  Qt::SmoothTransformation);
+            const int x = thumbArea.x() + (thumbArea.width() - cover.width()) / 2;
+            const int y = thumbArea.y() + (thumbArea.height() - cover.height()) / 2;
+            painter->drawImage(QPoint(x, y), cover);
         } else {
             painter->setPen(QColor(0x9E, 0x9E, 0x9E));
             QFont placeholderFont = painter->font();
@@ -199,10 +224,22 @@ public:
         }
         painter->setClipping(false);
 
+        if (selected) {
+            const QRect checkRect(cardRect.right() - 25, cardRect.top() + 7, 18, 18);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(m_accentColor);
+            painter->drawEllipse(checkRect);
+            painter->setPen(QPen(Qt::white, 2));
+            painter->drawLine(QPointF(checkRect.left() + 5, checkRect.center().y()),
+                              QPointF(checkRect.left() + 8, checkRect.bottom() - 5));
+            painter->drawLine(QPointF(checkRect.left() + 8, checkRect.bottom() - 5),
+                              QPointF(checkRect.right() - 4, checkRect.top() + 5));
+        }
+
         const QRect textArea(cardRect.x() + 7,
                              thumbArea.bottom() + 4,
-                             kThumbnailImageSize,
-                             24);
+                             kThumbnailImageWidth,
+                             26);
         painter->setPen(QColor(0x61, 0x61, 0x61));
         QFont font = painter->font();
         font.setPointSize(10);
@@ -213,10 +250,13 @@ public:
                           Qt::AlignCenter,
                           fm.elidedText(fileName, Qt::ElideMiddle, textArea.width()));
 
-        paintMarkButtons(painter, option.rect, currentMark);
+        paintMarkButtons(painter, option.rect, currentMark, hovered);
 
         painter->restore();
     }
+
+private:
+    QColor m_accentColor;
 };
 
 int rowExtent(const QListView *view)
@@ -259,8 +299,9 @@ void BrowsePanel::setImageMarkManager(ImageMarkManager *manager)
 void BrowsePanel::setupUi()
 {
     m_rootLayout = new QVBoxLayout(this);
-    m_rootLayout->setContentsMargins(8, 8, 8, 8);
+    m_rootLayout->setContentsMargins(14, 14, 14, 8);
     m_rootLayout->setSpacing(8);
+    setObjectName(QStringLiteral("browsePanelRoot"));
 
     auto *optionsRow = new QHBoxLayout();
     optionsRow->setContentsMargins(0, 0, 0, 0);
@@ -271,22 +312,28 @@ void BrowsePanel::setupUi()
     m_fuzzyFileNameCheckBox->setChecked(false);
     m_fuzzyFileNameCheckBox->setToolTip(
         tr("When enabled, Alt+Click will match the closest filename in each compared folder."));
+    m_fuzzyFileNameCheckBox->setVisible(false);
     optionsRow->addWidget(m_fuzzyFileNameCheckBox);
     optionsRow->addStretch();
-    m_rootLayout->addLayout(optionsRow);
 
     m_scanStatusLabel = new QLabel(tr("Idle"), this);
     m_scanStatusLabel->setStyleSheet(
-        "QLabel { color: #6E6E6E; padding-left: 2px; background: transparent; border: none; }");
-    m_rootLayout->addWidget(m_scanStatusLabel);
+        "QLabel { color: #6E7785; padding-left: 2px; font-size: 11px; background: transparent; border: none; }");
 
     m_columnsLayout = new QHBoxLayout();
-    m_columnsLayout->setContentsMargins(8, 8, 8, 8);
+    m_columnsLayout->setContentsMargins(0, 0, 0, 0);
     m_columnsLayout->setSpacing(8);
     m_columnsLayout->addStretch();
     m_rootLayout->addLayout(m_columnsLayout, 1);
+    m_rootLayout->addWidget(m_scanStatusLabel);
 
-    setStyleSheet("BrowsePanel { background-color: #F5F5F5; }");
+    setStyleSheet(
+        "QWidget#browsePanelRoot { background-color: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
+        "QWidget#compareColumnWidget { background-color: #FFFFFF; }"
+        "QWidget#compareColumnHeader { background-color: #FFFFFF; border: none; border-bottom: 1px solid #EEF1F5; }"
+        "QLabel#compareColumnHeaderLabel { color: #243041; background: transparent; border: none; }"
+        "QLabel#compareColumnProgressLabel { color: #687385; font-size: 11px; background: transparent; border: none; }"
+        "QListView#compareColumnListView { background-color: #FFFFFF; border: none; outline: none; }");
 }
 
 void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
@@ -300,19 +347,29 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     col.columnWidget = new QWidget(this);
     col.columnWidget->setObjectName(QStringLiteral("compareColumnWidget"));
-    col.columnWidget->setStyleSheet("QWidget#compareColumnWidget { background-color: #F5F5F5; }");
     col.columnWidget->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
 
     col.containerLayout = new QVBoxLayout(col.columnWidget);
-    col.containerLayout->setContentsMargins(8, 8, 8, 8);
+    col.containerLayout->setContentsMargins(0, 0, 0, 0);
     col.containerLayout->setSpacing(8);
 
     auto *headerWidget = new QWidget(col.columnWidget);
+    headerWidget->setObjectName(QStringLiteral("compareColumnHeader"));
     auto *headerLayout = new QHBoxLayout(headerWidget);
-    headerLayout->setContentsMargins(12, 8, 8, 8);
+    headerLayout->setContentsMargins(2, 0, 0, 10);
     headerLayout->setSpacing(8);
 
+    auto *colorSwatch = new QLabel(headerWidget);
+    colorSwatch->setFixedSize(12, 12);
+    colorSwatch->setStyleSheet(
+        QStringLiteral("QLabel { background: %1; border-radius: 3px; border: none; }")
+            .arg(browseColor(m_columns.size()).name(QColor::HexRgb)));
+    headerLayout->addWidget(colorSwatch, 0, Qt::AlignTop);
+
     const QString displayName = QDir(folderPath).dirName();
+    auto *titleStack = new QVBoxLayout();
+    titleStack->setContentsMargins(0, 0, 0, 0);
+    titleStack->setSpacing(2);
     auto *headerLabel = new QLabel(headerWidget);
     headerLabel->setObjectName(QStringLiteral("compareColumnHeaderLabel"));
     headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -322,12 +379,15 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerFont.setWeight(QFont::DemiBold);
     headerFont.setPointSize(12);
     headerLabel->setFont(headerFont);
-    headerLabel->setStyleSheet(
-        "QLabel { color: #1A1A1A; background: transparent; border: none; }");
     QFontMetrics fm(headerFont);
     headerLabel->setText(fm.elidedText(displayName, Qt::ElideRight, 140));
     headerLabel->setToolTip(displayName);
-    headerLayout->addWidget(headerLabel, 1);
+    titleStack->addWidget(headerLabel);
+
+    col.progressLabel = new QLabel(tr("0 个文件"), col.columnWidget);
+    col.progressLabel->setObjectName(QStringLiteral("compareColumnProgressLabel"));
+    titleStack->addWidget(col.progressLabel);
+    headerLayout->addLayout(titleStack, 1);
 
     auto *closeBtn = new QPushButton(QStringLiteral("\u00D7"), headerWidget);
     closeBtn->setObjectName(QStringLiteral("compareColumnCloseButton"));
@@ -352,21 +412,13 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         }
     });
 
-    headerWidget->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border-radius: 8px; }");
     col.containerLayout->addWidget(headerWidget);
-
-    col.progressLabel = new QLabel(tr("Discovered: 0"), col.columnWidget);
-    col.progressLabel->setAlignment(Qt::AlignCenter);
-    col.progressLabel->setStyleSheet(
-        "QLabel { color: #7D7D7D; padding: 4px; background: transparent; border: none; }");
-    col.containerLayout->addWidget(col.progressLabel);
 
     auto *thumbnailView = new ThumbnailListView(col.columnWidget);
     col.view = thumbnailView;
     col.view->setObjectName(QStringLiteral("compareColumnListView"));
     col.view->setModel(col.model);
-    col.view->setItemDelegate(new ThumbnailDelegate(col.view));
+    col.view->setItemDelegate(new ThumbnailDelegate(m_columns.size(), col.view));
     col.view->setMouseTracking(true);
     col.view->setSelectionMode(QAbstractItemView::NoSelection);
     col.view->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -374,13 +426,11 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     col.view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     col.view->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     col.view->setUniformItemSizes(true);
-    col.view->setSpacing(8);
+    col.view->setSpacing(6);
     col.view->setFlow(QListView::TopToBottom);
     col.view->setWrapping(false);
     col.view->setResizeMode(QListView::Adjust);
     col.view->setMovement(QListView::Static);
-    col.view->setStyleSheet(
-        "QListView { background-color: #F5F5F5; border: none; outline: none; }");
     const int verticalScrollBarWidth = col.view->style()->pixelMetric(
         QStyle::PM_ScrollBarExtent,
         nullptr,
@@ -1002,9 +1052,9 @@ void BrowsePanel::updateColumnProgressLabel(int columnIndex)
     }
 
     if (col.scanFinished) {
-        col.progressLabel->setText(tr("Discovered: %1 (done)").arg(col.discoveredCount));
+        col.progressLabel->setText(tr("%1 个文件").arg(col.discoveredCount));
     } else {
-        col.progressLabel->setText(tr("Discovered: %1 (scanning...)").arg(col.discoveredCount));
+        col.progressLabel->setText(tr("%1 个文件，扫描中").arg(col.discoveredCount));
     }
 }
 

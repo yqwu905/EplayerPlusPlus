@@ -12,7 +12,15 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QAction>
+#include <QActionGroup>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
+#include <QSlider>
 #include <QStatusBar>
+#include <QToolButton>
+#include <QVBoxLayout>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -31,15 +39,25 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::setupUi()
 {
-    setWindowTitle(tr("ImageCompare"));
+    setWindowTitle(tr("图像对比"));
     setMinimumSize(1200, 800);
+    resize(1680, 940);
+    statusBar()->hide();
+
+    auto *central = new QWidget(this);
+    central->setObjectName(QStringLiteral("mainChrome"));
+    auto *rootLayout = new QVBoxLayout(central);
+    rootLayout->setContentsMargins(8, 8, 8, 8);
+    rootLayout->setSpacing(8);
 
     // ---- Main splitter: three panels side by side ----
-    m_mainSplitter = new QSplitter(Qt::Horizontal, this);
-    m_mainSplitter->setHandleWidth(1);
+    m_mainSplitter = new QSplitter(Qt::Horizontal, central);
+    m_mainSplitter->setHandleWidth(8);
+    m_mainSplitter->setObjectName(QStringLiteral("contentSplitter"));
 
     // Left panel — Folder management
     m_folderPanel = new FolderPanel(m_settingsManager, m_mainSplitter);
+    m_folderPanel->setMinimumWidth(280);
 
     // Center panel — Image browsing
     m_browsePanel = new BrowsePanel(m_compareSession, m_imageLoader, m_mainSplitter);
@@ -48,7 +66,10 @@ void MainWindow::setupUi()
     // Right panel — Image comparison
     m_comparePanel = new ComparePanel(m_compareSession, m_settingsManager, m_imageLoader, m_mainSplitter);
     m_comparePanel->setImageMarkManager(m_imageMarkManager);
-    m_comparePanel->setMinimumWidth(300);
+    m_comparePanel->setControlsVisible(false);
+    m_comparePanel->setMinimumWidth(650);
+
+    rootLayout->addWidget(createCommandBar());
 
     // Add panels to splitter
     m_mainSplitter->addWidget(m_folderPanel);
@@ -60,11 +81,11 @@ void MainWindow::setupUi()
     m_mainSplitter->setCollapsible(1, true);
     m_mainSplitter->setCollapsible(2, false);
 
-    // Set initial size ratios: folder(1) : browse(1) : compare(3)
+    // Match the reference layout: slim folder rail, dense browser, large compare area.
     m_mainSplitter->setStretchFactor(0, 1);
-    m_mainSplitter->setStretchFactor(1, 1);
+    m_mainSplitter->setStretchFactor(1, 2);
     m_mainSplitter->setStretchFactor(2, 3);
-    m_mainSplitter->setSizes({240, 240, 720});
+    m_mainSplitter->setSizes({280, 700, 700});
     m_savedSplitterSizes = m_mainSplitter->sizes();
 
     // Track splitter moves to keep toggle actions in sync
@@ -83,50 +104,189 @@ void MainWindow::setupUi()
         saveSplitterSizes();
     });
 
-    setCentralWidget(m_mainSplitter);
+    rootLayout->addWidget(m_mainSplitter, 1);
+
+    central->setStyleSheet(
+        "QWidget#mainChrome { background: #F3F6FA; }"
+        "QSplitter#contentSplitter::handle { background: #F3F6FA; border: none; }"
+        "QWidget#commandBar { background: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
+        "QFrame#commandSeparator { background: #E3E7EC; border: none; max-width: 1px; min-width: 1px; }"
+        "QToolButton#commandButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px 10px; color: #1F2937; font-size: 12px; }"
+        "QToolButton#commandButton:hover { background: #F4F7FB; border-color: #E2E8F0; }"
+        "QToolButton#commandButton:pressed { background: #EAF1FB; }"
+        "QToolButton#commandButton:checked { background: #EAF4FF; border-color: #CFE4FF; color: #186FD7; font-weight: 600; }"
+        "QPushButton#valuePill { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 10px; color: #243041; font-size: 12px; }"
+        "QLabel#toolbarLabel { color: #263241; font-size: 12px; background: transparent; border: none; }");
+
+    setCentralWidget(central);
 }
 
 void MainWindow::setupMenuBar()
 {
-    // ---- File menu ----
-    QMenu *fileMenu = menuBar()->addMenu(tr("&File"));
+    menuBar()->hide();
 
-    QAction *exitAction = fileMenu->addAction(tr("E&xit"));
+    auto *exitAction = new QAction(tr("E&xit"), this);
     exitAction->setShortcut(QKeySequence::Quit);
     connect(exitAction, &QAction::triggered, qApp, &QApplication::quit);
 
-    // ---- View menu ----
-    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
-
-    m_toggleFolderPanelAction = viewMenu->addAction(tr("Folder Panel"));
+    m_toggleFolderPanelAction = new QAction(tr("Folder Panel"), this);
     m_toggleFolderPanelAction->setCheckable(true);
     m_toggleFolderPanelAction->setChecked(true);
     m_toggleFolderPanelAction->setShortcut(QKeySequence(tr("Ctrl+1")));
+    addAction(m_toggleFolderPanelAction);
     connect(m_toggleFolderPanelAction, &QAction::triggered, this, [this]() {
         togglePanel(0);
     });
 
-    m_toggleBrowsePanelAction = viewMenu->addAction(tr("Browse Panel"));
+    m_toggleBrowsePanelAction = new QAction(tr("Browse Panel"), this);
     m_toggleBrowsePanelAction->setCheckable(true);
     m_toggleBrowsePanelAction->setChecked(true);
     m_toggleBrowsePanelAction->setShortcut(QKeySequence(tr("Ctrl+2")));
+    addAction(m_toggleBrowsePanelAction);
     connect(m_toggleBrowsePanelAction, &QAction::triggered, this, [this]() {
         togglePanel(1);
     });
 
-    // ---- Help menu ----
-    QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
-
-    QAction *aboutAction = helpMenu->addAction(tr("&About"));
+    auto *aboutAction = new QAction(tr("&About"), this);
     connect(aboutAction, &QAction::triggered, this, [this]() {
-        QMessageBox::about(this, tr("About ImageCompare"),
-            tr("ImageCompare v0.1.0\n\n"
-               "A cross-platform image comparison tool.\n"
-               "Built with Qt 6 and C++17."));
+        QMessageBox::about(this, tr("关于图像对比"),
+            tr("图像对比 v0.1.0\n\n基于 Qt 6 和 C++17 构建。"));
+    });
+    addAction(aboutAction);
+}
+
+QWidget *MainWindow::createCommandBar()
+{
+    auto *bar = new QWidget(this);
+    bar->setObjectName(QStringLiteral("commandBar"));
+    bar->setFixedHeight(44);
+
+    auto *layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(14, 5, 10, 5);
+    layout->setSpacing(8);
+
+    auto separator = [bar]() {
+        auto *line = new QFrame(bar);
+        line->setObjectName(QStringLiteral("commandSeparator"));
+        line->setFixedHeight(24);
+        return line;
+    };
+
+    auto addButton = [layout, bar](QAction *action) {
+        auto *button = new QToolButton(bar);
+        button->setObjectName(QStringLiteral("commandButton"));
+        button->setDefaultAction(action);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setAutoRaise(false);
+        layout->addWidget(button);
+        return button;
+    };
+
+    addButton(new QAction(QStringLiteral("☰"), bar));
+    layout->addWidget(separator());
+
+    addButton(addCommandAction(QStringLiteral("⊞  添加"), tr("添加文件夹"),
+                               m_folderPanel, SLOT(addFolderViaDialog())));
+    addButton(addCommandAction(QStringLiteral("⟳  刷新"), tr("刷新文件夹"),
+                               m_folderPanel, SLOT(refreshFolders())));
+    addButton(addCommandAction(QStringLiteral("⌫  清空"), tr("清空文件夹"),
+                               m_folderPanel, SLOT(clearFolders())));
+
+    layout->addWidget(separator());
+
+    auto *browseAction = new QAction(QStringLiteral("▦  浏览"), bar);
+    browseAction->setCheckable(true);
+    browseAction->setChecked(true);
+    browseAction->setToolTip(tr("显示图片浏览区"));
+    connect(browseAction, &QAction::triggered, this, [this](bool checked) {
+        const QList<int> sizes = m_mainSplitter->sizes();
+        const bool currentlyVisible = sizes.size() > 1 && sizes.at(1) > 0;
+        if (currentlyVisible != checked) {
+            togglePanel(1);
+        }
+    });
+    addButton(browseAction);
+
+    m_swapModeAction = new QAction(QStringLiteral("交换"), bar);
+    m_swapModeAction->setCheckable(true);
+    m_swapModeAction->setChecked(true);
+    m_toleranceModeAction = new QAction(QStringLiteral("容差图"), bar);
+    m_toleranceModeAction->setCheckable(true);
+    auto *modeGroup = new QActionGroup(bar);
+    modeGroup->addAction(m_swapModeAction);
+    modeGroup->addAction(m_toleranceModeAction);
+    modeGroup->setExclusive(true);
+    connect(m_swapModeAction, &QAction::triggered, this, [this]() {
+        m_comparePanel->setCompareMode(ComparePanel::SwapMode);
+    });
+    connect(m_toleranceModeAction, &QAction::triggered, this, [this]() {
+        m_comparePanel->setCompareMode(ComparePanel::ToleranceMode);
     });
 
-    QAction *aboutQtAction = helpMenu->addAction(tr("About &Qt"));
-    connect(aboutQtAction, &QAction::triggered, qApp, &QApplication::aboutQt);
+    addButton(m_swapModeAction);
+    addButton(m_toleranceModeAction);
+
+    layout->addWidget(separator());
+
+    auto *thresholdLabel = new QLabel(tr("阈值"), bar);
+    thresholdLabel->setObjectName(QStringLiteral("toolbarLabel"));
+    layout->addWidget(thresholdLabel);
+
+    m_thresholdSlider = new QSlider(Qt::Horizontal, bar);
+    m_thresholdSlider->setRange(0, 255);
+    m_thresholdSlider->setValue(m_comparePanel ? m_comparePanel->comparisonThreshold() : 10);
+    m_thresholdSlider->setFixedWidth(190);
+    layout->addWidget(m_thresholdSlider);
+
+    auto *valueButton = new QPushButton(QString::number(m_thresholdSlider->value()), bar);
+    valueButton->setObjectName(QStringLiteral("valuePill"));
+    valueButton->setFixedWidth(52);
+    m_thresholdValueLabel = new QLabel(QString::number(m_thresholdSlider->value()), valueButton);
+    m_thresholdValueLabel->hide();
+    layout->addWidget(valueButton);
+    auto *percentLabel = new QLabel(QStringLiteral("%"), bar);
+    percentLabel->setObjectName(QStringLiteral("toolbarLabel"));
+    layout->addWidget(percentLabel);
+
+    connect(m_thresholdSlider, &QSlider::valueChanged, this, [this, valueButton](int value) {
+        valueButton->setText(QString::number(value));
+        if (m_thresholdValueLabel) {
+            m_thresholdValueLabel->setText(QString::number(value));
+        }
+        m_comparePanel->setComparisonThreshold(value);
+    });
+
+    layout->addWidget(separator());
+
+    addButton(addCommandAction(QStringLiteral("⌃"), tr("上一张"),
+                               m_browsePanel, SLOT(navigatePrevious())));
+    addButton(addCommandAction(QStringLiteral("⌄"), tr("下一张"),
+                               m_browsePanel, SLOT(navigateNext())));
+
+    m_resizeToFirstAction = new QAction(QStringLiteral("同步尺寸"), bar);
+    m_resizeToFirstAction->setCheckable(true);
+    m_resizeToFirstAction->setChecked(m_comparePanel ? m_comparePanel->resizeToFirstImageEnabled() : false);
+    connect(m_resizeToFirstAction, &QAction::toggled,
+            m_comparePanel, &ComparePanel::setResizeToFirstImageEnabled);
+    addButton(m_resizeToFirstAction);
+
+    layout->addStretch();
+
+    addButton(new QAction(QStringLiteral("⚙  设置"), bar));
+    addButton(new QAction(QStringLiteral("⋮"), bar));
+
+    return bar;
+}
+
+QAction *MainWindow::addCommandAction(const QString &text,
+                                      const QString &toolTip,
+                                      const QObject *receiver,
+                                      const char *member)
+{
+    auto *action = new QAction(text, this);
+    action->setToolTip(toolTip);
+    connect(action, SIGNAL(triggered()), receiver, member);
+    return action;
 }
 
 void MainWindow::setupConnections()
@@ -148,6 +308,21 @@ void MainWindow::setupConnections()
     connect(m_browsePanel, &BrowsePanel::scanStatusChanged,
             this, [this](const QString &statusText) {
         statusBar()->showMessage(statusText);
+    });
+
+    connect(m_comparePanel, &ComparePanel::compareModeChanged,
+            this, &MainWindow::updateCompareModeActions);
+    connect(m_comparePanel, &ComparePanel::comparisonThresholdChanged,
+            this, [this](int value) {
+        if (m_thresholdSlider && m_thresholdSlider->value() != value) {
+            m_thresholdSlider->setValue(value);
+        }
+    });
+    connect(m_comparePanel, &ComparePanel::resizeToFirstImageChanged,
+            this, [this](bool enabled) {
+        if (m_resizeToFirstAction && m_resizeToFirstAction->isChecked() != enabled) {
+            m_resizeToFirstAction->setChecked(enabled);
+        }
     });
 }
 
@@ -179,6 +354,17 @@ void MainWindow::togglePanel(int panelIndex)
     } else if (panelIndex == 1 && m_toggleBrowsePanelAction) {
         m_toggleBrowsePanelAction->setChecked(sizes.at(1) > 0);
     }
+}
+
+void MainWindow::updateCompareModeActions()
+{
+    if (!m_comparePanel || !m_swapModeAction || !m_toleranceModeAction) {
+        return;
+    }
+
+    const bool tolerance = m_comparePanel->compareMode() == ComparePanel::ToleranceMode;
+    m_swapModeAction->setChecked(!tolerance);
+    m_toleranceModeAction->setChecked(tolerance);
 }
 
 void MainWindow::saveSplitterSizes()
