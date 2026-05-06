@@ -51,6 +51,7 @@ private slots:
     void testLoadNextThumbnailBatch();
     void testLoadNextThumbnailBatch_resetsOnSetFolder();
     void testHasMoreToLoad_emptyFolder();
+    void testThumbnailReady_ignoresLargeSharedPreview();
 
 private:
     // Helper: set folder and wait for async scan to complete
@@ -505,6 +506,43 @@ void tst_ImageListModel::testHasMoreToLoad_emptyFolder()
     setFolderAndWait(model, m_emptyDir);
     QVERIFY(!model.hasMoreToLoad());
     QVERIFY(!model.loadNextThumbnailBatch(6));
+}
+
+void tst_ImageListModel::testThumbnailReady_ignoresLargeSharedPreview()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("large.png");
+    QImage image(512, 512, QImage::Format_ARGB32);
+    image.fill(Qt::blue);
+    QVERIFY(image.save(imagePath));
+
+    ImageLoader loader;
+    ImageListModel model;
+    model.setImageLoader(&loader);
+    setFolderAndWait(model, dir.path());
+    QCOMPARE(model.imageCount(), 1);
+
+    const QModelIndex index = model.index(0, 0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !model.data(index, ImageListModel::ThumbnailRole).value<QImage>().isNull(),
+        5000);
+
+    const QImage browseThumbnail =
+        model.data(index, ImageListModel::ThumbnailRole).value<QImage>();
+    QVERIFY(browseThumbnail.width() <= 180);
+    QVERIFY(browseThumbnail.height() <= 180);
+
+    loader.requestThumbnail(imagePath, QSize(960, 960));
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.getCachedThumbnail(imagePath, QSize(960, 960)).isNull(),
+                             5000);
+    QTest::qWait(50);
+
+    const QImage currentThumbnail =
+        model.data(index, ImageListModel::ThumbnailRole).value<QImage>();
+    QVERIFY(currentThumbnail.width() <= 180);
+    QVERIFY(currentThumbnail.height() <= 180);
 }
 
 QTEST_MAIN(tst_ImageListModel)

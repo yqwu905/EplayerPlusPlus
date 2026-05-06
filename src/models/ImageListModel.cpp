@@ -8,6 +8,12 @@
 #include <QtConcurrent>
 #include <QMetaObject>
 
+namespace
+{
+constexpr int kBrowseThumbnailExtent = 180;
+const QSize kBrowseThumbnailSize(kBrowseThumbnailExtent, kBrowseThumbnailExtent);
+}
+
 ImageListModel::ImageListModel(QObject *parent)
     : QAbstractListModel(parent)
 {
@@ -265,7 +271,7 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
     }
 
     if (!visibleFirst.isEmpty()) {
-        m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst);
+        m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst, kBrowseThumbnailSize);
     }
 }
 
@@ -285,7 +291,7 @@ bool ImageListModel::loadNextThumbnailBatch(int batchSize)
         }
     }
     if (!pathsToLoad.isEmpty()) {
-        m_imageLoader->requestThumbnailBatch(pathsToLoad);
+        m_imageLoader->requestThumbnailBatch(pathsToLoad, kBrowseThumbnailSize);
     }
     m_nextLoadIndex = end;
     return m_nextLoadIndex < m_imagePaths.size();
@@ -298,6 +304,11 @@ bool ImageListModel::hasMoreToLoad() const
 
 void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &thumbnail)
 {
+    if (thumbnail.width() > kBrowseThumbnailSize.width() ||
+        thumbnail.height() > kBrowseThumbnailSize.height()) {
+        return;
+    }
+
     auto it = m_pathToIndex.constFind(imagePath);
     if (it == m_pathToIndex.constEnd()) {
         return;
@@ -409,7 +420,8 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
 
     if (m_imageLoader && m_initialPrefetchRemaining > 0) {
         const int count = qMin(m_initialPrefetchRemaining, batch.size());
-        m_imageLoader->requestThumbnailBatchVisibleFirst(batch.mid(0, count));
+        m_imageLoader->requestThumbnailBatchVisibleFirst(batch.mid(0, count),
+                                                         kBrowseThumbnailSize);
         m_initialPrefetchRemaining -= count;
     }
 }
