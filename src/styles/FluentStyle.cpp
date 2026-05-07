@@ -9,19 +9,49 @@ namespace FluentStyle
 
 void applyGlobalStyle(QApplication *app)
 {
-    // ---- System font, Fluent-appropriate weight ----
 #if defined(Q_OS_MACOS)
-    QFont appFont(".AppleSystemUIFont", fontSizeBody());
+    const Platform platform = Platform::MacOS;
 #elif defined(Q_OS_WIN)
-    QFont appFont("Segoe UI", fontSizeBody());
+    const Platform platform = Platform::Windows;
 #else
-    QFont appFont("", fontSizeBody()); // system default
+    const Platform platform = Platform::Other;
 #endif
-    appFont.setWeight(QFont::Normal);
-    app->setFont(appFont);
 
-    // ---- Global stylesheet ----
+    app->setFont(applicationFont(platform));
     app->setStyleSheet(globalStyleSheet());
+}
+
+QStringList preferredFontFamilies(Platform platform)
+{
+    switch (platform) {
+    case Platform::Windows:
+        return {
+            QStringLiteral("Microsoft YaHei UI"),
+            QStringLiteral("Segoe UI Variable Text"),
+            QStringLiteral("Segoe UI")
+        };
+    case Platform::MacOS:
+        return {QStringLiteral(".AppleSystemUIFont")};
+    case Platform::Other:
+        return {};
+    }
+
+    return {};
+}
+
+QFont applicationFont(Platform platform)
+{
+    QFont appFont;
+    appFont.setFamilies(preferredFontFamilies(platform));
+    appFont.setPointSize(fontSizeBody());
+    appFont.setWeight(QFont::Normal);
+    appFont.setStyleStrategy(static_cast<QFont::StyleStrategy>(QFont::PreferAntialias | QFont::PreferQuality));
+
+    if (platform == Platform::Windows) {
+        appFont.setHintingPreference(QFont::PreferNoHinting);
+    }
+
+    return appFont;
 }
 
 QString globalStyleSheet()

@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QFont>
 #include <QString>
+#include <QStringList>
 
 class QApplication;
 
@@ -16,6 +17,13 @@ class QApplication;
  */
 namespace FluentStyle
 {
+
+enum class Platform
+{
+    Windows,
+    MacOS,
+    Other
+};
 
 // ============================================================
 //  Color Tokens — Neutral Palette
@@ -87,6 +95,16 @@ inline constexpr int fontSizeDisplay()  { return 20; }
  * Should be called once at startup from main().
  */
 void applyGlobalStyle(QApplication *app);
+
+/**
+ * @brief Create the platform-specific application font.
+ */
+QFont applicationFont(Platform platform);
+
+/**
+ * @brief Preferred UI font families for a platform, ordered by priority.
+ */
+QStringList preferredFontFamilies(Platform platform);
 
 /**
  * @brief Get the global Fluent 2 QSS stylesheet string.
