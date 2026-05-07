@@ -28,6 +28,7 @@ private slots:
     void layout_fourToSixImages_twoRows();
     void compareButtons_nMinusOnePerImage();
     void compareHeader_placesTitleAndButtonsInHeaderBlock();
+    void layout_imageAreaExpandsToFillAvailableGridHeight();
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
     void layout_shrinksFromSixToTwo_cellsExpand();
     void toleranceMode_compareButtonTogglesTargetImage();
@@ -263,6 +264,45 @@ void tst_ComparePanel::compareHeader_placesTitleAndButtonsInHeaderBlock()
                                     .arg(titleBottom)
                                     .arg(buttonTop)));
         }
+    }
+}
+
+void tst_ComparePanel::layout_imageAreaExpandsToFillAvailableGridHeight()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1200, 800);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 2; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            QString("image_%1.png").arg(i),
+            QColor::fromHsv(i * 80, 255, 230));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    const auto cells = findCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    for (QWidget *cell : cells) {
+        auto *imageWidget = cell->findChild<ZoomableImageWidget *>();
+        QVERIFY(imageWidget != nullptr);
+        QVERIFY2(imageWidget->height() > 300,
+                 qPrintable(QString("image height should exceed the old cap, got %1")
+                                .arg(imageWidget->height())));
     }
 }
 

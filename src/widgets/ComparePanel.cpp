@@ -311,7 +311,7 @@ void ComparePanel::setupUi()
     m_gridContainer->setStyleSheet("QWidget { background-color: #FFFFFF; }");
     m_gridLayout = new QGridLayout(m_gridContainer);
     m_gridLayout->setContentsMargins(0, 0, 0, 0);
-    m_gridLayout->setSpacing(22);
+    m_gridLayout->setSpacing(8);
 
     scrollArea->setWidget(m_gridContainer);
     mainLayout->addWidget(scrollArea);
@@ -556,7 +556,6 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     // ---- Image container ----
     cell.imageContainer = new QWidget(cell.container);
     cell.imageContainer->setMinimumSize(200, 200);
-    cell.imageContainer->setMaximumHeight(300);
     cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     cell.imageContainer->setStyleSheet(
         "QWidget { background-color: #F8FAFC; border: 1px solid #EEF1F5; border-radius: 6px; }");
