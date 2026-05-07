@@ -1,5 +1,6 @@
 #include <QTest>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QSettings>
 #include <QTemporaryDir>
 
@@ -16,6 +17,7 @@ private slots:
     void cleanup();
     void enterPathAndPressReturn_addsFolder();
     void enterInvalidPathAndPressReturn_doesNotAddFolder();
+    void rootFolderSummaryList_isNotShown();
 };
 
 void tst_FolderPanel::init()
@@ -67,6 +69,16 @@ void tst_FolderPanel::enterInvalidPathAndPressReturn_doesNotAddFolder()
     QTest::keyClick(pathInput, Qt::Key_Return);
 
     QCOMPARE(panel.folderModel()->rootFolderPaths().size(), 0);
+}
+
+void tst_FolderPanel::rootFolderSummaryList_isNotShown()
+{
+    SettingsManager settingsManager;
+    FolderPanel panel(&settingsManager);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(panel.findChild<QListWidget *>("rootFolderList") == nullptr);
 }
 
 QTEST_MAIN(tst_FolderPanel)
