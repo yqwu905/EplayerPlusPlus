@@ -59,13 +59,20 @@ public slots:
 private slots:
     void onFolderAdded(const QString &folderPath, int index);
     void onFolderRemoved(const QString &folderPath, int index);
+    void onFoldersSwapped(int firstIndex, int secondIndex);
     void onSessionCleared();
     void onFolderReady(int columnIndex);
 
 private:
+    enum class SelectionNavigationMode {
+        Independent,
+        FileNameMatch
+    };
+
     struct ColumnInfo {
         QWidget *columnWidget = nullptr;
         QVBoxLayout *containerLayout = nullptr;
+        QLabel *colorSwatch = nullptr;
         QLabel *progressLabel = nullptr;
         QListView *view = nullptr;
         ImageListModel *model = nullptr;
@@ -76,8 +83,14 @@ private:
 
     void setupUi();
     void clearAllColumns();
+    void rebuildColumnLayout();
+    void updateColumnVisuals(int columnIndex);
     void clearSelection();
     void navigateSelection(int delta);
+    bool navigateFileNameMatchedSelection(int delta);
+    bool navigateIndependentSelection(int delta);
+    void setSelectionNavigationMode(SelectionNavigationMode mode, int anchorColumn);
+    void resetSelectionNavigationMode();
     void clearColumnSelection(int column);
     void onThumbnailActivated(int column, int row, Qt::KeyboardModifiers modifiers);
     void onThumbnailMarkRequested(int column,
@@ -115,6 +128,8 @@ private:
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
     QTimer *m_interleavedLoadTimer = nullptr;
+    SelectionNavigationMode m_selectionNavigationMode = SelectionNavigationMode::Independent;
+    int m_navigationAnchorColumn = -1;
 
     static constexpr int kThumbnailBatchPerTick = 16;
 };

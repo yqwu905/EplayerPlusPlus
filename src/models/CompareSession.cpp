@@ -49,6 +49,21 @@ bool CompareSession::removeFolderAt(int index)
     return true;
 }
 
+bool CompareSession::swapFolders(int firstIndex, int secondIndex)
+{
+    if (firstIndex < 0 || firstIndex >= m_folders.size() ||
+        secondIndex < 0 || secondIndex >= m_folders.size() ||
+        firstIndex == secondIndex) {
+        return false;
+    }
+
+    m_folders.swapItemsAt(firstIndex, secondIndex);
+
+    emit foldersSwapped(firstIndex, secondIndex);
+    emit sessionChanged();
+    return true;
+}
+
 void CompareSession::clear()
 {
     if (m_folders.isEmpty()) {

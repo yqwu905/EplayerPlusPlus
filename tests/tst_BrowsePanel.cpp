@@ -4,6 +4,7 @@
 #include <QImage>
 #include <QFile>
 #include <QCheckBox>
+#include <QCoreApplication>
 #include <QListView>
 #include <QPushButton>
 #include <QScrollBar>
@@ -29,6 +30,9 @@ private slots:
     void altClick_exactVsFuzzyFileNameMatch();
     void markButtons_clickPersistsAndCtrlClickMarksSameRow();
     void selection_preloadsPreviousAndNextThreeImages();
+    void altMatchedNavigation_advancesAnchorAndRematchesOtherFolders();
+    void independentNavigation_movesEachSelectedFolderSeparately();
+    void folderSwap_reordersColumnsAndKeepsSelections();
     void scrollableColumn_keepsHeaderControlsVisible();
     void virtualizedColumn_doesNotCreateThumbnailWidgetsForRows();
 
@@ -40,6 +44,7 @@ private:
                                 int row,
                                 int categoryIndex,
                                 Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+    static QString folderPathForView(QListView *view);
     static int rowByFileName(QListView *view, const QString &fileName);
     static bool isRowSelected(QListView *view, int row);
 };
@@ -108,6 +113,12 @@ void tst_BrowsePanel::clickMarkButton(QListView *view,
                        cardY + topMargin + buttonSize / 2);
 
     QTest::mouseClick(view->viewport(), Qt::LeftButton, modifiers, point);
+}
+
+QString tst_BrowsePanel::folderPathForView(QListView *view)
+{
+    auto *model = qobject_cast<ImageListModel *>(view ? view->model() : nullptr);
+    return model ? model->folderPath() : QString();
 }
 
 int tst_BrowsePanel::rowByFileName(QListView *view, const QString &fileName)
@@ -408,6 +419,156 @@ void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()
     QVERIFY(loadedPaths.contains(imagePaths.at(5)));
     QVERIFY(loadedPaths.contains(imagePaths.at(6)));
     QVERIFY(loadedPaths.contains(imagePaths.at(7)));
+}
+
+void tst_BrowsePanel::altMatchedNavigation_advancesAnchorAndRematchesOtherFolders()
+{
+    QTemporaryDir dirA;
+    QTemporaryDir dirB;
+    QVERIFY(dirA.isValid());
+    QVERIFY(dirB.isValid());
+
+    QImage image(16, 16, QImage::Format_ARGB32);
+    image.fill(Qt::cyan);
+    QVERIFY(image.save(dirA.filePath("img_00.png")));
+    QVERIFY(image.save(dirA.filePath("img_01.png")));
+    QVERIFY(image.save(dirA.filePath("img_02.png")));
+    QVERIFY(image.save(dirB.filePath("img_00.png")));
+    QVERIFY(image.save(dirB.filePath("img_02.png")));
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(900, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dirA.path()));
+    QVERIFY(session.addFolder(dirB.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    waitForRows(views[0], 3);
+    waitForRows(views[1], 2);
+
+    const int a0 = rowByFileName(views[0], QStringLiteral("img_00.png"));
+    const int a1 = rowByFileName(views[0], QStringLiteral("img_01.png"));
+    const int a2 = rowByFileName(views[0], QStringLiteral("img_02.png"));
+    const int b0 = rowByFileName(views[1], QStringLiteral("img_00.png"));
+    const int b2 = rowByFileName(views[1], QStringLiteral("img_02.png"));
+    QVERIFY(a0 >= 0 && a1 >= 0 && a2 >= 0);
+    QVERIFY(b0 >= 0 && b2 >= 0);
+
+    clickRow(views[0], a0, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], a0), 1000);
+    QVERIFY(isRowSelected(views[1], b0));
+
+    panel.navigateNext();
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], a1), 1000);
+    QVERIFY(!isRowSelected(views[1], b0));
+    QVERIFY(!isRowSelected(views[1], b2));
+
+    panel.navigateNext();
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], a2), 1000);
+    QVERIFY(isRowSelected(views[1], b2));
+}
+
+void tst_BrowsePanel::independentNavigation_movesEachSelectedFolderSeparately()
+{
+    QTemporaryDir dirA;
+    QTemporaryDir dirB;
+    QVERIFY(dirA.isValid());
+    QVERIFY(dirB.isValid());
+
+    QImage image(16, 16, QImage::Format_ARGB32);
+    image.fill(Qt::magenta);
+    QVERIFY(image.save(dirA.filePath("img_00.png")));
+    QVERIFY(image.save(dirA.filePath("img_01.png")));
+    QVERIFY(image.save(dirA.filePath("img_02.png")));
+    QVERIFY(image.save(dirB.filePath("img_00.png")));
+    QVERIFY(image.save(dirB.filePath("img_02.png")));
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(900, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dirA.path()));
+    QVERIFY(session.addFolder(dirB.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    waitForRows(views[0], 3);
+    waitForRows(views[1], 2);
+
+    const int a0 = rowByFileName(views[0], QStringLiteral("img_00.png"));
+    const int a1 = rowByFileName(views[0], QStringLiteral("img_01.png"));
+    const int b0 = rowByFileName(views[1], QStringLiteral("img_00.png"));
+    const int b2 = rowByFileName(views[1], QStringLiteral("img_02.png"));
+    QVERIFY(a0 >= 0 && a1 >= 0);
+    QVERIFY(b0 >= 0 && b2 >= 0);
+
+    clickRow(views[0], a0);
+    clickRow(views[1], b0);
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], a0), 1000);
+    QVERIFY(isRowSelected(views[1], b0));
+
+    panel.navigateNext();
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], a1), 1000);
+    QVERIFY(isRowSelected(views[1], b2));
+}
+
+void tst_BrowsePanel::folderSwap_reordersColumnsAndKeepsSelections()
+{
+    QTemporaryDir dirA;
+    QTemporaryDir dirB;
+    QVERIFY(dirA.isValid());
+    QVERIFY(dirB.isValid());
+
+    QImage imageA(16, 16, QImage::Format_ARGB32);
+    imageA.fill(Qt::red);
+    const QString imageAPath = dirA.filePath("a.png");
+    QVERIFY(imageA.save(imageAPath));
+
+    QImage imageB(16, 16, QImage::Format_ARGB32);
+    imageB.fill(Qt::blue);
+    const QString imageBPath = dirB.filePath("b.png");
+    QVERIFY(imageB.save(imageBPath));
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(900, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dirA.path()));
+    QVERIFY(session.addFolder(dirB.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    waitForRows(views[0], 1);
+    waitForRows(views[1], 1);
+    QCOMPARE(folderPathForView(views[0]), dirA.path());
+    QCOMPARE(folderPathForView(views[1]), dirB.path());
+
+    clickRow(views[0], 0);
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], 0), 1000);
+
+    QVERIFY(session.swapFolders(0, 1));
+    QCoreApplication::processEvents();
+
+    views = sortedViews(panel);
+    QCOMPARE(views.size(), 2);
+    QCOMPARE(folderPathForView(views[0]), dirB.path());
+    QCOMPARE(folderPathForView(views[1]), dirA.path());
+    QVERIFY(!isRowSelected(views[0], 0));
+    QVERIFY(isRowSelected(views[1], 0));
+
+    Q_UNUSED(imageAPath);
+    Q_UNUSED(imageBPath);
 }
 
 void tst_BrowsePanel::scrollableColumn_keepsHeaderControlsVisible()

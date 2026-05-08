@@ -42,6 +42,14 @@ public:
     bool removeFolderAt(int index);
 
     /**
+     * @brief Swap the positions of two compared folders.
+     * @param firstIndex Zero-based index of the first folder.
+     * @param secondIndex Zero-based index of the second folder.
+     * @return true if the folders were swapped.
+     */
+    bool swapFolders(int firstIndex, int secondIndex);
+
+    /**
      * @brief Clear all folders from the session.
      */
     void clear();
@@ -93,7 +101,14 @@ signals:
     void cleared();
 
     /**
-     * @brief Emitted when the session changes (add, remove, or clear).
+     * @brief Emitted when two folders swap positions.
+     * @param firstIndex First swapped index.
+     * @param secondIndex Second swapped index.
+     */
+    void foldersSwapped(int firstIndex, int secondIndex);
+
+    /**
+     * @brief Emitted when the session changes (add, remove, swap, or clear).
      */
     void sessionChanged();
 

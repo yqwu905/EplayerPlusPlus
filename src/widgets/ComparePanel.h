@@ -5,6 +5,7 @@
 #include <QList>
 #include <QPair>
 #include <QImage>
+#include <QPoint>
 
 class QGridLayout;
 class QSlider;
@@ -85,6 +86,7 @@ protected:
 private slots:
     void onFolderAdded(const QString &folderPath, int index);
     void onFolderRemoved(const QString &folderPath, int index);
+    void onFoldersSwapped(int firstIndex, int secondIndex);
     void onSessionCleared();
     void onComparePressed(int sourceIndex, int targetIndex);
     void onCompareReleased(int sourceIndex, int targetIndex);
@@ -106,6 +108,7 @@ private slots:
 private:
     struct ImageCell {
         QWidget *container = nullptr;
+        QWidget *headerWidget = nullptr;
         QWidget *imageContainer = nullptr;
         QLabel *indexBadge = nullptr;
         QLabel *headerLabel = nullptr;
@@ -157,6 +160,9 @@ private:
     void showImageContextMenuForCell(QWidget *cellContainer,
                                      QWidget *sourceWidget,
                                      const QPoint &pos);
+    void startCellDrag(int cellIndex);
+    int findCellByDragObject(QObject *object) const;
+    bool isCellDragHandle(QObject *object) const;
 
     /**
      * @brief Find the cell index by its ZoomableImageWidget pointer.
@@ -183,6 +189,9 @@ private:
     int m_threshold = 10;
     bool m_resizeToFirstImageEnabled = false;
     bool m_syncingViews = false; ///< Guard to prevent recursive sync loops
+    QPoint m_cellDragStartPos;
+    QObject *m_cellDragSourceObject = nullptr;
+    int m_cellDragSourceIndex = -1;
 };
 
 #endif // COMPAREPANEL_H

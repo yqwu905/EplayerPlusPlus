@@ -15,8 +15,10 @@
 #include <QActionGroup>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QKeySequence>
 #include <QLabel>
 #include <QPushButton>
+#include <QShortcut>
 #include <QSlider>
 #include <QStatusBar>
 #include <QToolButton>
@@ -285,6 +287,16 @@ void MainWindow::setupConnections()
     connect(m_comparePanel, &ComparePanel::navigatePreviousRequested,
             m_browsePanel, &BrowsePanel::navigatePrevious);
     connect(m_comparePanel, &ComparePanel::navigateNextRequested,
+            m_browsePanel, &BrowsePanel::navigateNext);
+
+    auto *previousShortcut = new QShortcut(QKeySequence(Qt::Key_Up), this);
+    previousShortcut->setContext(Qt::WindowShortcut);
+    connect(previousShortcut, &QShortcut::activated,
+            m_browsePanel, &BrowsePanel::navigatePrevious);
+
+    auto *nextShortcut = new QShortcut(QKeySequence(Qt::Key_Down), this);
+    nextShortcut->setContext(Qt::WindowShortcut);
+    connect(nextShortcut, &QShortcut::activated,
             m_browsePanel, &BrowsePanel::navigateNext);
 
     connect(m_browsePanel, &BrowsePanel::scanStatusChanged,

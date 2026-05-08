@@ -9,11 +9,18 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QContextMenuEvent>
+#include <QDataStream>
 #include <QDir>
+#include <QDrag>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QIODevice>
 #include <QLabel>
 #include <QListView>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -25,6 +32,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <functional>
 #include <limits>
 #include <vector>
@@ -42,6 +50,7 @@ constexpr int kMarkButtonSize = 18;
 constexpr int kMarkButtonGap = 3;
 constexpr int kMarkButtonTopMargin = 10;
 constexpr int kMarkButtonRightMargin = 10;
+const char kFolderOrderMimeType[] = "application/x-eplayer-folder-index";
 
 const QColor kBrowseColors[] = {
     QColor(0x18, 0x6F, 0xD7),
@@ -56,6 +65,42 @@ const int kBrowseColorCount = sizeof(kBrowseColors) / sizeof(kBrowseColors[0]);
 QColor browseColor(int index)
 {
     return kBrowseColors[qMax(0, index) % kBrowseColorCount];
+}
+
+int primarySelectedIndex(const ImageListModel *model)
+{
+    if (!model) {
+        return -1;
+    }
+
+    QList<int> selected = model->selectedIndices();
+    if (selected.isEmpty()) {
+        return -1;
+    }
+
+    std::sort(selected.begin(), selected.end());
+    return selected.first();
+}
+
+QByteArray encodeFolderOrderDragIndex(int index)
+{
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream << index;
+    return payload;
+}
+
+bool decodeFolderOrderDragIndex(const QMimeData *mimeData, int *index)
+{
+    if (!mimeData || !index ||
+        !mimeData->hasFormat(QString::fromLatin1(kFolderOrderMimeType))) {
+        return false;
+    }
+
+    QByteArray payload = mimeData->data(QString::fromLatin1(kFolderOrderMimeType));
+    QDataStream stream(&payload, QIODevice::ReadOnly);
+    stream >> *index;
+    return stream.status() == QDataStream::Ok;
 }
 
 QRect thumbnailCardRect(const QRect &itemRect)
@@ -122,10 +167,13 @@ public:
                                             const QString &,
                                             Qt::KeyboardModifiers)>;
     using ContextMenuCallback = std::function<void(const QModelIndex &, const QPoint &)>;
+    using ColumnIndexCallback = std::function<int()>;
+    using SwapCallback = std::function<void(int, int)>;
 
     explicit ThumbnailListView(QWidget *parent = nullptr)
         : QListView(parent)
     {
+        setAcceptDrops(true);
     }
 
     void setMarkCallback(MarkCallback callback)
@@ -138,6 +186,16 @@ public:
         m_contextMenuCallback = std::move(callback);
     }
 
+    void setColumnIndexCallback(ColumnIndexCallback callback)
+    {
+        m_columnIndexCallback = std::move(callback);
+    }
+
+    void setSwapCallback(SwapCallback callback)
+    {
+        m_swapCallback = std::move(callback);
+    }
+
 protected:
     void mousePressEvent(QMouseEvent *event) override
     {
@@ -147,16 +205,80 @@ protected:
                 const QString category = markCategoryAtPosition(visualRect(modelIndex),
                                                                 event->pos());
                 if (!category.isEmpty()) {
+                    m_dragCandidateIndex = QModelIndex();
                     if (m_markCallback) {
                         m_markCallback(modelIndex, category, event->modifiers());
                     }
                     event->accept();
                     return;
                 }
+
+                m_dragStartPos = event->pos();
+                m_dragCandidateIndex = modelIndex;
+            } else {
+                m_dragCandidateIndex = QModelIndex();
             }
         }
 
         QListView::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if ((event->buttons() & Qt::LeftButton) &&
+            m_dragCandidateIndex.isValid() &&
+            (event->pos() - m_dragStartPos).manhattanLength() >= QApplication::startDragDistance()) {
+            startFolderDrag();
+            event->accept();
+            return;
+        }
+
+        QListView::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            m_dragCandidateIndex = QModelIndex();
+        }
+        QListView::mouseReleaseEvent(event);
+    }
+
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        if (canAcceptFolderDrop(event->mimeData())) {
+            event->acceptProposedAction();
+            return;
+        }
+        QListView::dragEnterEvent(event);
+    }
+
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        if (canAcceptFolderDrop(event->mimeData())) {
+            event->acceptProposedAction();
+            return;
+        }
+        QListView::dragMoveEvent(event);
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        int sourceIndex = -1;
+        if (!decodeFolderOrderDragIndex(event->mimeData(), &sourceIndex) ||
+            !m_columnIndexCallback || !m_swapCallback) {
+            QListView::dropEvent(event);
+            return;
+        }
+
+        const int targetIndex = m_columnIndexCallback();
+        if (sourceIndex >= 0 && targetIndex >= 0 && sourceIndex != targetIndex) {
+            m_swapCallback(sourceIndex, targetIndex);
+            event->acceptProposedAction();
+            return;
+        }
+
+        QListView::dropEvent(event);
     }
 
     void contextMenuEvent(QContextMenuEvent *event) override
@@ -179,6 +301,48 @@ protected:
     }
 
 private:
+    bool canAcceptFolderDrop(const QMimeData *mimeData) const
+    {
+        int sourceIndex = -1;
+        if (!decodeFolderOrderDragIndex(mimeData, &sourceIndex) || !m_columnIndexCallback) {
+            return false;
+        }
+
+        const int targetIndex = m_columnIndexCallback();
+        return sourceIndex >= 0 && targetIndex >= 0 && sourceIndex != targetIndex;
+    }
+
+    void startFolderDrag()
+    {
+        if (!m_columnIndexCallback) {
+            return;
+        }
+
+        const int sourceIndex = m_columnIndexCallback();
+        if (sourceIndex < 0) {
+            return;
+        }
+
+        auto *mimeData = new QMimeData();
+        mimeData->setData(QString::fromLatin1(kFolderOrderMimeType),
+                          encodeFolderOrderDragIndex(sourceIndex));
+
+        auto *drag = new QDrag(this);
+        drag->setMimeData(mimeData);
+
+        const QRect rect = visualRect(m_dragCandidateIndex);
+        if (rect.isValid()) {
+            QPixmap pixmap = viewport()->grab(rect);
+            if (!pixmap.isNull()) {
+                drag->setPixmap(pixmap);
+                drag->setHotSpot(QPoint(pixmap.width() / 2, pixmap.height() / 2));
+            }
+        }
+
+        m_dragCandidateIndex = QModelIndex();
+        drag->exec(Qt::MoveAction);
+    }
+
     bool showContextMenu(QContextMenuEvent *event)
     {
         const QModelIndex modelIndex = indexAt(event->pos());
@@ -193,6 +357,10 @@ private:
 
     MarkCallback m_markCallback;
     ContextMenuCallback m_contextMenuCallback;
+    ColumnIndexCallback m_columnIndexCallback;
+    SwapCallback m_swapCallback;
+    QPoint m_dragStartPos;
+    QModelIndex m_dragCandidateIndex;
 };
 
 class ThumbnailDelegate final : public QStyledItemDelegate
@@ -317,6 +485,8 @@ BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
             this, &BrowsePanel::onFolderAdded);
     connect(m_session, &CompareSession::folderRemoved,
             this, &BrowsePanel::onFolderRemoved);
+    connect(m_session, &CompareSession::foldersSwapped,
+            this, &BrowsePanel::onFoldersSwapped);
     connect(m_session, &CompareSession::cleared,
             this, &BrowsePanel::onSessionCleared);
 }
@@ -400,6 +570,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLayout->setSpacing(8);
 
     auto *colorSwatch = new QLabel(headerWidget);
+    col.colorSwatch = colorSwatch;
     colorSwatch->setFixedSize(12, 12);
     colorSwatch->setStyleSheet(
         QStringLiteral("QLabel { background: %1; border-radius: 3px; border: none; }")
@@ -486,6 +657,14 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     m_columns.append(col);
     ImageListModel *modelPtr = col.model;
+    thumbnailView->setColumnIndexCallback([this, modelPtr]() {
+        return columnIndexForModel(modelPtr);
+    });
+    thumbnailView->setSwapCallback([this](int sourceIndex, int targetIndex) {
+        if (m_session) {
+            m_session->swapFolders(sourceIndex, targetIndex);
+        }
+    });
     thumbnailView->setMarkCallback([this, modelPtr](const QModelIndex &modelIndex,
                                                     const QString &category,
                                                     Qt::KeyboardModifiers modifiers) {
@@ -607,8 +786,37 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
 
     if (m_columns.isEmpty()) {
         stopInterleavedLoading();
+        resetSelectionNavigationMode();
+    } else if (m_navigationAnchorColumn == index) {
+        resetSelectionNavigationMode();
+    } else if (m_navigationAnchorColumn > index) {
+        --m_navigationAnchorColumn;
     }
 
+    for (int i = index; i < m_columns.size(); ++i) {
+        updateColumnVisuals(i);
+    }
+
+    updateGlobalScanStatus();
+    emitSelectionChanged();
+}
+
+void BrowsePanel::onFoldersSwapped(int firstIndex, int secondIndex)
+{
+    if (firstIndex < 0 || firstIndex >= m_columns.size() ||
+        secondIndex < 0 || secondIndex >= m_columns.size() ||
+        firstIndex == secondIndex) {
+        return;
+    }
+
+    m_columns.swapItemsAt(firstIndex, secondIndex);
+    if (m_navigationAnchorColumn == firstIndex) {
+        m_navigationAnchorColumn = secondIndex;
+    } else if (m_navigationAnchorColumn == secondIndex) {
+        m_navigationAnchorColumn = firstIndex;
+    }
+    rebuildColumnLayout();
+    requestVisibleThumbnailsForAllColumns();
     updateGlobalScanStatus();
     emitSelectionChanged();
 }
@@ -617,6 +825,7 @@ void BrowsePanel::onSessionCleared()
 {
     stopInterleavedLoading();
     clearAllColumns();
+    resetSelectionNavigationMode();
     updateGlobalScanStatus();
     emitSelectionChanged();
 }
@@ -635,6 +844,7 @@ void BrowsePanel::onThumbnailActivated(int clickedCol,
     }
 
     if (modifiers & Qt::ControlModifier) {
+        setSelectionNavigationMode(SelectionNavigationMode::Independent, clickedCol);
         clearSelection();
         QList<int> matchedIndices(m_columns.size(), -1);
         for (int c = 0; c < m_columns.size(); ++c) {
@@ -645,6 +855,7 @@ void BrowsePanel::onThumbnailActivated(int clickedCol,
         }
         alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
     } else if (modifiers & Qt::AltModifier) {
+        setSelectionNavigationMode(SelectionNavigationMode::FileNameMatch, clickedCol);
         clearSelection();
         const QString fileName = m_columns[clickedCol].model->fileNameAt(clickedIdx);
         QList<int> matchedIndices(m_columns.size(), -1);
@@ -658,6 +869,7 @@ void BrowsePanel::onThumbnailActivated(int clickedCol,
         }
         alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
     } else {
+        setSelectionNavigationMode(SelectionNavigationMode::Independent, clickedCol);
         clearColumnSelection(clickedCol);
         m_columns[clickedCol].model->setSelected(clickedIdx, true);
     }
@@ -780,6 +992,49 @@ void BrowsePanel::clearAllColumns()
         m_scanStatusLabel->setText(tr("Idle"));
     }
     emit scanStatusChanged(tr("Idle"));
+}
+
+void BrowsePanel::rebuildColumnLayout()
+{
+    if (!m_columnsLayout) {
+        return;
+    }
+
+    while (QLayoutItem *item = m_columnsLayout->takeAt(0)) {
+        delete item;
+    }
+
+    for (int i = 0; i < m_columns.size(); ++i) {
+        updateColumnVisuals(i);
+        if (m_columns[i].columnWidget) {
+            m_columnsLayout->addWidget(m_columns[i].columnWidget, 1);
+        }
+    }
+    m_columnsLayout->addStretch();
+}
+
+void BrowsePanel::updateColumnVisuals(int columnIndex)
+{
+    if (columnIndex < 0 || columnIndex >= m_columns.size()) {
+        return;
+    }
+
+    ColumnInfo &col = m_columns[columnIndex];
+    const QColor color = browseColor(columnIndex);
+    if (col.colorSwatch) {
+        col.colorSwatch->setStyleSheet(
+            QStringLiteral("QLabel { background: %1; border-radius: 3px; border: none; }")
+                .arg(color.name(QColor::HexRgb)));
+    }
+
+    if (col.view) {
+        QAbstractItemDelegate *oldDelegate = col.view->itemDelegate();
+        col.view->setItemDelegate(new ThumbnailDelegate(columnIndex, col.view));
+        if (oldDelegate && oldDelegate->parent() == col.view) {
+            oldDelegate->deleteLater();
+        }
+        col.view->viewport()->update();
+    }
 }
 
 void BrowsePanel::clearSelection()
@@ -929,15 +1184,86 @@ void BrowsePanel::navigatePrevious()
 void BrowsePanel::navigateSelection(int delta)
 {
     bool anyChanged = false;
+    if (m_selectionNavigationMode == SelectionNavigationMode::FileNameMatch) {
+        anyChanged = navigateFileNameMatchedSelection(delta);
+    } else {
+        anyChanged = navigateIndependentSelection(delta);
+    }
+
+    if (anyChanged) {
+        requestVisibleThumbnailsForAllColumns();
+        emitSelectionChanged();
+    }
+}
+
+bool BrowsePanel::navigateFileNameMatchedSelection(int delta)
+{
+    if (m_navigationAnchorColumn < 0 ||
+        m_navigationAnchorColumn >= m_columns.size()) {
+        resetSelectionNavigationMode();
+        return navigateIndependentSelection(delta);
+    }
+
+    ColumnInfo &anchorCol = m_columns[m_navigationAnchorColumn];
+    if (!anchorCol.model) {
+        resetSelectionNavigationMode();
+        return navigateIndependentSelection(delta);
+    }
+
+    const int currentIdx = primarySelectedIndex(anchorCol.model);
+    if (currentIdx < 0) {
+        resetSelectionNavigationMode();
+        return navigateIndependentSelection(delta);
+    }
+
+    const int newAnchorIdx = currentIdx + delta;
+    if (newAnchorIdx < 0 || newAnchorIdx >= anchorCol.model->imageCount()) {
+        return false;
+    }
+
+    const QString targetFileName = anchorCol.model->fileNameAt(newAnchorIdx);
+    QList<int> matchedIndices(m_columns.size(), -1);
+    matchedIndices[m_navigationAnchorColumn] = newAnchorIdx;
 
     for (int c = 0; c < m_columns.size(); ++c) {
-        auto &col = m_columns[c];
-        QList<int> selected = col.model->selectedIndices();
-        if (selected.isEmpty()) {
+        if (c == m_navigationAnchorColumn || !m_columns[c].model) {
             continue;
         }
 
-        const int currentIdx = selected.first();
+        matchedIndices[c] = findFileNameMatchIndex(c, targetFileName);
+    }
+
+    clearSelection();
+    for (int c = 0; c < m_columns.size(); ++c) {
+        const int targetIdx = matchedIndices.value(c, -1);
+        if (m_columns[c].model && targetIdx >= 0 &&
+            targetIdx < m_columns[c].model->imageCount()) {
+            m_columns[c].model->setSelected(targetIdx, true);
+        }
+    }
+
+    if (anchorCol.view) {
+        anchorCol.view->scrollTo(anchorCol.model->index(newAnchorIdx),
+                                 QAbstractItemView::PositionAtCenter);
+    }
+    alignColumnsToAnchor(m_navigationAnchorColumn, newAnchorIdx, matchedIndices);
+    return true;
+}
+
+bool BrowsePanel::navigateIndependentSelection(int delta)
+{
+    bool anyChanged = false;
+    for (int c = 0; c < m_columns.size(); ++c) {
+        auto &col = m_columns[c];
+        if (!col.model) {
+            continue;
+        }
+
+        const int currentIdx = primarySelectedIndex(col.model);
+        if (currentIdx < 0) {
+            continue;
+        }
+
         const int newIdx = currentIdx + delta;
 
         if (newIdx < 0 || newIdx >= col.model->imageCount()) {
@@ -952,10 +1278,19 @@ void BrowsePanel::navigateSelection(int delta)
         anyChanged = true;
     }
 
-    if (anyChanged) {
-        requestVisibleThumbnailsForAllColumns();
-        emitSelectionChanged();
-    }
+    return anyChanged;
+}
+
+void BrowsePanel::setSelectionNavigationMode(SelectionNavigationMode mode, int anchorColumn)
+{
+    m_selectionNavigationMode = mode;
+    m_navigationAnchorColumn = anchorColumn;
+}
+
+void BrowsePanel::resetSelectionNavigationMode()
+{
+    m_selectionNavigationMode = SelectionNavigationMode::Independent;
+    m_navigationAnchorColumn = -1;
 }
 
 void BrowsePanel::startInterleavedLoading()

@@ -30,6 +30,7 @@ private slots:
     void compareHeader_placesTitleAndButtonsInHeaderBlock();
     void layout_imageAreaExpandsToFillAvailableGridHeight();
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
+    void folderSwap_reordersGridCellsAndImages();
     void layout_shrinksFromSixToTwo_cellsExpand();
     void toleranceMode_compareButtonTogglesTargetImage();
     void toleranceMode_usesPreviewWhenFullImageIsNotLoaded();
@@ -366,6 +367,72 @@ void tst_ComparePanel::customGridName_updatesOnlyThatCellAndCompareTooltips()
     QCOMPARE(secondButtons.size(), 1);
     QVERIFY(firstButtons.first()->toolTip().contains(QStringLiteral("Candidate")));
     QVERIFY(secondButtons.first()->toolTip().contains(QStringLiteral("Baseline")));
+}
+
+void tst_ComparePanel::folderSwap_reordersGridCellsAndImages()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr, nullptr);
+    panel.resize(1100, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    const QList<QColor> colors = {Qt::red, Qt::green, Qt::blue};
+    for (int i = 0; i < colors.size(); ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            QString("image_%1.png").arg(i),
+            colors.at(i));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 3);
+
+    auto *firstTitle = cells[0]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    auto *thirdTitle = cells[2]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    QVERIFY(firstTitle != nullptr);
+    QVERIFY(thirdTitle != nullptr);
+    QVERIFY(firstTitle->text().contains(QStringLiteral("image_0.png")));
+    QVERIFY(thirdTitle->text().contains(QStringLiteral("image_2.png")));
+
+    QVERIFY(session.swapFolders(0, 2));
+    QCoreApplication::processEvents();
+
+    cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 3);
+
+    firstTitle = cells[0]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    thirdTitle = cells[2]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    QVERIFY(firstTitle != nullptr);
+    QVERIFY(thirdTitle != nullptr);
+    QVERIFY(firstTitle->text().contains(QStringLiteral("image_2.png")));
+    QVERIFY(thirdTitle->text().contains(QStringLiteral("image_0.png")));
+
+    auto *firstImage = cells[0]->findChild<ZoomableImageWidget *>();
+    auto *thirdImage = cells[2]->findChild<ZoomableImageWidget *>();
+    QVERIFY(firstImage != nullptr);
+    QVERIFY(thirdImage != nullptr);
+    QCOMPARE(firstImage->image().pixelColor(0, 0), QColor(Qt::blue));
+    QCOMPARE(thirdImage->image().pixelColor(0, 0), QColor(Qt::red));
+
+    auto *firstBadge = cells[0]->findChild<QLabel *>(QStringLiteral("compareCellIndexBadge"));
+    auto *thirdBadge = cells[2]->findChild<QLabel *>(QStringLiteral("compareCellIndexBadge"));
+    QVERIFY(firstBadge != nullptr);
+    QVERIFY(thirdBadge != nullptr);
+    QCOMPARE(firstBadge->text(), QStringLiteral("1"));
+    QCOMPARE(thirdBadge->text(), QStringLiteral("3"));
 }
 
 void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()

@@ -16,6 +16,8 @@ private slots:
     void testRemoveFolder_notFound();
     void testRemoveFolderAt();
     void testRemoveFolderAt_invalid();
+    void testSwapFolders();
+    void testSwapFolders_invalid();
     void testClear();
     void testClear_empty();
     void testContainsFolder();
@@ -25,6 +27,7 @@ private slots:
 
     void testSignal_folderAdded();
     void testSignal_folderRemoved();
+    void testSignal_foldersSwapped();
     void testSignal_cleared();
     void testSignal_sessionChanged();
 };
@@ -106,6 +109,32 @@ void tst_CompareSession::testRemoveFolderAt_invalid()
     QVERIFY(!session.removeFolderAt(-1));
     QVERIFY(!session.removeFolderAt(5));
     QCOMPARE(session.folderCount(), 1);
+}
+
+void tst_CompareSession::testSwapFolders()
+{
+    CompareSession session;
+    session.addFolder("/path/a");
+    session.addFolder("/path/b");
+    session.addFolder("/path/c");
+
+    QVERIFY(session.swapFolders(0, 2));
+    QCOMPARE(session.folders(), QStringList({"/path/c", "/path/b", "/path/a"}));
+
+    QVERIFY(session.swapFolders(2, 1));
+    QCOMPARE(session.folders(), QStringList({"/path/c", "/path/a", "/path/b"}));
+}
+
+void tst_CompareSession::testSwapFolders_invalid()
+{
+    CompareSession session;
+    session.addFolder("/path/a");
+    session.addFolder("/path/b");
+
+    QVERIFY(!session.swapFolders(-1, 1));
+    QVERIFY(!session.swapFolders(0, 2));
+    QVERIFY(!session.swapFolders(1, 1));
+    QCOMPARE(session.folders(), QStringList({"/path/a", "/path/b"}));
 }
 
 void tst_CompareSession::testClear()
@@ -208,6 +237,22 @@ void tst_CompareSession::testSignal_folderRemoved()
     QCOMPARE(spy.at(0).at(1).toInt(), 0);
 }
 
+void tst_CompareSession::testSignal_foldersSwapped()
+{
+    CompareSession session;
+    session.addFolder("/path/a");
+    session.addFolder("/path/b");
+
+    QSignalSpy swapSpy(&session, &CompareSession::foldersSwapped);
+    QSignalSpy changeSpy(&session, &CompareSession::sessionChanged);
+
+    QVERIFY(session.swapFolders(0, 1));
+    QCOMPARE(swapSpy.count(), 1);
+    QCOMPARE(swapSpy.at(0).at(0).toInt(), 0);
+    QCOMPARE(swapSpy.at(0).at(1).toInt(), 1);
+    QCOMPARE(changeSpy.count(), 1);
+}
+
 void tst_CompareSession::testSignal_cleared()
 {
     CompareSession session;
@@ -229,11 +274,14 @@ void tst_CompareSession::testSignal_sessionChanged()
     session.addFolder("/path/b");
     QCOMPARE(spy.count(), 2);
 
-    session.removeFolder("/path/a");
+    session.swapFolders(0, 1);
     QCOMPARE(spy.count(), 3);
 
-    session.clear();
+    session.removeFolder("/path/a");
     QCOMPARE(spy.count(), 4);
+
+    session.clear();
+    QCOMPARE(spy.count(), 5);
 }
 
 QTEST_MAIN(tst_CompareSession)

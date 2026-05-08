@@ -19,10 +19,17 @@
 #include <QFileInfo>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QDataStream>
+#include <QDrag>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QEvent>
+#include <QIODevice>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QApplication>
+#include <QMimeData>
 #include <QSet>
 #include <QSizePolicy>
 #include <QInputDialog>
@@ -40,6 +47,7 @@ const QColor kCompareColors[] = {
     QColor(0xC5, 0x0F, 0x1F)
 };
 const int kCompareColorCount = sizeof(kCompareColors) / sizeof(kCompareColors[0]);
+const char kFolderOrderMimeType[] = "application/x-eplayer-folder-index";
 
 QColor compareColor(int index)
 {
@@ -49,6 +57,27 @@ QColor compareColor(int index)
 QString colorStyle(const QColor &color)
 {
     return color.name(QColor::HexRgb);
+}
+
+QByteArray encodeFolderOrderDragIndex(int index)
+{
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream << index;
+    return payload;
+}
+
+bool decodeFolderOrderDragIndex(const QMimeData *mimeData, int *index)
+{
+    if (!mimeData || !index ||
+        !mimeData->hasFormat(QString::fromLatin1(kFolderOrderMimeType))) {
+        return false;
+    }
+
+    QByteArray payload = mimeData->data(QString::fromLatin1(kFolderOrderMimeType));
+    QDataStream stream(&payload, QIODevice::ReadOnly);
+    stream >> *index;
+    return stream.status() == QDataStream::Ok;
 }
 }
 
@@ -74,6 +103,8 @@ ComparePanel::ComparePanel(CompareSession *session,
             this, &ComparePanel::onFolderAdded);
     connect(m_session, &CompareSession::folderRemoved,
             this, &ComparePanel::onFolderRemoved);
+    connect(m_session, &CompareSession::foldersSwapped,
+            this, &ComparePanel::onFoldersSwapped);
     connect(m_session, &CompareSession::cleared,
             this, &ComparePanel::onSessionCleared);
 
@@ -349,20 +380,87 @@ void ComparePanel::onFolderAdded(const QString &folderPath, int /*index*/)
     rebuildGrid();
 }
 
-void ComparePanel::onFolderRemoved(const QString &folderPath, int /*index*/)
+void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
 {
-    for (int i = 0; i < m_cells.size(); ++i) {
-        if (m_cells[i].folderPath == folderPath) {
-            if (m_cells[i].imageContainer) {
-                m_cells[i].imageContainer->removeEventFilter(this);
+    int removeIndex = index;
+    if (removeIndex < 0 || removeIndex >= m_cells.size() ||
+        m_cells[removeIndex].folderPath != folderPath) {
+        removeIndex = -1;
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (m_cells[i].folderPath == folderPath) {
+                removeIndex = i;
+                break;
             }
-            m_gridLayout->removeWidget(m_cells[i].container);
-            delete m_cells[i].container;
-            m_cells.removeAt(i);
-            break;
         }
     }
+
+    if (removeIndex < 0 || removeIndex >= m_cells.size()) {
+        return;
+    }
+
+    if (m_cells[removeIndex].container) {
+        m_cells[removeIndex].container->removeEventFilter(this);
+    }
+    if (m_cells[removeIndex].headerWidget) {
+        m_cells[removeIndex].headerWidget->removeEventFilter(this);
+    }
+    if (m_cells[removeIndex].indexBadge) {
+        m_cells[removeIndex].indexBadge->removeEventFilter(this);
+    }
+    if (m_cells[removeIndex].headerLabel) {
+        m_cells[removeIndex].headerLabel->removeEventFilter(this);
+    }
+    if (m_cells[removeIndex].imageContainer) {
+        m_cells[removeIndex].imageContainer->removeEventFilter(this);
+    }
+    if (m_cells[removeIndex].imageWidget) {
+        m_cells[removeIndex].imageWidget->removeEventFilter(this);
+    }
+
+    m_gridLayout->removeWidget(m_cells[removeIndex].container);
+    delete m_cells[removeIndex].container;
+    m_cells.removeAt(removeIndex);
     rebuildGrid();
+}
+
+void ComparePanel::onFoldersSwapped(int firstIndex, int secondIndex)
+{
+    if (firstIndex < 0 || firstIndex >= m_cells.size() ||
+        secondIndex < 0 || secondIndex >= m_cells.size() ||
+        firstIndex == secondIndex) {
+        return;
+    }
+
+    auto remapIndex = [firstIndex, secondIndex](int index) {
+        if (index == firstIndex) {
+            return secondIndex;
+        }
+        if (index == secondIndex) {
+            return firstIndex;
+        }
+        return index;
+    };
+
+    m_cells.swapItemsAt(firstIndex, secondIndex);
+
+    for (auto &cell : m_cells) {
+        if (cell.toleranceSourceIndex >= 0) {
+            cell.toleranceSourceIndex = remapIndex(cell.toleranceSourceIndex);
+            cell.cachedToleranceImage = QImage();
+        }
+    }
+
+    rebuildGrid();
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        updateCellHeader(i);
+        updateMarkButtonsForCell(i);
+        if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
+            showToleranceMap(m_cells[i].toleranceSourceIndex, i);
+        } else if (m_resizeToFirstImageEnabled && m_cells[i].hasImage) {
+            showOriginalImage(i);
+        }
+    }
 }
 
 void ComparePanel::onSessionCleared()
@@ -415,6 +513,63 @@ bool ComparePanel::eventFilter(QObject *watched, QEvent *event)
             }
         }
     }
+
+    const int dragTargetIndex = findCellByDragObject(watched);
+    if (dragTargetIndex >= 0) {
+        if (event->type() == QEvent::DragEnter) {
+            auto *dragEvent = static_cast<QDragEnterEvent *>(event);
+            int sourceIndex = -1;
+            if (decodeFolderOrderDragIndex(dragEvent->mimeData(), &sourceIndex) &&
+                sourceIndex >= 0 && sourceIndex != dragTargetIndex) {
+                dragEvent->acceptProposedAction();
+                return true;
+            }
+        } else if (event->type() == QEvent::DragMove) {
+            auto *dragEvent = static_cast<QDragMoveEvent *>(event);
+            int sourceIndex = -1;
+            if (decodeFolderOrderDragIndex(dragEvent->mimeData(), &sourceIndex) &&
+                sourceIndex >= 0 && sourceIndex != dragTargetIndex) {
+                dragEvent->acceptProposedAction();
+                return true;
+            }
+        } else if (event->type() == QEvent::Drop) {
+            auto *dropEvent = static_cast<QDropEvent *>(event);
+            int sourceIndex = -1;
+            if (decodeFolderOrderDragIndex(dropEvent->mimeData(), &sourceIndex) &&
+                sourceIndex >= 0 && sourceIndex != dragTargetIndex && m_session) {
+                m_session->swapFolders(sourceIndex, dragTargetIndex);
+                dropEvent->acceptProposedAction();
+                return true;
+            }
+        } else if (isCellDragHandle(watched)) {
+            if (event->type() == QEvent::MouseButtonPress) {
+                auto *mouseEvent = static_cast<QMouseEvent *>(event);
+                if (mouseEvent->button() == Qt::LeftButton) {
+                    m_cellDragStartPos = mouseEvent->pos();
+                    m_cellDragSourceObject = watched;
+                    m_cellDragSourceIndex = dragTargetIndex;
+                }
+            } else if (event->type() == QEvent::MouseMove) {
+                auto *mouseEvent = static_cast<QMouseEvent *>(event);
+                if ((mouseEvent->buttons() & Qt::LeftButton) &&
+                    m_cellDragSourceObject == watched &&
+                    m_cellDragSourceIndex == dragTargetIndex &&
+                    (mouseEvent->pos() - m_cellDragStartPos).manhattanLength() >=
+                        QApplication::startDragDistance()) {
+                    startCellDrag(dragTargetIndex);
+                    mouseEvent->accept();
+                    return true;
+                }
+            } else if (event->type() == QEvent::MouseButtonRelease) {
+                auto *mouseEvent = static_cast<QMouseEvent *>(event);
+                if (mouseEvent->button() == Qt::LeftButton &&
+                    m_cellDragSourceObject == watched) {
+                    m_cellDragSourceObject = nullptr;
+                    m_cellDragSourceIndex = -1;
+                }
+            }
+        }
+    }
     return QWidget::eventFilter(watched, event);
 }
 
@@ -455,15 +610,21 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
         "QWidget#compareCellContainer { background-color: #FFFFFF; "
         "border: none; border-radius: 8px; }");
     cell.container->setObjectName("compareCellContainer");
+    cell.container->setAcceptDrops(true);
+    cell.container->installEventFilter(this);
     auto *cellLayout = new QVBoxLayout(cell.container);
     cellLayout->setContentsMargins(0, 0, 0, 0);
     cellLayout->setSpacing(0);
 
     // ---- Header — image identity, compare buttons, and mark buttons ----
-    auto *headerWidget = new QWidget(cell.container);
+    cell.headerWidget = new QWidget(cell.container);
+    auto *headerWidget = cell.headerWidget;
     headerWidget->setFixedHeight(72);
     headerWidget->setStyleSheet(
         "QWidget { background-color: #FFFFFF; border: none; }");
+    headerWidget->setAcceptDrops(true);
+    headerWidget->setCursor(Qt::OpenHandCursor);
+    headerWidget->installEventFilter(this);
     auto *headerLayout = new QVBoxLayout(headerWidget);
     headerLayout->setContentsMargins(0, 0, 0, 8);
     headerLayout->setSpacing(8);
@@ -476,6 +637,9 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.indexBadge->setObjectName(QStringLiteral("compareCellIndexBadge"));
     cell.indexBadge->setAlignment(Qt::AlignCenter);
     cell.indexBadge->setFixedSize(22, 22);
+    cell.indexBadge->setAcceptDrops(true);
+    cell.indexBadge->setCursor(Qt::OpenHandCursor);
+    cell.indexBadge->installEventFilter(this);
     identityRow->addWidget(cell.indexBadge, 0, Qt::AlignTop);
 
     QString folderName = QDir(folderPath).dirName();
@@ -490,6 +654,9 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.headerLabel->setStyleSheet(
         "QLabel { background-color: #FFFFFF; color: #263241; "
         "padding: 0px; border: none; font-size: 11px; font-weight: 500; line-height: 16px; }");
+    cell.headerLabel->setAcceptDrops(true);
+    cell.headerLabel->setCursor(Qt::OpenHandCursor);
+    cell.headerLabel->installEventFilter(this);
     identityRow->addWidget(cell.headerLabel, 1);
 
     cell.renameButton = new QPushButton(QStringLiteral("✎"), headerWidget);
@@ -559,15 +726,18 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.imageContainer->setMinimumSize(200, 200);
     cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     cell.imageContainer->setContextMenuPolicy(Qt::CustomContextMenu);
+    cell.imageContainer->setAcceptDrops(true);
     cell.imageContainer->setStyleSheet(
         "QWidget { background-color: #F8FAFC; border: 1px solid #EEF1F5; border-radius: 6px; }");
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setText(tr("点击缩略图\n开始对比"));
     cell.imageWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    cell.imageWidget->setAcceptDrops(true);
 
     cellLayout->addWidget(cell.imageContainer, 1);
     cell.imageContainer->installEventFilter(this);
+    cell.imageWidget->installEventFilter(this);
 
     QWidget *cellContainerForMenu = cell.container;
     connect(cell.imageContainer,
@@ -597,8 +767,23 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 void ComparePanel::clearCells()
 {
     for (auto &cell : m_cells) {
+        if (cell.container) {
+            cell.container->removeEventFilter(this);
+        }
+        if (cell.headerWidget) {
+            cell.headerWidget->removeEventFilter(this);
+        }
+        if (cell.indexBadge) {
+            cell.indexBadge->removeEventFilter(this);
+        }
+        if (cell.headerLabel) {
+            cell.headerLabel->removeEventFilter(this);
+        }
         if (cell.imageContainer) {
             cell.imageContainer->removeEventFilter(this);
+        }
+        if (cell.imageWidget) {
+            cell.imageWidget->removeEventFilter(this);
         }
         if (cell.container) {
             m_gridLayout->removeWidget(cell.container);
@@ -1187,6 +1372,66 @@ void ComparePanel::showImageContextMenuForCell(QWidget *cellContainer,
                                    this);
         return;
     }
+}
+
+void ComparePanel::startCellDrag(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size() || !m_cells[cellIndex].container) {
+        return;
+    }
+
+    auto *mimeData = new QMimeData();
+    mimeData->setData(QString::fromLatin1(kFolderOrderMimeType),
+                      encodeFolderOrderDragIndex(cellIndex));
+
+    auto *drag = new QDrag(this);
+    drag->setMimeData(mimeData);
+
+    QPixmap pixmap = m_cells[cellIndex].container->grab();
+    if (!pixmap.isNull()) {
+        const QSize maxDragPreviewSize(220, 160);
+        if (pixmap.width() > maxDragPreviewSize.width() ||
+            pixmap.height() > maxDragPreviewSize.height()) {
+            pixmap = pixmap.scaled(maxDragPreviewSize,
+                                   Qt::KeepAspectRatio,
+                                   Qt::SmoothTransformation);
+        }
+        drag->setPixmap(pixmap);
+        drag->setHotSpot(QPoint(pixmap.width() / 2, qMin(36, pixmap.height() / 2)));
+    }
+
+    m_cellDragSourceObject = nullptr;
+    m_cellDragSourceIndex = -1;
+    drag->exec(Qt::MoveAction);
+}
+
+int ComparePanel::findCellByDragObject(QObject *object) const
+{
+    for (int i = 0; i < m_cells.size(); ++i) {
+        const ImageCell &cell = m_cells[i];
+        if (object == cell.container ||
+            object == cell.headerWidget ||
+            object == cell.indexBadge ||
+            object == cell.headerLabel ||
+            object == cell.imageContainer ||
+            object == cell.imageWidget) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool ComparePanel::isCellDragHandle(QObject *object) const
+{
+    for (const ImageCell &cell : m_cells) {
+        if (object == cell.container ||
+            object == cell.headerWidget ||
+            object == cell.indexBadge ||
+            object == cell.headerLabel) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---- Zoom/pan synchronization ----
