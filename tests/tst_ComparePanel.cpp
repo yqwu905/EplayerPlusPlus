@@ -35,6 +35,7 @@ private slots:
     void toleranceMode_compareButtonTogglesTargetImage();
     void toleranceMode_usesPreviewWhenFullImageIsNotLoaded();
     void resizeToFirstImage_toggleResizesOtherCells();
+    void resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImageArrives();
     void markButton_clickPersistsSingleImage();
     void markButton_ctrlClickMarksAllCurrentImages();
     void markShortcut_marksAllCurrentImages();
@@ -624,6 +625,67 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
 
     QTRY_COMPARE_WITH_TIMEOUT(widgets[0]->image().size(), QSize(32, 32), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(widgets[1]->image().size(), QSize(32, 32), 2000);
+}
+
+void tst_ComparePanel::resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImageArrives()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.setResizeToFirstImageEnabled(true);
+    panel.resize(1200, 800);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    const QString folder0 = root.filePath("folder_0");
+    const QString folder1 = root.filePath("folder_1");
+    QVERIFY(QDir().mkpath(folder0));
+    QVERIFY(QDir().mkpath(folder1));
+    QVERIFY(session.addFolder(folder0));
+    QVERIFY(session.addFolder(folder1));
+
+    const QString firstPath = folder0 + "/pending_first.png";
+    const QString secondPath = folder1 + "/pending_second.png";
+    panel.setSelectedImages({{folder0, firstPath}, {folder1, secondPath}});
+    QCoreApplication::processEvents();
+
+    QImage firstPreview(20, 20, QImage::Format_ARGB32);
+    firstPreview.fill(Qt::red);
+    QImage secondFullImage(80, 60, QImage::Format_ARGB32);
+    secondFullImage.fill(Qt::green);
+    QImage firstFullImage(100, 100, QImage::Format_ARGB32);
+    firstFullImage.fill(Qt::blue);
+
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onThumbnailReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, firstPath),
+                                      Q_ARG(QImage, firstPreview)));
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, secondPath),
+                                      Q_ARG(QImage, secondFullImage)));
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *firstWidget = cells.at(0)->findChild<ZoomableImageWidget *>();
+    auto *secondWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(firstWidget != nullptr);
+    QVERIFY(secondWidget != nullptr);
+    QCOMPARE(firstWidget->image().size(), QSize(20, 20));
+    QCOMPARE(secondWidget->image().size(), QSize(80, 60));
+
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, firstPath),
+                                      Q_ARG(QImage, firstFullImage)));
+    QCoreApplication::processEvents();
+
+    QCOMPARE(firstWidget->image().size(), QSize(100, 100));
+    QCOMPARE(secondWidget->image().size(), QSize(100, 100));
 }
 
 void tst_ComparePanel::markButton_clickPersistsSingleImage()

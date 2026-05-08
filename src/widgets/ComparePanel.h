@@ -151,6 +151,7 @@ private:
     void showOriginalImage(int cellIndex, bool resetView = false);
     void showToleranceMap(int sourceIndex, int targetIndex);
     void showSourceOnTarget(int sourceIndex, int targetIndex);
+    void refreshCellsUsingFirstImage();
     void resizeImageCell(int cellIndex);
     void rebuildCompareButtons();
     void renameCell(int cellIndex);

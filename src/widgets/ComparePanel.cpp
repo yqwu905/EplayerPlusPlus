@@ -479,6 +479,7 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
 
     preloadImagesForSelection(selectedImages);
 
+    bool firstImagePathChanged = false;
     for (int i = 0; i < m_cells.size(); ++i) {
         auto it = selectionMap.find(m_cells[i].folderPath);
         if (it == selectionMap.end() || it->isEmpty()) {
@@ -487,6 +488,9 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
 
         const QString newImagePath = it->takeFirst();
         if (newImagePath != m_cells[i].imagePath) {
+            if (i == 0) {
+                firstImagePathChanged = true;
+            }
             m_cells[i].imagePath = newImagePath;
             m_cells[i].showingToleranceMap = false;
             m_cells[i].toleranceSourceIndex = -1;
@@ -495,6 +499,10 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
             updateCellHeader(i);
         }
         updateMarkButtonsForCell(i);
+    }
+
+    if (firstImagePathChanged) {
+        refreshCellsUsingFirstImage();
     }
 }
 
@@ -1208,6 +1216,29 @@ void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
     m_cells[targetIndex].imageWidget->setImage(sourceImage, false);
 }
 
+void ComparePanel::refreshCellsUsingFirstImage()
+{
+    if (!m_resizeToFirstImageEnabled ||
+        m_cells.isEmpty() ||
+        m_cells.first().originalImage.isNull()) {
+        return;
+    }
+
+    for (int i = 1; i < m_cells.size(); ++i) {
+        ImageCell &cell = m_cells[i];
+        if (!cell.hasImage || cell.showingPreview) {
+            continue;
+        }
+
+        cell.cachedToleranceImage = QImage();
+        if (cell.showingToleranceMap && cell.toleranceSourceIndex >= 0) {
+            showToleranceMap(cell.toleranceSourceIndex, i);
+        } else {
+            showOriginalImage(i, false);
+        }
+    }
+}
+
 // ---- Compare interaction (mode-dependent) ----
 
 void ComparePanel::onComparePressed(int sourceIndex, int targetIndex)
@@ -1338,9 +1369,7 @@ QImage ComparePanel::imageForCompare(int cellIndex) const
         return baseImage;
     }
 
-    const QImage &firstImage = m_cells.first().originalImage;
-    const QImage &firstPreview = m_cells.first().previewImage;
-    const QImage firstBaseImage = firstImage.isNull() ? firstPreview : firstImage;
+    const QImage &firstBaseImage = m_cells.first().originalImage;
     if (firstBaseImage.isNull()) {
         return baseImage;
     }
@@ -1519,16 +1548,26 @@ void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
         return;
     }
 
+    bool firstReferenceImageBecameAvailable = false;
     for (int i = 0; i < m_cells.size(); ++i) {
         if (m_cells[i].imagePath != imagePath) {
             continue;
         }
 
+        const bool wasMissingOriginalImage = m_cells[i].originalImage.isNull();
         m_cells[i].originalImage = image;
         m_cells[i].hasImage = true;
         m_cells[i].showingPreview = false;
         m_cells[i].cachedToleranceImage = QImage();
         showOriginalImage(i, true);
+
+        if (i == 0 && wasMissingOriginalImage) {
+            firstReferenceImageBecameAvailable = true;
+        }
+    }
+
+    if (firstReferenceImageBecameAvailable) {
+        refreshCellsUsingFirstImage();
     }
 }
 
