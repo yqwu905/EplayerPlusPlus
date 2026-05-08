@@ -1160,7 +1160,11 @@ void ComparePanel::showPreviewImage(int cellIndex, const QImage &preview, bool r
     ImageCell &cell = m_cells[cellIndex];
     cell.previewImage = preview;
     cell.showingPreview = true;
-    cell.imageWidget->setImage(preview, resetView);
+    cell.imageWidget->setImage(imageForCompare(cellIndex), resetView);
+
+    if (cellIndex == 0) {
+        refreshCellsUsingFirstImage();
+    }
 }
 
 void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
@@ -1175,7 +1179,7 @@ void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
     }
 
     cell.imageWidget->setImage(displayImage, resetView);
-    cell.showingPreview = false;
+    cell.showingPreview = cell.originalImage.isNull() && !cell.previewImage.isNull();
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
 }
@@ -1220,13 +1224,13 @@ void ComparePanel::refreshCellsUsingFirstImage()
 {
     if (!m_resizeToFirstImageEnabled ||
         m_cells.isEmpty() ||
-        m_cells.first().originalImage.isNull()) {
+        !resizeReferenceSize().isValid()) {
         return;
     }
 
     for (int i = 1; i < m_cells.size(); ++i) {
         ImageCell &cell = m_cells[i];
-        if (!cell.hasImage || cell.showingPreview) {
+        if (baseImageForCell(i).isNull()) {
             continue;
         }
 
@@ -1356,29 +1360,43 @@ QString ComparePanel::cellDisplayName(int cellIndex) const
     return cell.folderPath;
 }
 
-QImage ComparePanel::imageForCompare(int cellIndex) const
+QImage ComparePanel::baseImageForCell(int cellIndex) const
 {
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return QImage();
 
     const QImage &original = m_cells[cellIndex].originalImage;
     const QImage &preview = m_cells[cellIndex].previewImage;
-    const QImage baseImage = original.isNull() ? preview : original;
+    return original.isNull() ? preview : original;
+}
+
+QSize ComparePanel::resizeReferenceSize() const
+{
+    if (!m_resizeToFirstImageEnabled || m_cells.isEmpty()) {
+        return QSize();
+    }
+
+    return baseImageForCell(0).size();
+}
+
+QImage ComparePanel::imageForCompare(int cellIndex) const
+{
+    const QImage baseImage = baseImageForCell(cellIndex);
     if (baseImage.isNull()) return QImage();
 
     if (!m_resizeToFirstImageEnabled || cellIndex == 0 || m_cells.isEmpty()) {
         return baseImage;
     }
 
-    const QImage &firstBaseImage = m_cells.first().originalImage;
-    if (firstBaseImage.isNull()) {
+    const QSize referenceSize = resizeReferenceSize();
+    if (!referenceSize.isValid()) {
         return baseImage;
     }
 
-    if (baseImage.size() == firstBaseImage.size()) {
+    if (baseImage.size() == referenceSize) {
         return baseImage;
     }
 
-    return baseImage.scaled(firstBaseImage.size(),
+    return baseImage.scaled(referenceSize,
                             Qt::IgnoreAspectRatio,
                             Qt::SmoothTransformation);
 }

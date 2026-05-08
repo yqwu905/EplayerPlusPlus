@@ -6,6 +6,7 @@
 #include <QPair>
 #include <QImage>
 #include <QPoint>
+#include <QSize>
 
 class QGridLayout;
 class QSlider;
@@ -157,6 +158,8 @@ private:
     void renameCell(int cellIndex);
     void updateCellHeader(int cellIndex);
     QString cellDisplayName(int cellIndex) const;
+    QImage baseImageForCell(int cellIndex) const;
+    QSize resizeReferenceSize() const;
     QImage imageForCompare(int cellIndex) const;
     void showImageContextMenuForCell(QWidget *cellContainer,
                                      QWidget *sourceWidget,
