@@ -10,6 +10,8 @@ class QHBoxLayout;
 class QLabel;
 class QVBoxLayout;
 class QCheckBox;
+class QComboBox;
+class QLineEdit;
 class QListView;
 class CompareSession;
 class ImageListModel;
@@ -116,6 +118,9 @@ private:
     void updateColumnProgressLabel(int columnIndex);
     void updateGlobalScanStatus();
     void preloadNeighborImagesForSelection();
+    void applyCurrentFilters();
+    QString currentCategoryFilter() const;
+    void updateAllColumnProgressLabels();
 
     int columnIndexForModel(const ImageListModel *model) const;
 
@@ -125,6 +130,8 @@ private:
     QVBoxLayout *m_rootLayout = nullptr;
     QLabel *m_scanStatusLabel = nullptr;
     QCheckBox *m_fuzzyFileNameCheckBox = nullptr;
+    QLineEdit *m_fileNameFilterEdit = nullptr;
+    QComboBox *m_categoryFilterCombo = nullptr;
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
     QTimer *m_interleavedLoadTimer = nullptr;

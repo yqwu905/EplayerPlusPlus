@@ -35,6 +35,7 @@ private slots:
     void testDataFileNameRole();
     void testDataIsSelectedRole();
     void testDataMarkRole_loadsExistingJson();
+    void testFilters_fileNameAndCategory();
 
     void testSelection();
     void testSelection_outOfRange();
@@ -300,6 +301,50 @@ void tst_ImageListModel::testDataMarkRole_loadsExistingJson()
     QCOMPARE(model.markAt(0), QStringLiteral("C"));
     QCOMPARE(model.data(model.index(0), ImageListModel::MarkRole).toString(),
              QStringLiteral("C"));
+}
+
+void tst_ImageListModel::testFilters_fileNameAndCategory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QImage img(10, 10, QImage::Format_ARGB32);
+    img.fill(Qt::green);
+    const QString alphaCatPath = dir.filePath("alpha_cat.png");
+    const QString betaCatPath = dir.filePath("beta_cat.png");
+    const QString alphaDogPath = dir.filePath("alpha_dog.png");
+    const QString plainPath = dir.filePath("plain.png");
+    QVERIFY(img.save(alphaCatPath));
+    QVERIFY(img.save(betaCatPath));
+    QVERIFY(img.save(alphaDogPath));
+    QVERIFY(img.save(plainPath));
+
+    ImageMarkManager manager;
+    QVERIFY(manager.setMarkForImage(dir.path(), alphaCatPath, "A"));
+    QVERIFY(manager.setMarkForImage(dir.path(), alphaDogPath, "A"));
+    QVERIFY(manager.setMarkForImage(dir.path(), betaCatPath, "B"));
+
+    ImageListModel model;
+    model.setImageMarkManager(&manager);
+    setFolderAndWait(model, dir.path());
+
+    QCOMPARE(model.unfilteredImageCount(), 4);
+    QCOMPARE(model.imageCount(), 4);
+
+    model.setFileNameFilter(QStringLiteral("cat"));
+    QCOMPARE(model.imageCount(), 2);
+    QVERIFY(model.indexOfFileName(QStringLiteral("alpha_cat.png")) >= 0);
+    QVERIFY(model.indexOfFileName(QStringLiteral("beta_cat.png")) >= 0);
+    QCOMPARE(model.indexOfFileName(QStringLiteral("alpha_dog.png")), -1);
+
+    model.setCategoryFilter(QStringLiteral("A"));
+    QCOMPARE(model.imageCount(), 1);
+    QCOMPARE(model.fileNameAt(0), QStringLiteral("alpha_cat.png"));
+
+    model.setFileNameFilter(QString());
+    QCOMPARE(model.imageCount(), 2);
+    QVERIFY(model.indexOfFileName(QStringLiteral("alpha_cat.png")) >= 0);
+    QVERIFY(model.indexOfFileName(QStringLiteral("alpha_dog.png")) >= 0);
 }
 
 void tst_ImageListModel::testSelection()

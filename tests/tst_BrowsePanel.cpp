@@ -4,7 +4,9 @@
 #include <QImage>
 #include <QFile>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCoreApplication>
+#include <QLineEdit>
 #include <QListView>
 #include <QPushButton>
 #include <QScrollBar>
@@ -29,6 +31,7 @@ private slots:
     void ctrlClick_alignsSameIndexRowsAcrossColumns();
     void altClick_exactVsFuzzyFileNameMatch();
     void markButtons_clickPersistsAndCtrlClickMarksSameRow();
+    void filters_fileNameAndCategoryLimitVisibleRows();
     void selection_preloadsPreviousAndNextThreeImages();
     void altMatchedNavigation_advancesAnchorAndRematchesOtherFolders();
     void independentNavigation_movesEachSelectedFolderSeparately();
@@ -359,6 +362,10 @@ void tst_BrowsePanel::markButtons_clickPersistsAndCtrlClickMarksSameRow()
                               1000);
     QVERIFY(marks.markForImage(dirB.path(), pathsB.at(0)).isEmpty());
 
+    clickMarkButton(views[0], 0, 1); // B again clears the active category
+    QTRY_VERIFY_WITH_TIMEOUT(marks.markForImage(dirA.path(), pathsA.at(0)).isEmpty(),
+                             1000);
+
     clickMarkButton(views[0], 1, 3, Qt::ControlModifier); // D
     QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(dirA.path(), pathsA.at(1)),
                               QStringLiteral("D"),
@@ -373,6 +380,64 @@ void tst_BrowsePanel::markButtons_clickPersistsAndCtrlClickMarksSameRow()
     QCOMPARE(marks.markForImage(dirB.path(), pathsB.at(0)), QStringLiteral("A"));
     QCOMPARE(marks.markForImage(dirA.path(), pathsA.at(1)), QStringLiteral("D"));
     QCOMPARE(marks.markForImage(dirB.path(), pathsB.at(1)), QStringLiteral("D"));
+}
+
+void tst_BrowsePanel::filters_fileNameAndCategoryLimitVisibleRows()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QImage image(16, 16, QImage::Format_ARGB32);
+    image.fill(Qt::darkYellow);
+    const QString alphaCatPath = dir.filePath("alpha_cat.png");
+    const QString betaCatPath = dir.filePath("beta_cat.png");
+    const QString alphaDogPath = dir.filePath("alpha_dog.png");
+    const QString plainPath = dir.filePath("plain.png");
+    QVERIFY(image.save(alphaCatPath));
+    QVERIFY(image.save(betaCatPath));
+    QVERIFY(image.save(alphaDogPath));
+    QVERIFY(image.save(plainPath));
+
+    ImageMarkManager marks;
+    QVERIFY(marks.setMarkForImage(dir.path(), alphaCatPath, "A"));
+    QVERIFY(marks.setMarkForImage(dir.path(), alphaDogPath, "A"));
+    QVERIFY(marks.setMarkForImage(dir.path(), betaCatPath, "B"));
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(700, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dir.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
+    waitForRows(views[0], 4);
+
+    auto *fileFilter = panel.findChild<QLineEdit *>("fileNameFilterEdit");
+    auto *categoryFilter = panel.findChild<QComboBox *>("categoryFilterComboBox");
+    QVERIFY(fileFilter != nullptr);
+    QVERIFY(categoryFilter != nullptr);
+
+    fileFilter->setText(QStringLiteral("cat"));
+    QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 2, 1000);
+    QVERIFY(rowByFileName(views[0], QStringLiteral("alpha_cat.png")) >= 0);
+    QVERIFY(rowByFileName(views[0], QStringLiteral("beta_cat.png")) >= 0);
+    QCOMPARE(rowByFileName(views[0], QStringLiteral("alpha_dog.png")), -1);
+
+    const int categoryAIndex = categoryFilter->findData(QStringLiteral("A"));
+    QVERIFY(categoryAIndex >= 0);
+    categoryFilter->setCurrentIndex(categoryAIndex);
+    QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 1, 1000);
+    QCOMPARE(rowByFileName(views[0], QStringLiteral("alpha_cat.png")), 0);
+
+    fileFilter->clear();
+    QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 2, 1000);
+    QVERIFY(rowByFileName(views[0], QStringLiteral("alpha_cat.png")) >= 0);
+    QVERIFY(rowByFileName(views[0], QStringLiteral("alpha_dog.png")) >= 0);
 }
 
 void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()

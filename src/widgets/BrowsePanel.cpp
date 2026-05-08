@@ -8,6 +8,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDataStream>
 #include <QDir>
@@ -19,6 +20,7 @@
 #include <QHBoxLayout>
 #include <QIODevice>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListView>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -51,6 +53,7 @@ constexpr int kMarkButtonGap = 3;
 constexpr int kMarkButtonTopMargin = 10;
 constexpr int kMarkButtonRightMargin = 10;
 const char kFolderOrderMimeType[] = "application/x-eplayer-folder-index";
+const QString kUnmarkedCategoryFilter = QStringLiteral("__unmarked__");
 
 const QColor kBrowseColors[] = {
     QColor(0x18, 0x6F, 0xD7),
@@ -517,6 +520,32 @@ void BrowsePanel::setupUi()
     optionsRow->setContentsMargins(0, 0, 0, 0);
     optionsRow->setSpacing(8);
 
+    auto *fileNameLabel = new QLabel(tr("文件名"), this);
+    fileNameLabel->setObjectName(QStringLiteral("browseFilterLabel"));
+    optionsRow->addWidget(fileNameLabel);
+
+    m_fileNameFilterEdit = new QLineEdit(this);
+    m_fileNameFilterEdit->setObjectName(QStringLiteral("fileNameFilterEdit"));
+    m_fileNameFilterEdit->setPlaceholderText(tr("过滤文件名"));
+    m_fileNameFilterEdit->setClearButtonEnabled(true);
+    m_fileNameFilterEdit->setFixedWidth(180);
+    optionsRow->addWidget(m_fileNameFilterEdit);
+
+    auto *categoryLabel = new QLabel(tr("分类"), this);
+    categoryLabel->setObjectName(QStringLiteral("browseFilterLabel"));
+    optionsRow->addWidget(categoryLabel);
+
+    m_categoryFilterCombo = new QComboBox(this);
+    m_categoryFilterCombo->setObjectName(QStringLiteral("categoryFilterComboBox"));
+    m_categoryFilterCombo->addItem(tr("全部分类"), QString());
+    m_categoryFilterCombo->addItem(tr("未分类"), kUnmarkedCategoryFilter);
+    const QStringList categories = ImageMarkManager::categories();
+    for (const QString &category : categories) {
+        m_categoryFilterCombo->addItem(category, category);
+    }
+    m_categoryFilterCombo->setFixedWidth(112);
+    optionsRow->addWidget(m_categoryFilterCombo);
+
     m_fuzzyFileNameCheckBox = new QCheckBox(tr("Fuzzy filename match"), this);
     m_fuzzyFileNameCheckBox->setObjectName(QStringLiteral("fuzzyFileNameCheckBox"));
     m_fuzzyFileNameCheckBox->setChecked(false);
@@ -526,6 +555,13 @@ void BrowsePanel::setupUi()
     optionsRow->addWidget(m_fuzzyFileNameCheckBox);
     optionsRow->addStretch();
 
+    connect(m_fileNameFilterEdit, &QLineEdit::textChanged,
+            this, &BrowsePanel::applyCurrentFilters);
+    connect(m_categoryFilterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int /*index*/) {
+        applyCurrentFilters();
+    });
+
     m_scanStatusLabel = new QLabel(tr("Idle"), this);
     m_scanStatusLabel->setStyleSheet(
         "QLabel { color: #6E7785; padding-left: 2px; font-size: 11px; background: transparent; border: none; }");
@@ -534,6 +570,7 @@ void BrowsePanel::setupUi()
     m_columnsLayout->setContentsMargins(0, 0, 0, 0);
     m_columnsLayout->setSpacing(8);
     m_columnsLayout->addStretch();
+    m_rootLayout->addLayout(optionsRow);
     m_rootLayout->addLayout(m_columnsLayout, 1);
     m_rootLayout->addWidget(m_scanStatusLabel);
 
@@ -543,6 +580,8 @@ void BrowsePanel::setupUi()
         "QWidget#compareColumnHeader { background-color: #FFFFFF; border: none; border-bottom: 1px solid #EEF1F5; }"
         "QLabel#compareColumnHeaderLabel { color: #243041; background: transparent; border: none; }"
         "QLabel#compareColumnProgressLabel { color: #687385; font-size: 11px; background: transparent; border: none; }"
+        "QLabel#browseFilterLabel { color: #4B5563; font-size: 12px; background: transparent; border: none; }"
+        "QLineEdit#fileNameFilterEdit, QComboBox#categoryFilterComboBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; color: #243041; }"
         "QListView#compareColumnListView { background-color: #FFFFFF; border: none; outline: none; }");
 }
 
@@ -554,6 +593,12 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     col.model = new ImageListModel(this);
     col.model->setImageLoader(m_imageLoader);
     col.model->setImageMarkManager(m_markManager);
+    if (m_fileNameFilterEdit) {
+        col.model->setFileNameFilter(m_fileNameFilterEdit->text());
+    }
+    if (m_categoryFilterCombo) {
+        col.model->setCategoryFilter(currentCategoryFilter());
+    }
 
     col.columnWidget = new QWidget(this);
     col.columnWidget->setObjectName(QStringLiteral("compareColumnWidget"));
@@ -704,6 +749,18 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         scheduleThumbnailRequest(currentIndex, 0);
     });
 
+    connect(col.model, &QAbstractItemModel::modelReset,
+            this, [this, modelPtr]() {
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex < 0) {
+            return;
+        }
+
+        updateColumnProgressLabel(currentIndex);
+        updateGlobalScanStatus();
+        requestThumbnailsForColumn(currentIndex);
+    });
+
     connect(col.model, &ImageListModel::folderReady,
             this, [this, modelPtr]() {
         const int currentIndex = columnIndexForModel(modelPtr);
@@ -762,7 +819,7 @@ void BrowsePanel::onFolderReady(int columnIndex)
 
     auto &col = m_columns[columnIndex];
     col.scanFinished = true;
-    col.discoveredCount = col.model ? col.model->imageCount() : col.discoveredCount;
+    col.discoveredCount = col.model ? col.model->unfilteredImageCount() : col.discoveredCount;
 
     updateColumnProgressLabel(columnIndex);
     updateGlobalScanStatus();
@@ -886,6 +943,21 @@ void BrowsePanel::onThumbnailMarkRequested(int column,
         return;
     }
 
+    ImageListModel *clickedModel = m_columns[column].model;
+    if (!clickedModel || row < 0 || row >= clickedModel->imageCount()) {
+        return;
+    }
+
+    const QString targetCategory = (clickedModel->markAt(row) == category)
+        ? QString()
+        : category;
+    auto refreshAfterMarkChange = [this]() {
+        updateAllColumnProgressLabels();
+        updateGlobalScanStatus();
+        requestVisibleThumbnailsForAllColumns();
+        emitSelectionChanged();
+    };
+
     if ((modifiers & Qt::ControlModifier) != 0) {
         bool markedSelection = false;
         for (auto &col : m_columns) {
@@ -895,29 +967,27 @@ void BrowsePanel::onThumbnailMarkRequested(int column,
 
             const QList<int> selected = col.model->selectedIndices();
             for (int selectedIndex : selected) {
-                col.model->setMarkAt(selectedIndex, category);
+                col.model->setMarkAt(selectedIndex, targetCategory);
                 markedSelection = true;
             }
         }
 
         if (markedSelection) {
+            refreshAfterMarkChange();
             return;
         }
 
         for (auto &col : m_columns) {
             if (col.model && row >= 0 && row < col.model->imageCount()) {
-                col.model->setMarkAt(row, category);
+                col.model->setMarkAt(row, targetCategory);
             }
         }
+        refreshAfterMarkChange();
         return;
     }
 
-    ImageListModel *model = m_columns[column].model;
-    if (!model || row < 0 || row >= model->imageCount()) {
-        return;
-    }
-
-    model->setMarkAt(row, category);
+    clickedModel->setMarkAt(row, targetCategory);
+    refreshAfterMarkChange();
 }
 
 void BrowsePanel::alignColumnsToAnchor(int anchorColumn,
@@ -1105,6 +1175,46 @@ void BrowsePanel::preloadNeighborImagesForSelection()
 
     if (!preloadSet.isEmpty()) {
         m_imageLoader->requestImageBatch(preloadSet.values());
+    }
+}
+
+void BrowsePanel::applyCurrentFilters()
+{
+    resetSelectionNavigationMode();
+    clearSelection();
+
+    const QString fileNameFilter = m_fileNameFilterEdit
+        ? m_fileNameFilterEdit->text()
+        : QString();
+    const QString categoryFilter = currentCategoryFilter();
+
+    for (auto &col : m_columns) {
+        if (!col.model) {
+            continue;
+        }
+        col.model->setFileNameFilter(fileNameFilter);
+        col.model->setCategoryFilter(categoryFilter);
+    }
+
+    updateAllColumnProgressLabels();
+    updateGlobalScanStatus();
+    requestVisibleThumbnailsForAllColumns();
+    emitSelectionChanged();
+}
+
+QString BrowsePanel::currentCategoryFilter() const
+{
+    if (!m_categoryFilterCombo) {
+        return QString();
+    }
+
+    return m_categoryFilterCombo->currentData().toString();
+}
+
+void BrowsePanel::updateAllColumnProgressLabels()
+{
+    for (int i = 0; i < m_columns.size(); ++i) {
+        updateColumnProgressLabel(i);
     }
 }
 
@@ -1435,19 +1545,35 @@ void BrowsePanel::updateColumnProgressLabel(int columnIndex)
         return;
     }
 
+    const int visibleCount = col.model ? col.model->imageCount() : col.discoveredCount;
+    const int totalCount = col.model
+        ? qMax(col.discoveredCount, col.model->unfilteredImageCount())
+        : col.discoveredCount;
+    const bool filtered = col.model && col.model->hasActiveFilters();
+    const QString countText = filtered
+        ? tr("%1 / %2 个文件").arg(visibleCount).arg(totalCount)
+        : tr("%1 个文件").arg(totalCount);
+
     if (col.scanFinished) {
-        col.progressLabel->setText(tr("%1 个文件").arg(col.discoveredCount));
+        col.progressLabel->setText(countText);
     } else {
-        col.progressLabel->setText(tr("%1 个文件，扫描中").arg(col.discoveredCount));
+        col.progressLabel->setText(tr("%1，扫描中").arg(countText));
     }
 }
 
 void BrowsePanel::updateGlobalScanStatus()
 {
     int discoveredTotal = 0;
+    int visibleTotal = 0;
     int scanningCount = 0;
+    bool filtersActive = false;
     for (const auto &col : m_columns) {
-        discoveredTotal += col.discoveredCount;
+        const int totalCount = col.model
+            ? qMax(col.discoveredCount, col.model->unfilteredImageCount())
+            : col.discoveredCount;
+        discoveredTotal += totalCount;
+        visibleTotal += col.model ? col.model->imageCount() : totalCount;
+        filtersActive = filtersActive || (col.model && col.model->hasActiveFilters());
         if (!col.scanFinished) {
             ++scanningCount;
         }
@@ -1459,7 +1585,11 @@ void BrowsePanel::updateGlobalScanStatus()
             ? tr("Scanning %1 folder(s), discovered %2 image(s)")
                   .arg(scanningCount)
                   .arg(discoveredTotal)
-            : tr("Scan complete, discovered %1 image(s)").arg(discoveredTotal));
+            : (filtersActive
+                ? tr("Filter active, showing %1 of %2 image(s)")
+                      .arg(visibleTotal)
+                      .arg(discoveredTotal)
+                : tr("Scan complete, discovered %1 image(s)").arg(discoveredTotal)));
 
     if (m_scanStatusLabel) {
         m_scanStatusLabel->setText(statusText);

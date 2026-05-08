@@ -83,6 +83,24 @@ public:
     int imageCount() const;
 
     /**
+     * @brief Get the total number of images before active filters are applied.
+     */
+    int unfilteredImageCount() const;
+
+    /**
+     * @brief Apply a case-insensitive filename substring filter.
+     */
+    void setFileNameFilter(const QString &filterText);
+    QString fileNameFilter() const;
+
+    /**
+     * @brief Apply an image mark/category filter. Empty means all categories.
+     */
+    void setCategoryFilter(const QString &category);
+    QString categoryFilter() const;
+    bool hasActiveFilters() const;
+
+    /**
      * @brief Find the index of an image by its filename.
      * @param fileName Filename (without path) to search for.
      * @return Index, or -1 if not found.
@@ -177,12 +195,21 @@ private:
     void appendScanBatch(const QStringList &batch, int generation);
     void finalizeScan(int generation);
     void cancelPendingScan();
+    int sourceIndexForRow(int row) const;
+    int rowForSourceIndex(int sourceIndex) const;
+    bool sourceImageMatchesFilters(int sourceIndex) const;
+    void rebuildFilteredRows();
+    void applyFilters();
+    QString markAtSourceIndex(int sourceIndex) const;
 
     QString m_folderPath;
     QStringList m_imagePaths;
     QHash<QString, int> m_pathToIndex;   // path -> index for O(1) lookup
     QStringList m_fileNames;
     QHash<QString, int> m_fileNameToIndex;
+    QList<int> m_filteredSourceRows;
+    QString m_fileNameFilter;
+    QString m_categoryFilter;
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
     ImageLoader *m_imageLoader = nullptr;

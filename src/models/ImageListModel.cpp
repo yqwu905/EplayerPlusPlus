@@ -8,10 +8,13 @@
 #include <QtConcurrent>
 #include <QMetaObject>
 
+#include <utility>
+
 namespace
 {
 constexpr int kBrowseThumbnailExtent = 180;
 const QSize kBrowseThumbnailSize(kBrowseThumbnailExtent, kBrowseThumbnailExtent);
+const QString kUnmarkedCategoryFilter = QStringLiteral("__unmarked__");
 }
 
 ImageListModel::ImageListModel(QObject *parent)
@@ -29,21 +32,22 @@ int ImageListModel::rowCount(const QModelIndex &parent) const
     if (parent.isValid()) {
         return 0;
     }
-    return m_imagePaths.size();
+    return imageCount();
 }
 
 QVariant ImageListModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_imagePaths.size()) {
+    const int sourceIndex = sourceIndexForRow(index.row());
+    if (!index.isValid() || sourceIndex < 0) {
         return QVariant();
     }
 
-    const QString &path = m_imagePaths.at(index.row());
+    const QString &path = m_imagePaths.at(sourceIndex);
 
     switch (role) {
     case Qt::DisplayRole:
     case FileNameRole:
-        return m_fileNames.at(index.row());
+        return m_fileNames.at(sourceIndex);
     case FilePathRole:
         return path;
     case Qt::DecorationRole:
@@ -55,9 +59,9 @@ QVariant ImageListModel::data(const QModelIndex &index, int role) const
         return QVariant();
     }
     case IsSelectedRole:
-        return m_selectedIndices.contains(index.row());
+        return m_selectedIndices.contains(sourceIndex);
     case MarkRole:
-        return markAt(index.row());
+        return markAtSourceIndex(sourceIndex);
     default:
         return QVariant();
     }
@@ -77,6 +81,7 @@ void ImageListModel::setFolder(const QString &folderPath)
     m_pathToIndex.clear();
     m_fileNames.clear();
     m_fileNameToIndex.clear();
+    m_filteredSourceRows.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
     m_nextLoadIndex = 0;
@@ -108,6 +113,7 @@ void ImageListModel::refresh()
     m_pathToIndex.clear();
     m_fileNames.clear();
     m_fileNameToIndex.clear();
+    m_filteredSourceRows.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
     m_nextLoadIndex = 0;
@@ -127,42 +133,105 @@ bool ImageListModel::isLoading() const
 
 QString ImageListModel::imagePathAt(int index) const
 {
-    if (index < 0 || index >= m_imagePaths.size()) {
+    const int sourceIndex = sourceIndexForRow(index);
+    if (sourceIndex < 0) {
         return QString();
     }
-    return m_imagePaths.at(index);
+    return m_imagePaths.at(sourceIndex);
 }
 
 QString ImageListModel::fileNameAt(int index) const
 {
-    if (index < 0 || index >= m_imagePaths.size()) {
+    const int sourceIndex = sourceIndexForRow(index);
+    if (sourceIndex < 0) {
         return QString();
     }
-    return m_fileNames.at(index);
+    return m_fileNames.at(sourceIndex);
 }
 
 int ImageListModel::imageCount() const
 {
+    return hasActiveFilters() ? m_filteredSourceRows.size() : m_imagePaths.size();
+}
+
+int ImageListModel::unfilteredImageCount() const
+{
     return m_imagePaths.size();
+}
+
+void ImageListModel::setFileNameFilter(const QString &filterText)
+{
+    const QString normalized = filterText.trimmed();
+    if (m_fileNameFilter == normalized) {
+        return;
+    }
+
+    m_fileNameFilter = normalized;
+    applyFilters();
+}
+
+QString ImageListModel::fileNameFilter() const
+{
+    return m_fileNameFilter;
+}
+
+void ImageListModel::setCategoryFilter(const QString &category)
+{
+    const QString normalized = category.trimmed();
+    if (!normalized.isEmpty() &&
+        normalized != kUnmarkedCategoryFilter &&
+        !ImageMarkManager::isValidCategory(normalized)) {
+        return;
+    }
+
+    if (m_categoryFilter == normalized) {
+        return;
+    }
+
+    m_categoryFilter = normalized;
+    applyFilters();
+}
+
+QString ImageListModel::categoryFilter() const
+{
+    return m_categoryFilter;
+}
+
+bool ImageListModel::hasActiveFilters() const
+{
+    return !m_fileNameFilter.isEmpty() || !m_categoryFilter.isEmpty();
 }
 
 int ImageListModel::indexOfFileName(const QString &fileName) const
 {
+    if (hasActiveFilters()) {
+        for (int row = 0; row < m_filteredSourceRows.size(); ++row) {
+            const int sourceIndex = m_filteredSourceRows.at(row);
+            if (sourceIndex >= 0 &&
+                sourceIndex < m_fileNames.size() &&
+                m_fileNames.at(sourceIndex) == fileName) {
+                return row;
+            }
+        }
+        return -1;
+    }
+
     return m_fileNameToIndex.value(fileName, -1);
 }
 
 void ImageListModel::setSelected(int index, bool selected)
 {
-    if (index < 0 || index >= m_imagePaths.size()) {
+    const int sourceIndex = sourceIndexForRow(index);
+    if (sourceIndex < 0) {
         return;
     }
 
     bool changed = false;
-    if (selected && !m_selectedIndices.contains(index)) {
-        m_selectedIndices.insert(index);
+    if (selected && !m_selectedIndices.contains(sourceIndex)) {
+        m_selectedIndices.insert(sourceIndex);
         changed = true;
-    } else if (!selected && m_selectedIndices.contains(index)) {
-        m_selectedIndices.remove(index);
+    } else if (!selected && m_selectedIndices.contains(sourceIndex)) {
+        m_selectedIndices.remove(sourceIndex);
         changed = true;
     }
 
@@ -179,7 +248,15 @@ void ImageListModel::clearSelection()
         return;
     }
 
-    QList<int> indices = m_selectedIndices.values();
+    QList<int> indices;
+    indices.reserve(m_selectedIndices.size());
+    for (int sourceIndex : std::as_const(m_selectedIndices)) {
+        const int row = rowForSourceIndex(sourceIndex);
+        if (row >= 0) {
+            indices.append(row);
+        }
+    }
+
     m_selectedIndices.clear();
 
     for (int idx : indices) {
@@ -191,12 +268,21 @@ void ImageListModel::clearSelection()
 
 QList<int> ImageListModel::selectedIndices() const
 {
-    return m_selectedIndices.values();
+    QList<int> rows;
+    rows.reserve(m_selectedIndices.size());
+    for (int sourceIndex : std::as_const(m_selectedIndices)) {
+        const int row = rowForSourceIndex(sourceIndex);
+        if (row >= 0) {
+            rows.append(row);
+        }
+    }
+    return rows;
 }
 
 bool ImageListModel::isSelected(int index) const
 {
-    return m_selectedIndices.contains(index);
+    const int sourceIndex = sourceIndexForRow(index);
+    return sourceIndex >= 0 && m_selectedIndices.contains(sourceIndex);
 }
 
 void ImageListModel::setImageMarkManager(ImageMarkManager *manager)
@@ -215,27 +301,29 @@ void ImageListModel::setImageMarkManager(ImageMarkManager *manager)
         }
     }
 
-    if (!m_imagePaths.isEmpty()) {
-        emit dataChanged(index(0), index(m_imagePaths.size() - 1), {MarkRole});
+    if (!m_categoryFilter.isEmpty()) {
+        applyFilters();
+        return;
+    }
+
+    if (imageCount() > 0) {
+        emit dataChanged(index(0), index(imageCount() - 1), {MarkRole});
     }
 }
 
 QString ImageListModel::markAt(int index) const
 {
-    if (!m_markManager || index < 0 || index >= m_imagePaths.size()) {
-        return QString();
-    }
-
-    return m_markManager->markForImage(m_folderPath, m_imagePaths.at(index));
+    return markAtSourceIndex(sourceIndexForRow(index));
 }
 
 bool ImageListModel::setMarkAt(int index, const QString &category)
 {
-    if (!m_markManager || index < 0 || index >= m_imagePaths.size()) {
+    const int sourceIndex = sourceIndexForRow(index);
+    if (!m_markManager || sourceIndex < 0) {
         return false;
     }
 
-    return m_markManager->setMarkForImage(m_folderPath, m_imagePaths.at(index), category);
+    return m_markManager->setMarkForImage(m_folderPath, m_imagePaths.at(sourceIndex), category);
 }
 
 void ImageListModel::setImageLoader(ImageLoader *loader)
@@ -254,17 +342,20 @@ void ImageListModel::setImageLoader(ImageLoader *loader)
 
 void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
 {
-    if (!m_imageLoader) {
+    if (!m_imageLoader || imageCount() <= 0) {
         return;
     }
 
     firstVisible = qMax(0, firstVisible);
-    lastVisible = qMin(m_imagePaths.size() - 1, lastVisible);
+    lastVisible = qMin(imageCount() - 1, lastVisible);
+    if (lastVisible < firstVisible) {
+        return;
+    }
 
     QStringList visibleFirst;
     visibleFirst.reserve(lastVisible - firstVisible + 1);
     for (int i = firstVisible; i <= lastVisible; ++i) {
-        const QString &path = m_imagePaths.at(i);
+        const QString path = imagePathAt(i);
         if (!m_thumbnails.contains(path)) {
             visibleFirst.append(path);
         }
@@ -277,15 +368,15 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
 
 bool ImageListModel::loadNextThumbnailBatch(int batchSize)
 {
-    if (!m_imageLoader || m_nextLoadIndex >= m_imagePaths.size()) {
+    if (!m_imageLoader || m_nextLoadIndex >= imageCount()) {
         return false;
     }
 
-    int end = qMin(m_nextLoadIndex + batchSize, m_imagePaths.size());
+    int end = qMin(m_nextLoadIndex + batchSize, imageCount());
     QStringList pathsToLoad;
     pathsToLoad.reserve(end - m_nextLoadIndex);
     for (int i = m_nextLoadIndex; i < end; ++i) {
-        const QString &path = m_imagePaths.at(i);
+        const QString path = imagePathAt(i);
         if (!m_thumbnails.contains(path)) {
             pathsToLoad.append(path);
         }
@@ -294,12 +385,12 @@ bool ImageListModel::loadNextThumbnailBatch(int batchSize)
         m_imageLoader->requestThumbnailBatch(pathsToLoad, kBrowseThumbnailSize);
     }
     m_nextLoadIndex = end;
-    return m_nextLoadIndex < m_imagePaths.size();
+    return m_nextLoadIndex < imageCount();
 }
 
 bool ImageListModel::hasMoreToLoad() const
 {
-    return m_nextLoadIndex < m_imagePaths.size();
+    return m_nextLoadIndex < imageCount();
 }
 
 void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &thumbnail)
@@ -313,11 +404,16 @@ void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &th
     if (it == m_pathToIndex.constEnd()) {
         return;
     }
-    int idx = it.value();
+    const int sourceIndex = it.value();
 
     m_thumbnails.insert(imagePath, thumbnail);
 
-    QModelIndex mi = this->index(idx);
+    const int row = rowForSourceIndex(sourceIndex);
+    if (row < 0) {
+        return;
+    }
+
+    QModelIndex mi = this->index(row);
     emit dataChanged(mi, mi, {Qt::DecorationRole, ThumbnailRole});
 }
 
@@ -342,7 +438,17 @@ void ImageListModel::onMarkChanged(const QString &folderPath,
         return;
     }
 
-    QModelIndex mi = this->index(idx);
+    if (!m_categoryFilter.isEmpty()) {
+        applyFilters();
+        return;
+    }
+
+    const int row = rowForSourceIndex(idx);
+    if (row < 0) {
+        return;
+    }
+
+    QModelIndex mi = this->index(row);
     emit dataChanged(mi, mi, {MarkRole});
 }
 
@@ -399,28 +505,62 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
         return;
     }
 
-    const int beginRow = m_imagePaths.size();
-    const int endRow = beginRow + batch.size() - 1;
     m_imagePaths.reserve(m_imagePaths.size() + batch.size());
     m_fileNames.reserve(m_fileNames.size() + batch.size());
     m_pathToIndex.reserve(m_pathToIndex.size() + batch.size());
     m_fileNameToIndex.reserve(m_fileNameToIndex.size() + batch.size());
-    beginInsertRows(QModelIndex(), beginRow, endRow);
-    for (const QString &path : batch) {
-        const int index = m_imagePaths.size();
-        const QString fileName = QFileInfo(path).fileName();
-        m_pathToIndex.insert(path, index);
-        if (!m_fileNameToIndex.contains(fileName)) {
-            m_fileNameToIndex.insert(fileName, index);
+    m_filteredSourceRows.reserve(m_filteredSourceRows.size() + batch.size());
+
+    if (!hasActiveFilters()) {
+        const int beginRow = m_imagePaths.size();
+        const int endRow = beginRow + batch.size() - 1;
+        beginInsertRows(QModelIndex(), beginRow, endRow);
+        for (const QString &path : batch) {
+            const int index = m_imagePaths.size();
+            const QString fileName = QFileInfo(path).fileName();
+            m_pathToIndex.insert(path, index);
+            if (!m_fileNameToIndex.contains(fileName)) {
+                m_fileNameToIndex.insert(fileName, index);
+            }
+            m_imagePaths.append(path);
+            m_fileNames.append(fileName);
         }
-        m_imagePaths.append(path);
-        m_fileNames.append(fileName);
+        endInsertRows();
+    } else {
+        for (const QString &path : batch) {
+            const int sourceIndex = m_imagePaths.size();
+            const QString fileName = QFileInfo(path).fileName();
+            m_pathToIndex.insert(path, sourceIndex);
+            if (!m_fileNameToIndex.contains(fileName)) {
+                m_fileNameToIndex.insert(fileName, sourceIndex);
+            }
+            m_imagePaths.append(path);
+            m_fileNames.append(fileName);
+
+            if (sourceImageMatchesFilters(sourceIndex)) {
+                const int row = m_filteredSourceRows.size();
+                beginInsertRows(QModelIndex(), row, row);
+                m_filteredSourceRows.append(sourceIndex);
+                endInsertRows();
+            }
+        }
     }
-    endInsertRows();
 
     if (m_imageLoader && m_initialPrefetchRemaining > 0) {
-        const int count = qMin(m_initialPrefetchRemaining, batch.size());
-        m_imageLoader->requestThumbnailBatchVisibleFirst(batch.mid(0, count),
+        QStringList candidates;
+        if (!hasActiveFilters()) {
+            candidates = batch;
+        } else {
+            for (int i = qMax(0, imageCount() - batch.size()); i < imageCount(); ++i) {
+                const QString path = imagePathAt(i);
+                if (!path.isEmpty()) {
+                    candidates.append(path);
+                }
+            }
+        }
+
+        const int count = qMin(m_initialPrefetchRemaining, candidates.size());
+        m_imageLoader->requestThumbnailBatchVisibleFirst(candidates.mid(0, count),
                                                          kBrowseThumbnailSize);
         m_initialPrefetchRemaining -= count;
     }
@@ -451,4 +591,81 @@ void ImageListModel::cancelPendingScan()
     if (m_loading) {
         m_loading = false;
     }
+}
+
+int ImageListModel::sourceIndexForRow(int row) const
+{
+    if (row < 0 || row >= imageCount()) {
+        return -1;
+    }
+
+    return hasActiveFilters() ? m_filteredSourceRows.at(row) : row;
+}
+
+int ImageListModel::rowForSourceIndex(int sourceIndex) const
+{
+    if (sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+        return -1;
+    }
+
+    if (!hasActiveFilters()) {
+        return sourceIndex;
+    }
+
+    return m_filteredSourceRows.indexOf(sourceIndex);
+}
+
+bool ImageListModel::sourceImageMatchesFilters(int sourceIndex) const
+{
+    if (sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+        return false;
+    }
+
+    if (!m_fileNameFilter.isEmpty() &&
+        !m_fileNames.at(sourceIndex).contains(m_fileNameFilter, Qt::CaseInsensitive)) {
+        return false;
+    }
+
+    if (!m_categoryFilter.isEmpty()) {
+        const QString mark = markAtSourceIndex(sourceIndex);
+        if (m_categoryFilter == kUnmarkedCategoryFilter) {
+            return mark.isEmpty();
+        }
+        return mark == m_categoryFilter;
+    }
+
+    return true;
+}
+
+void ImageListModel::rebuildFilteredRows()
+{
+    m_filteredSourceRows.clear();
+    if (!hasActiveFilters()) {
+        return;
+    }
+
+    m_filteredSourceRows.reserve(m_imagePaths.size());
+    for (int sourceIndex = 0; sourceIndex < m_imagePaths.size(); ++sourceIndex) {
+        if (sourceImageMatchesFilters(sourceIndex)) {
+            m_filteredSourceRows.append(sourceIndex);
+        }
+    }
+}
+
+void ImageListModel::applyFilters()
+{
+    beginResetModel();
+    rebuildFilteredRows();
+    m_nextLoadIndex = 0;
+    endResetModel();
+    emit selectionChanged();
+}
+
+QString ImageListModel::markAtSourceIndex(int sourceIndex) const
+{
+    if (!m_markManager || sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+        return QString();
+    }
+
+    return m_markManager->markForImage(m_folderPath, m_imagePaths.at(sourceIndex));
 }

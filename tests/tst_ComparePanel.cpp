@@ -785,6 +785,11 @@ void tst_ComparePanel::markButton_clickPersistsSingleImage()
                               QStringLiteral("B"),
                               1000);
     QVERIFY(marks.markForImage(folder1, image1Path).isEmpty());
+
+    QTest::mouseClick(button, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(marks.markForImage(folder0, image0Path).isEmpty(),
+                             1000);
+    QVERIFY(marks.markForImage(folder1, image1Path).isEmpty());
 }
 
 void tst_ComparePanel::markButton_ctrlClickMarksAllCurrentImages()

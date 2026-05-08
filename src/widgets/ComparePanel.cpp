@@ -947,17 +947,28 @@ void ComparePanel::setupMarkButtonsForCell(int cellIndex)
         button->setFixedSize(24, 22);
         button->setCursor(Qt::PointingHandCursor);
         connect(button, &QPushButton::clicked, this, [this, cellContainer, category]() {
-            if ((QApplication::keyboardModifiers() & Qt::ControlModifier) != 0) {
-                markAllCurrentImages(category);
+            int cellIndex = -1;
+            for (int i = 0; i < m_cells.size(); ++i) {
+                if (m_cells[i].container == cellContainer) {
+                    cellIndex = i;
+                    break;
+                }
+            }
+
+            if (cellIndex < 0) {
                 return;
             }
 
-            for (int i = 0; i < m_cells.size(); ++i) {
-                if (m_cells[i].container == cellContainer) {
-                    markCell(i, category);
-                    return;
-                }
+            const QString targetCategory = (markForCell(cellIndex) == category)
+                ? QString()
+                : category;
+
+            if ((QApplication::keyboardModifiers() & Qt::ControlModifier) != 0) {
+                markAllCurrentImages(targetCategory);
+                return;
             }
+
+            markCell(cellIndex, targetCategory);
         });
         cell.markButtonsLayout->addWidget(button);
         cell.markButtons.append(button);
@@ -1022,7 +1033,7 @@ void ComparePanel::updateAllMarkButtons()
 
 void ComparePanel::markCell(int cellIndex, const QString &category)
 {
-    if (!m_markManager || !ImageMarkManager::isValidCategory(category)) {
+    if (!m_markManager || (!category.isEmpty() && !ImageMarkManager::isValidCategory(category))) {
         return;
     }
     if (cellIndex < 0 || cellIndex >= m_cells.size()) {
@@ -1039,7 +1050,7 @@ void ComparePanel::markCell(int cellIndex, const QString &category)
 
 void ComparePanel::markAllCurrentImages(const QString &category)
 {
-    if (!m_markManager || !ImageMarkManager::isValidCategory(category)) {
+    if (!m_markManager || (!category.isEmpty() && !ImageMarkManager::isValidCategory(category))) {
         return;
     }
 
