@@ -154,6 +154,9 @@ private:
     void updateCellHeader(int cellIndex);
     QString cellDisplayName(int cellIndex) const;
     QImage imageForCompare(int cellIndex) const;
+    void showImageContextMenuForCell(QWidget *cellContainer,
+                                     QWidget *sourceWidget,
+                                     const QPoint &pos);
 
     /**
      * @brief Find the cell index by its ZoomableImageWidget pointer.

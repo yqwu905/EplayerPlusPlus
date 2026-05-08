@@ -1,5 +1,7 @@
 #include "ThumbnailWidget.h"
+#include "ImageContextMenu.h"
 
+#include <QContextMenuEvent>
 #include <QPainter>
 #include <QMouseEvent>
 #include <QFontMetrics>
@@ -167,6 +169,17 @@ void ThumbnailWidget::mousePressEvent(QMouseEvent *event)
     QWidget::mousePressEvent(event);
 }
 
+void ThumbnailWidget::contextMenuEvent(QContextMenuEvent *event)
+{
+    if (!m_filePath.isEmpty()) {
+        ImageContextMenu::showMenu(m_filePath, event->globalPos(), this);
+        event->accept();
+        return;
+    }
+
+    QWidget::contextMenuEvent(event);
+}
+
 void ThumbnailWidget::enterEvent(QEnterEvent * /*event*/)
 {
     m_hovered = true;
@@ -178,4 +191,3 @@ void ThumbnailWidget::leaveEvent(QEvent * /*event*/)
     m_hovered = false;
     update();
 }
-

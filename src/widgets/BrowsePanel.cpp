@@ -1,4 +1,5 @@
 #include "BrowsePanel.h"
+#include "ImageContextMenu.h"
 #include "models/CompareSession.h"
 #include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
@@ -7,6 +8,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QFontMetrics>
 #include <QHBoxLayout>
@@ -119,6 +121,7 @@ public:
     using MarkCallback = std::function<void(const QModelIndex &,
                                             const QString &,
                                             Qt::KeyboardModifiers)>;
+    using ContextMenuCallback = std::function<void(const QModelIndex &, const QPoint &)>;
 
     explicit ThumbnailListView(QWidget *parent = nullptr)
         : QListView(parent)
@@ -128,6 +131,11 @@ public:
     void setMarkCallback(MarkCallback callback)
     {
         m_markCallback = std::move(callback);
+    }
+
+    void setContextMenuCallback(ContextMenuCallback callback)
+    {
+        m_contextMenuCallback = std::move(callback);
     }
 
 protected:
@@ -151,8 +159,40 @@ protected:
         QListView::mousePressEvent(event);
     }
 
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        if (showContextMenu(event)) {
+            return;
+        }
+
+        QListView::contextMenuEvent(event);
+    }
+
+    bool viewportEvent(QEvent *event) override
+    {
+        if (event->type() == QEvent::ContextMenu &&
+            showContextMenu(static_cast<QContextMenuEvent *>(event))) {
+            return true;
+        }
+
+        return QListView::viewportEvent(event);
+    }
+
 private:
+    bool showContextMenu(QContextMenuEvent *event)
+    {
+        const QModelIndex modelIndex = indexAt(event->pos());
+        if (!modelIndex.isValid() || !m_contextMenuCallback) {
+            return false;
+        }
+
+        m_contextMenuCallback(modelIndex, event->globalPos());
+        event->accept();
+        return true;
+    }
+
     MarkCallback m_markCallback;
+    ContextMenuCallback m_contextMenuCallback;
 };
 
 class ThumbnailDelegate final : public QStyledItemDelegate
@@ -456,6 +496,15 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
                                      category,
                                      modifiers);
         }
+    });
+    thumbnailView->setContextMenuCallback([this, modelPtr](const QModelIndex &modelIndex,
+                                                           const QPoint &globalPos) {
+        if (columnIndexForModel(modelPtr) < 0 || !modelIndex.isValid()) {
+            return;
+        }
+
+        const QString imagePath = modelIndex.data(ImageListModel::FilePathRole).toString();
+        ImageContextMenu::showMenu(imagePath, globalPos, this);
     });
 
     connect(col.model, &QAbstractItemModel::rowsInserted,

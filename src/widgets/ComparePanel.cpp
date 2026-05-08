@@ -1,4 +1,5 @@
 #include "ComparePanel.h"
+#include "ImageContextMenu.h"
 #include "ZoomableImageWidget.h"
 #include "services/ImageComparer.h"
 #include "services/ImageLoader.h"
@@ -557,14 +558,30 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.imageContainer = new QWidget(cell.container);
     cell.imageContainer->setMinimumSize(200, 200);
     cell.imageContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    cell.imageContainer->setContextMenuPolicy(Qt::CustomContextMenu);
     cell.imageContainer->setStyleSheet(
         "QWidget { background-color: #F8FAFC; border: 1px solid #EEF1F5; border-radius: 6px; }");
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setText(tr("点击缩略图\n开始对比"));
+    cell.imageWidget->setContextMenuPolicy(Qt::CustomContextMenu);
 
     cellLayout->addWidget(cell.imageContainer, 1);
     cell.imageContainer->installEventFilter(this);
+
+    QWidget *cellContainerForMenu = cell.container;
+    connect(cell.imageContainer,
+            &QWidget::customContextMenuRequested,
+            this,
+            [this, cellContainerForMenu, sourceWidget = cell.imageContainer](const QPoint &pos) {
+        showImageContextMenuForCell(cellContainerForMenu, sourceWidget, pos);
+    });
+    connect(cell.imageWidget,
+            &QWidget::customContextMenuRequested,
+            this,
+            [this, cellContainerForMenu, sourceWidget = cell.imageWidget](const QPoint &pos) {
+        showImageContextMenuForCell(cellContainerForMenu, sourceWidget, pos);
+    });
 
     // Connect zoom/pan signals for linked view
     connect(cell.imageWidget, &ZoomableImageWidget::zoomChanged,
@@ -1150,6 +1167,26 @@ QImage ComparePanel::imageForCompare(int cellIndex) const
     return baseImage.scaled(firstBaseImage.size(),
                             Qt::IgnoreAspectRatio,
                             Qt::SmoothTransformation);
+}
+
+void ComparePanel::showImageContextMenuForCell(QWidget *cellContainer,
+                                               QWidget *sourceWidget,
+                                               const QPoint &pos)
+{
+    if (!cellContainer || !sourceWidget) {
+        return;
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        if (m_cells[i].container != cellContainer) {
+            continue;
+        }
+
+        ImageContextMenu::showMenu(m_cells[i].imagePath,
+                                   sourceWidget->mapToGlobal(pos),
+                                   this);
+        return;
+    }
 }
 
 // ---- Zoom/pan synchronization ----

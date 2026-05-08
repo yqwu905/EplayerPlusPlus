@@ -5,6 +5,8 @@
 #include <QImage>
 #include <QPixmap>
 
+class QContextMenuEvent;
+
 /**
  * @brief Widget displaying a single image thumbnail with filename.
  *
@@ -72,6 +74,7 @@ signals:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     void enterEvent(QEnterEvent *event) override;
     void leaveEvent(QEvent *event) override;
 
