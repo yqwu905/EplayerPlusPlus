@@ -295,6 +295,8 @@ void tst_BrowsePanel::altClick_exactVsFuzzyFileNameMatch()
 
     auto *fuzzyCheckBox = panel.findChild<QCheckBox *>("fuzzyFileNameCheckBox");
     QVERIFY(fuzzyCheckBox != nullptr);
+    QVERIFY(fuzzyCheckBox->isVisibleTo(&panel));
+    QCOMPARE(fuzzyCheckBox->text(), QStringLiteral("模糊匹配"));
     QVERIFY(!fuzzyCheckBox->isChecked());
     fuzzyCheckBox->setChecked(true);
 
