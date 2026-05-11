@@ -546,12 +546,11 @@ void BrowsePanel::setupUi()
     m_categoryFilterCombo->setFixedWidth(112);
     optionsRow->addWidget(m_categoryFilterCombo);
 
-    m_fuzzyFileNameCheckBox = new QCheckBox(tr("Fuzzy filename match"), this);
+    m_fuzzyFileNameCheckBox = new QCheckBox(tr("模糊匹配"), this);
     m_fuzzyFileNameCheckBox->setObjectName(QStringLiteral("fuzzyFileNameCheckBox"));
     m_fuzzyFileNameCheckBox->setChecked(false);
     m_fuzzyFileNameCheckBox->setToolTip(
-        tr("When enabled, Alt+Click will match the closest filename in each compared folder."));
-    m_fuzzyFileNameCheckBox->setVisible(false);
+        tr("开启后，Alt+点击会按最接近的文件名匹配其他对比文件夹中的图片。"));
     optionsRow->addWidget(m_fuzzyFileNameCheckBox);
     optionsRow->addStretch();
 
@@ -582,6 +581,10 @@ void BrowsePanel::setupUi()
         "QLabel#compareColumnProgressLabel { color: #687385; font-size: 11px; background: transparent; border: none; }"
         "QLabel#browseFilterLabel { color: #4B5563; font-size: 12px; background: transparent; border: none; }"
         "QLineEdit#fileNameFilterEdit, QComboBox#categoryFilterComboBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; color: #243041; }"
+        "QCheckBox#fuzzyFileNameCheckBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 10px; color: #243041; }"
+        "QCheckBox#fuzzyFileNameCheckBox::indicator { width: 0px; height: 0px; }"
+        "QCheckBox#fuzzyFileNameCheckBox:hover { background: #F8FAFC; border-color: #C7D2E1; }"
+        "QCheckBox#fuzzyFileNameCheckBox:checked { background: #EAF3FF; border-color: #2D7FF9; color: #1F5FBF; }"
         "QListView#compareColumnListView { background-color: #FFFFFF; border: none; outline: none; }");
 }
 
