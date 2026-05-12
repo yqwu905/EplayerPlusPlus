@@ -8,6 +8,7 @@
 #include <QtConcurrent>
 #include <QMetaObject>
 
+#include <algorithm>
 #include <utility>
 
 namespace
@@ -77,8 +78,11 @@ void ImageListModel::setFolder(const QString &folderPath)
 
     beginResetModel();
     m_folderPath = folderPath;
+    m_normalizedFolderPath = ImageMarkManager::normalizeFolderPath(folderPath);
     m_imagePaths.clear();
     m_pathToIndex.clear();
+    m_markKeys.clear();
+    m_markKeyToIndex.clear();
     m_fileNames.clear();
     m_fileNameToIndex.clear();
     m_filteredSourceRows.clear();
@@ -88,7 +92,7 @@ void ImageListModel::setFolder(const QString &folderPath)
     endResetModel();
 
     if (m_markManager) {
-        m_markManager->loadFolder(folderPath);
+        m_markManager->loadFolder(m_normalizedFolderPath);
     }
 
     startScan(folderPath);
@@ -111,6 +115,8 @@ void ImageListModel::refresh()
     beginResetModel();
     m_imagePaths.clear();
     m_pathToIndex.clear();
+    m_markKeys.clear();
+    m_markKeyToIndex.clear();
     m_fileNames.clear();
     m_fileNameToIndex.clear();
     m_filteredSourceRows.clear();
@@ -297,7 +303,7 @@ void ImageListModel::setImageMarkManager(ImageMarkManager *manager)
         connect(m_markManager, &ImageMarkManager::markChanged,
                 this, &ImageListModel::onMarkChanged);
         if (!m_folderPath.isEmpty()) {
-            m_markManager->loadFolder(m_folderPath);
+            m_markManager->loadFolder(m_normalizedFolderPath);
         }
     }
 
@@ -323,7 +329,9 @@ bool ImageListModel::setMarkAt(int index, const QString &category)
         return false;
     }
 
-    return m_markManager->setMarkForImage(m_folderPath, m_imagePaths.at(sourceIndex), category);
+    return m_markManager->setMarkForImageKey(m_normalizedFolderPath,
+                                             m_markKeys.at(sourceIndex),
+                                             category);
 }
 
 void ImageListModel::setImageLoader(ImageLoader *loader)
@@ -423,14 +431,13 @@ void ImageListModel::onMarkChanged(const QString &folderPath,
 {
     Q_UNUSED(category);
 
-    const QString currentFolder = QDir::cleanPath(QFileInfo(m_folderPath).absoluteFilePath());
-    const QString changedFolder = QDir::cleanPath(QFileInfo(folderPath).absoluteFilePath());
-    if (currentFolder != changedFolder) {
+    const QString changedFolder = ImageMarkManager::normalizeFolderPath(folderPath);
+    if (m_normalizedFolderPath != changedFolder) {
         return;
     }
 
-    const QString normalizedImage = QDir::cleanPath(QFileInfo(imagePath).absoluteFilePath());
-    int idx = m_pathToIndex.value(normalizedImage, -1);
+    const QString markKey = ImageMarkManager::imageKeyForPath(m_normalizedFolderPath, imagePath);
+    int idx = m_markKeyToIndex.value(markKey, -1);
     if (idx < 0) {
         idx = m_pathToIndex.value(imagePath, -1);
     }
@@ -438,18 +445,7 @@ void ImageListModel::onMarkChanged(const QString &folderPath,
         return;
     }
 
-    if (!m_categoryFilter.isEmpty()) {
-        applyFilters();
-        return;
-    }
-
-    const int row = rowForSourceIndex(idx);
-    if (row < 0) {
-        return;
-    }
-
-    QModelIndex mi = this->index(row);
-    emit dataChanged(mi, mi, {MarkRole});
+    updateFilteredRowForSourceIndex(idx);
 }
 
 void ImageListModel::startScan(const QString &path)
@@ -508,6 +504,8 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
     m_imagePaths.reserve(m_imagePaths.size() + batch.size());
     m_fileNames.reserve(m_fileNames.size() + batch.size());
     m_pathToIndex.reserve(m_pathToIndex.size() + batch.size());
+    m_markKeys.reserve(m_markKeys.size() + batch.size());
+    m_markKeyToIndex.reserve(m_markKeyToIndex.size() + batch.size());
     m_fileNameToIndex.reserve(m_fileNameToIndex.size() + batch.size());
     m_filteredSourceRows.reserve(m_filteredSourceRows.size() + batch.size());
 
@@ -518,7 +516,12 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
         for (const QString &path : batch) {
             const int index = m_imagePaths.size();
             const QString fileName = QFileInfo(path).fileName();
+            const QString markKey = ImageMarkManager::imageKeyForPath(m_normalizedFolderPath, path);
             m_pathToIndex.insert(path, index);
+            m_markKeys.append(markKey);
+            if (!markKey.isEmpty()) {
+                m_markKeyToIndex.insert(markKey, index);
+            }
             if (!m_fileNameToIndex.contains(fileName)) {
                 m_fileNameToIndex.insert(fileName, index);
             }
@@ -530,7 +533,12 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
         for (const QString &path : batch) {
             const int sourceIndex = m_imagePaths.size();
             const QString fileName = QFileInfo(path).fileName();
+            const QString markKey = ImageMarkManager::imageKeyForPath(m_normalizedFolderPath, path);
             m_pathToIndex.insert(path, sourceIndex);
+            m_markKeys.append(markKey);
+            if (!markKey.isEmpty()) {
+                m_markKeyToIndex.insert(markKey, sourceIndex);
+            }
             if (!m_fileNameToIndex.contains(fileName)) {
                 m_fileNameToIndex.insert(fileName, sourceIndex);
             }
@@ -661,11 +669,53 @@ void ImageListModel::applyFilters()
     emit selectionChanged();
 }
 
+void ImageListModel::updateFilteredRowForSourceIndex(int sourceIndex)
+{
+    if (sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+        return;
+    }
+
+    if (!hasActiveFilters()) {
+        const QModelIndex mi = index(sourceIndex);
+        emit dataChanged(mi, mi, {MarkRole});
+        return;
+    }
+
+    const int oldRow = m_filteredSourceRows.indexOf(sourceIndex);
+    const bool matches = sourceImageMatchesFilters(sourceIndex);
+
+    if (oldRow >= 0 && !matches) {
+        beginRemoveRows(QModelIndex(), oldRow, oldRow);
+        m_filteredSourceRows.removeAt(oldRow);
+        endRemoveRows();
+        emit selectionChanged();
+        return;
+    }
+
+    if (oldRow < 0 && matches) {
+        const auto insertIt = std::lower_bound(m_filteredSourceRows.cbegin(),
+                                               m_filteredSourceRows.cend(),
+                                               sourceIndex);
+        const int newRow = static_cast<int>(std::distance(m_filteredSourceRows.cbegin(),
+                                                          insertIt));
+        beginInsertRows(QModelIndex(), newRow, newRow);
+        m_filteredSourceRows.insert(newRow, sourceIndex);
+        endInsertRows();
+        emit selectionChanged();
+        return;
+    }
+
+    if (oldRow >= 0) {
+        const QModelIndex mi = index(oldRow);
+        emit dataChanged(mi, mi, {MarkRole});
+    }
+}
+
 QString ImageListModel::markAtSourceIndex(int sourceIndex) const
 {
     if (!m_markManager || sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
         return QString();
     }
 
-    return m_markManager->markForImage(m_folderPath, m_imagePaths.at(sourceIndex));
+    return m_markManager->markForImageKey(m_normalizedFolderPath, m_markKeys.at(sourceIndex));
 }

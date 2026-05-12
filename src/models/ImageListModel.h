@@ -200,11 +200,15 @@ private:
     bool sourceImageMatchesFilters(int sourceIndex) const;
     void rebuildFilteredRows();
     void applyFilters();
+    void updateFilteredRowForSourceIndex(int sourceIndex);
     QString markAtSourceIndex(int sourceIndex) const;
 
     QString m_folderPath;
+    QString m_normalizedFolderPath;
     QStringList m_imagePaths;
     QHash<QString, int> m_pathToIndex;   // path -> index for O(1) lookup
+    QStringList m_markKeys;
+    QHash<QString, int> m_markKeyToIndex;
     QStringList m_fileNames;
     QHash<QString, int> m_fileNameToIndex;
     QList<int> m_filteredSourceRows;

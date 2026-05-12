@@ -36,6 +36,7 @@ private slots:
     void testDataIsSelectedRole();
     void testDataMarkRole_loadsExistingJson();
     void testFilters_fileNameAndCategory();
+    void testCategoryFilter_updatesIncrementallyOnMarkChange();
 
     void testSelection();
     void testSelection_outOfRange();
@@ -345,6 +346,48 @@ void tst_ImageListModel::testFilters_fileNameAndCategory()
     QCOMPARE(model.imageCount(), 2);
     QVERIFY(model.indexOfFileName(QStringLiteral("alpha_cat.png")) >= 0);
     QVERIFY(model.indexOfFileName(QStringLiteral("alpha_dog.png")) >= 0);
+}
+
+void tst_ImageListModel::testCategoryFilter_updatesIncrementallyOnMarkChange()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QImage img(10, 10, QImage::Format_ARGB32);
+    img.fill(Qt::green);
+    const QString firstPath = dir.filePath("first.png");
+    const QString secondPath = dir.filePath("second.png");
+    QVERIFY(img.save(firstPath));
+    QVERIFY(img.save(secondPath));
+
+    ImageMarkManager manager;
+    ImageListModel model;
+    model.setImageMarkManager(&manager);
+    setFolderAndWait(model, dir.path());
+
+    model.setCategoryFilter(QStringLiteral("A"));
+    QCOMPARE(model.imageCount(), 0);
+
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy insertSpy(&model, &QAbstractItemModel::rowsInserted);
+    QSignalSpy removeSpy(&model, &QAbstractItemModel::rowsRemoved);
+
+    QVERIFY(manager.setMarkForImage(dir.path(), firstPath, "A"));
+    QCOMPARE(model.imageCount(), 1);
+    QCOMPARE(model.fileNameAt(0), QStringLiteral("first.png"));
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(insertSpy.count(), 1);
+
+    QVERIFY(model.setMarkAt(0, QString()));
+    QCOMPARE(model.imageCount(), 0);
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(removeSpy.count(), 1);
+
+    QVERIFY(manager.setMarkForImage(dir.path(), secondPath, "A"));
+    QCOMPARE(model.imageCount(), 1);
+    QCOMPARE(model.fileNameAt(0), QStringLiteral("second.png"));
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(insertSpy.count(), 2);
 }
 
 void tst_ImageListModel::testSelection()
