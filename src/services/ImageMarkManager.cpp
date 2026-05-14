@@ -1,9 +1,17 @@
 #include "ImageMarkManager.h"
 
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
+#include <QFuture>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStandardPaths>
+#include <QThread>
+#include <QtConcurrent>
 
 namespace
 {
@@ -13,6 +21,65 @@ const QString kVersionKey = QStringLiteral("version");
 const QString kMarksKey = QStringLiteral("marks");
 const QString kPathKey = QStringLiteral("path");
 const QString kCategoryKey = QStringLiteral("category");
+const QString kTimestampKey = QStringLiteral("timestamp");
+constexpr qint64 kUntimedJournalEntryTimestamp = 0;
+constexpr int kSharedJournalWriteTimeoutMs = 250;
+constexpr int kSharedJournalPollIntervalMs = 5;
+
+bool appendNormalizedJournalEntry(const QString &journalPath,
+                                  const QString &normalizedImageKey,
+                                  const QString &category,
+                                  qint64 timestamp)
+{
+    if (journalPath.isEmpty() || normalizedImageKey.isEmpty()) {
+        return false;
+    }
+
+    QJsonObject entry;
+    entry.insert(kVersionKey, 2);
+    entry.insert(kPathKey, normalizedImageKey);
+    entry.insert(kCategoryKey, category);
+    entry.insert(kTimestampKey, timestamp);
+
+    QByteArray line = QJsonDocument(entry).toJson(QJsonDocument::Compact);
+    line.append('\n');
+
+    QFile file(journalPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        return false;
+    }
+
+    return file.write(line) == line.size() && file.flush();
+}
+
+void persistJournalEntryWithFallback(const QString &sharedJournalPath,
+                                     const QString &localJournalPath,
+                                     const QString &normalizedImageKey,
+                                     const QString &category,
+                                     qint64 timestamp)
+{
+    QFuture<bool> sharedWrite = QtConcurrent::run([sharedJournalPath,
+                                                   normalizedImageKey,
+                                                   category,
+                                                   timestamp]() {
+        return appendNormalizedJournalEntry(sharedJournalPath,
+                                            normalizedImageKey,
+                                            category,
+                                            timestamp);
+    });
+
+    QElapsedTimer timer;
+    timer.start();
+    while (!sharedWrite.isFinished() && timer.elapsed() < kSharedJournalWriteTimeoutMs) {
+        QThread::msleep(kSharedJournalPollIntervalMs);
+    }
+
+    if (sharedWrite.isFinished() && sharedWrite.result()) {
+        return;
+    }
+
+    appendNormalizedJournalEntry(localJournalPath, normalizedImageKey, category, timestamp);
+}
 }
 
 ImageMarkManager::ImageMarkManager(QObject *parent)
@@ -20,7 +87,12 @@ ImageMarkManager::ImageMarkManager(QObject *parent)
 {
 }
 
-ImageMarkManager::~ImageMarkManager() = default;
+ImageMarkManager::~ImageMarkManager()
+{
+    for (QFuture<void> &future : m_pendingWrites) {
+        future.waitForFinished();
+    }
+}
 
 QStringList ImageMarkManager::categories()
 {
@@ -62,8 +134,10 @@ bool ImageMarkManager::loadFolder(const QString &folderPath)
     folderMarks.loaded = true;
     folderMarks.marks.clear();
 
-    return loadSnapshot(normalizedFolder, folderMarks) &&
-           loadJournal(normalizedFolder, folderMarks);
+    loadSnapshot(normalizedFolder, folderMarks);
+    loadJournal(normalizedFolder, folderMarks);
+
+    return true;
 }
 
 QString ImageMarkManager::markForImage(const QString &folderPath,
@@ -92,7 +166,12 @@ QString ImageMarkManager::markForImageKey(const QString &folderPath,
         return QString();
     }
 
-    return folderIt->marks.value(key);
+    const auto markIt = folderIt->marks.constFind(key);
+    if (markIt == folderIt->marks.constEnd()) {
+        return QString();
+    }
+
+    return markIt->category;
 }
 
 bool ImageMarkManager::setMarkForImage(const QString &folderPath,
@@ -120,28 +199,25 @@ bool ImageMarkManager::setMarkForImageKey(const QString &folderPath,
 
     loadFolder(normalizedFolder);
     FolderMarks &folderMarks = m_folderMarks[normalizedFolder];
-    const QString previous = folderMarks.marks.value(key);
+    const auto previousIt = folderMarks.marks.constFind(key);
+    const QString previous = previousIt == folderMarks.marks.constEnd()
+        ? QString()
+        : previousIt->category;
+    const qint64 timestamp = nextJournalTimestamp();
 
     if (category.isEmpty()) {
-        if (!folderMarks.marks.remove(key)) {
+        if (previousIt == folderMarks.marks.constEnd() || previous.isEmpty()) {
             return false;
         }
+        folderMarks.marks.insert(key, MarkEntry{QString(), timestamp});
     } else {
         if (previous == category) {
             return false;
         }
-        folderMarks.marks.insert(key, category);
+        folderMarks.marks.insert(key, MarkEntry{category, timestamp});
     }
 
-    if (!appendJournalEntry(normalizedFolder, key, category)) {
-        if (previous.isEmpty()) {
-            folderMarks.marks.remove(key);
-        } else {
-            folderMarks.marks.insert(key, previous);
-        }
-        return false;
-    }
-
+    scheduleJournalWrite(normalizedFolder, key, category, timestamp);
     emit markChanged(normalizedFolder, QDir(normalizedFolder).filePath(key), category);
     return true;
 }
@@ -213,17 +289,24 @@ QString ImageMarkManager::imageKeyFromNormalizedPath(const QString &normalizedFo
 
 void ImageMarkManager::applyStoredMark(FolderMarks &folderMarks,
                                        const QString &imageKey,
-                                       const QString &category)
+                                       const QString &category,
+                                       qint64 timestamp)
 {
     const QString key = normalizeStoredKey(imageKey);
     if (key.isEmpty()) {
         return;
     }
 
+    const auto existing = folderMarks.marks.constFind(key);
+    if (existing != folderMarks.marks.constEnd() &&
+        existing->timestamp > timestamp) {
+        return;
+    }
+
     if (category.isEmpty()) {
-        folderMarks.marks.remove(key);
+        folderMarks.marks.insert(key, MarkEntry{QString(), timestamp});
     } else if (isValidCategory(category)) {
-        folderMarks.marks.insert(key, category);
+        folderMarks.marks.insert(key, MarkEntry{category, timestamp});
     }
 }
 
@@ -247,7 +330,10 @@ bool ImageMarkManager::loadSnapshot(const QString &normalizedFolderPath,
     const QJsonObject root = document.object();
     const QJsonObject marks = root.value(kMarksKey).toObject();
     for (auto it = marks.constBegin(); it != marks.constEnd(); ++it) {
-        applyStoredMark(folderMarks, it.key(), it.value().toString());
+        applyStoredMark(folderMarks,
+                        it.key(),
+                        it.value().toString(),
+                        kUntimedJournalEntryTimestamp);
     }
 
     return true;
@@ -256,7 +342,18 @@ bool ImageMarkManager::loadSnapshot(const QString &normalizedFolderPath,
 bool ImageMarkManager::loadJournal(const QString &normalizedFolderPath,
                                    FolderMarks &folderMarks) const
 {
-    QFile file(markJournalPath(normalizedFolderPath));
+    loadJournalFile(markJournalPath(normalizedFolderPath), folderMarks);
+    return loadJournalFile(localMarkJournalPath(normalizedFolderPath, false), folderMarks);
+}
+
+bool ImageMarkManager::loadJournalFile(const QString &journalPath,
+                                       FolderMarks &folderMarks) const
+{
+    if (journalPath.isEmpty()) {
+        return true;
+    }
+
+    QFile file(journalPath);
     if (!file.exists()) {
         return true;
     }
@@ -279,28 +376,89 @@ bool ImageMarkManager::loadJournal(const QString &normalizedFolderPath,
         const QJsonObject entry = document.object();
         applyStoredMark(folderMarks,
                         entry.value(kPathKey).toString(),
-                        entry.value(kCategoryKey).toString());
+                        entry.value(kCategoryKey).toString(),
+                        entry.value(kTimestampKey).toVariant().toLongLong());
     }
 
     return true;
 }
 
-bool ImageMarkManager::appendJournalEntry(const QString &normalizedFolderPath,
-                                          const QString &imageKey,
-                                          const QString &category) const
+QString ImageMarkManager::localMarkJournalPath(const QString &normalizedFolderPath,
+                                               bool createDirectory) const
 {
-    QJsonObject entry;
-    entry.insert(kVersionKey, 1);
-    entry.insert(kPathKey, normalizeStoredKey(imageKey));
-    entry.insert(kCategoryKey, category);
-
-    QByteArray line = QJsonDocument(entry).toJson(QJsonDocument::Compact);
-    line.append('\n');
-
-    QFile file(markJournalPath(normalizedFolderPath));
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-        return false;
+    if (normalizedFolderPath.isEmpty()) {
+        return QString();
     }
 
-    return file.write(line) == line.size() && file.flush();
+    const QByteArray folderHash = QCryptographicHash::hash(
+        normalizedFolderPath.toUtf8(),
+        QCryptographicHash::Sha256).toHex();
+
+    QStringList roots;
+    const QString appDataRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (!appDataRoot.isEmpty()) {
+        roots.append(appDataRoot);
+    }
+    roots.append(QDir(QDir::tempPath()).filePath(QStringLiteral("ImageCompare")));
+
+    QString fallbackPath;
+    for (const QString &root : roots) {
+        const QString storeDir = QDir(root).filePath(
+            QStringLiteral("image-marks/%1").arg(QString::fromLatin1(folderHash)));
+        const QString journalPath = QDir(storeDir).filePath(kMarkJournalFileName);
+        if (!createDirectory) {
+            if (QFileInfo::exists(journalPath)) {
+                return journalPath;
+            }
+            if (fallbackPath.isEmpty()) {
+                fallbackPath = journalPath;
+            }
+            continue;
+        }
+        if (QDir().mkpath(storeDir)) {
+            return journalPath;
+        }
+    }
+
+    return fallbackPath;
+}
+
+void ImageMarkManager::scheduleJournalWrite(const QString &normalizedFolderPath,
+                                            const QString &imageKey,
+                                            const QString &category,
+                                            qint64 timestamp)
+{
+    pruneFinishedWrites();
+
+    const QString sharedJournalPath = markJournalPath(normalizedFolderPath);
+    const QString localJournalPath = localMarkJournalPath(normalizedFolderPath, true);
+    const QString normalizedKey = normalizeStoredKey(imageKey);
+
+    m_pendingWrites.append(QtConcurrent::run([sharedJournalPath,
+                                              localJournalPath,
+                                              normalizedKey,
+                                              category,
+                                              timestamp]() {
+        persistJournalEntryWithFallback(sharedJournalPath,
+                                        localJournalPath,
+                                        normalizedKey,
+                                        category,
+                                        timestamp);
+    }));
+}
+
+qint64 ImageMarkManager::nextJournalTimestamp()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_lastJournalTimestamp = qMax(now, m_lastJournalTimestamp + 1);
+    return m_lastJournalTimestamp;
+}
+
+void ImageMarkManager::pruneFinishedWrites()
+{
+    for (int i = m_pendingWrites.size() - 1; i >= 0; --i) {
+        if (m_pendingWrites.at(i).isFinished()) {
+            m_pendingWrites.removeAt(i);
+        }
+    }
 }

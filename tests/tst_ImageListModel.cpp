@@ -64,6 +64,18 @@ private:
     QString m_emptyDir;
 };
 
+namespace
+{
+QString reloadedMark(const QString &folderPath, const QString &imagePath)
+{
+    ImageMarkManager reloaded;
+    if (!reloaded.loadFolder(folderPath)) {
+        return QString();
+    }
+    return reloaded.markForImage(folderPath, imagePath);
+}
+}
+
 void tst_ImageListModel::setFolderAndWait(ImageListModel &model, const QString &folder)
 {
     QSignalSpy spy(&model, &ImageListModel::folderReady);
@@ -292,6 +304,7 @@ void tst_ImageListModel::testDataMarkRole_loadsExistingJson()
 
     ImageMarkManager writer;
     QVERIFY(writer.setMarkForImage(dir.path(), imagePath, "C"));
+    QTRY_COMPARE(reloadedMark(dir.path(), imagePath), QStringLiteral("C"));
 
     ImageMarkManager reader;
     ImageListModel model;
@@ -483,9 +496,7 @@ void tst_ImageListModel::testSetMarkAt_persistsAndEmitsDataChanged()
     QCOMPARE(model.markAt(0), QStringLiteral("D"));
     QVERIFY(dataSpy.count() >= 1);
 
-    ImageMarkManager reloaded;
-    QVERIFY(reloaded.loadFolder(dir.path()));
-    QCOMPARE(reloaded.markForImage(dir.path(), imagePath), QStringLiteral("D"));
+    QTRY_COMPARE(reloadedMark(dir.path(), imagePath), QStringLiteral("D"));
 }
 
 void tst_ImageListModel::testRowCount()

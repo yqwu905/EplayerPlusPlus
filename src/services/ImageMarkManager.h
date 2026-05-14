@@ -1,13 +1,14 @@
 #ifndef IMAGEMARKMANAGER_H
 #define IMAGEMARKMANAGER_H
 
+#include <QFuture>
 #include <QObject>
 #include <QHash>
 #include <QString>
 #include <QStringList>
 
 /**
- * @brief Persists per-image A/B/C/D marks in a JSON file inside each folder.
+ * @brief Persists per-image A/B/C/D marks without requiring image-folder writes.
  */
 class ImageMarkManager : public QObject
 {
@@ -42,9 +43,14 @@ signals:
                      const QString &category);
 
 private:
+    struct MarkEntry {
+        QString category;
+        qint64 timestamp = 0;
+    };
+
     struct FolderMarks {
         bool loaded = false;
-        QHash<QString, QString> marks;
+        QHash<QString, MarkEntry> marks;
     };
 
     static QString normalizePath(const QString &path);
@@ -53,14 +59,23 @@ private:
                                               const QString &normalizedImage);
     static void applyStoredMark(FolderMarks &folderMarks,
                                 const QString &imageKey,
-                                const QString &category);
+                                const QString &category,
+                                qint64 timestamp);
     bool loadSnapshot(const QString &normalizedFolderPath, FolderMarks &folderMarks) const;
     bool loadJournal(const QString &normalizedFolderPath, FolderMarks &folderMarks) const;
-    bool appendJournalEntry(const QString &normalizedFolderPath,
-                            const QString &imageKey,
-                            const QString &category) const;
+    bool loadJournalFile(const QString &journalPath, FolderMarks &folderMarks) const;
+    QString localMarkJournalPath(const QString &normalizedFolderPath,
+                                 bool createDirectory) const;
+    void scheduleJournalWrite(const QString &normalizedFolderPath,
+                              const QString &imageKey,
+                              const QString &category,
+                              qint64 timestamp);
+    qint64 nextJournalTimestamp();
+    void pruneFinishedWrites();
 
     QHash<QString, FolderMarks> m_folderMarks;
+    QList<QFuture<void>> m_pendingWrites;
+    qint64 m_lastJournalTimestamp = 0;
 };
 
 #endif // IMAGEMARKMANAGER_H
