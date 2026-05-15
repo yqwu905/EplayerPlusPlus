@@ -39,7 +39,8 @@ private slots:
     void resizeToFirstImage_scalesPreviewForSwitchedSecondaryImage();
     void markButton_clickPersistsSingleImage();
     void markButton_ctrlClickMarksAllCurrentImages();
-    void markShortcut_marksAllCurrentImages();
+    void markShortcut_marksCurrentCellOnly();
+    void markShortcut_ctrlMarksAllCurrentImages();
 
 private:
     static QString createImageInFolder(const QString &folderPath, const QString &name, const QColor &color);
@@ -836,7 +837,7 @@ void tst_ComparePanel::markButton_ctrlClickMarksAllCurrentImages()
     }
 }
 
-void tst_ComparePanel::markShortcut_marksAllCurrentImages()
+void tst_ComparePanel::markShortcut_marksCurrentCellOnly()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -864,14 +865,58 @@ void tst_ComparePanel::markShortcut_marksAllCurrentImages()
     }
 
     panel.setSelectedImages(selected);
-    panel.setFocus();
     QCoreApplication::processEvents();
 
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    QTest::mouseClick(cells.at(1), Qt::LeftButton);
     QTest::keyClick(&panel, Qt::Key_C);
+
+    QTRY_VERIFY_WITH_TIMEOUT(marks.markForImage(selected.at(0).first,
+                                                selected.at(0).second).isEmpty(),
+                             1000);
+    QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(selected.at(1).first,
+                                                selected.at(1).second),
+                              QStringLiteral("C"),
+                              1000);
+}
+
+void tst_ComparePanel::markShortcut_ctrlMarksAllCurrentImages()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ImageMarkManager marks;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 3; ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            "img.png",
+            QColor::fromHsv(i * 80, 255, 230));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    QTest::keyClick(&panel, Qt::Key_D, Qt::ControlModifier);
 
     for (const auto &pair : selected) {
         QTRY_COMPARE_WITH_TIMEOUT(marks.markForImage(pair.first, pair.second),
-                                  QStringLiteral("C"),
+                                  QStringLiteral("D"),
                                   1000);
     }
 }

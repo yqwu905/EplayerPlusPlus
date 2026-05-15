@@ -59,6 +59,14 @@ QString colorStyle(const QColor &color)
     return color.name(QColor::HexRgb);
 }
 
+QString compareCellContainerStyle(bool current)
+{
+    return QStringLiteral(
+        "QWidget#compareCellContainer { background-color: #FFFFFF; "
+        "border: 2px solid %1; border-radius: 8px; }")
+        .arg(current ? QStringLiteral("#2D7FF9") : QStringLiteral("transparent"));
+}
+
 QByteArray encodeFolderOrderDragIndex(int index)
 {
     QByteArray payload;
@@ -349,13 +357,22 @@ void ComparePanel::setupUi()
     mainLayout->addWidget(scrollArea);
 
     for (const QString &category : ImageMarkManager::categories()) {
-        auto *markAction = new QAction(this);
-        markAction->setShortcut(QKeySequence(category));
-        markAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-        markAction->setToolTip(tr("Mark compared images as %1").arg(category));
-        addAction(markAction);
-        connect(markAction, &QAction::triggered, this, [this, category]() {
-            markAllCurrentImages(category);
+        auto *markCurrentAction = new QAction(this);
+        markCurrentAction->setShortcut(QKeySequence(category));
+        markCurrentAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        markCurrentAction->setToolTip(tr("Mark current image as %1").arg(category));
+        addAction(markCurrentAction);
+        connect(markCurrentAction, &QAction::triggered, this, [this, category]() {
+            markCurrentImage(category);
+        });
+
+        auto *markAllAction = new QAction(this);
+        markAllAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+%1").arg(category)));
+        markAllAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        markAllAction->setToolTip(tr("Mark all compared images as %1").arg(category));
+        addAction(markAllAction);
+        connect(markAllAction, &QAction::triggered, this, [this, category]() {
+            markAllImagesFromShortcut(category);
         });
     }
 }
@@ -420,6 +437,12 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
     m_gridLayout->removeWidget(m_cells[removeIndex].container);
     delete m_cells[removeIndex].container;
     m_cells.removeAt(removeIndex);
+    if (m_currentCellIndex == removeIndex) {
+        m_currentCellIndex = -1;
+        setCurrentCellIndex(qMin(removeIndex, m_cells.size() - 1));
+    } else if (m_currentCellIndex > removeIndex) {
+        --m_currentCellIndex;
+    }
     rebuildGrid();
 }
 
@@ -442,6 +465,11 @@ void ComparePanel::onFoldersSwapped(int firstIndex, int secondIndex)
     };
 
     m_cells.swapItemsAt(firstIndex, secondIndex);
+    if (m_currentCellIndex == firstIndex) {
+        m_currentCellIndex = secondIndex;
+    } else if (m_currentCellIndex == secondIndex) {
+        m_currentCellIndex = firstIndex;
+    }
 
     for (auto &cell : m_cells) {
         if (cell.toleranceSourceIndex >= 0) {
@@ -501,6 +529,12 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
         updateMarkButtonsForCell(i);
     }
 
+    if (m_currentCellIndex < 0 ||
+        m_currentCellIndex >= m_cells.size() ||
+        m_cells[m_currentCellIndex].imagePath.isEmpty()) {
+        setCurrentCellIndex(currentCellIndex());
+    }
+
     if (firstImagePathChanged) {
         refreshCellsUsingFirstImage();
     }
@@ -523,6 +557,9 @@ bool ComparePanel::eventFilter(QObject *watched, QEvent *event)
     }
 
     const int dragTargetIndex = findCellByDragObject(watched);
+    if (dragTargetIndex >= 0 && event->type() == QEvent::MouseButtonPress) {
+        setCurrentCellIndex(dragTargetIndex);
+    }
     if (dragTargetIndex >= 0) {
         if (event->type() == QEvent::DragEnter) {
             auto *dragEvent = static_cast<QDragEnterEvent *>(event);
@@ -593,10 +630,16 @@ void ComparePanel::keyPressEvent(QKeyEvent *event)
         return;
     }
 
-    if (event->modifiers() == Qt::NoModifier) {
-        const QString category = QKeySequence(event->key()).toString().toUpper();
-        if (ImageMarkManager::isValidCategory(category)) {
-            markAllCurrentImages(category);
+    const QString category = QKeySequence(event->key()).toString().toUpper();
+    if (ImageMarkManager::isValidCategory(category)) {
+        const Qt::KeyboardModifiers modifiers = event->modifiers();
+        if (modifiers == Qt::NoModifier) {
+            markCurrentImage(category);
+            event->accept();
+            return;
+        }
+        if (modifiers == Qt::ControlModifier) {
+            markAllImagesFromShortcut(category);
             event->accept();
             return;
         }
@@ -614,10 +657,8 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
     // ---- Fluent 2 card container ----
     cell.container = new QWidget(m_gridContainer);
-    cell.container->setStyleSheet(
-        "QWidget#compareCellContainer { background-color: #FFFFFF; "
-        "border: none; border-radius: 8px; }");
     cell.container->setObjectName("compareCellContainer");
+    cell.container->setStyleSheet(compareCellContainerStyle(false));
     cell.container->setAcceptDrops(true);
     cell.container->installEventFilter(this);
     auto *cellLayout = new QVBoxLayout(cell.container);
@@ -901,12 +942,14 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
             "}");
 
         connect(button, &QPushButton::pressed, this, [this, cellIndex, targetIndex]() {
+            setCurrentCellIndex(cellIndex);
             onComparePressed(cellIndex, targetIndex);
         });
         connect(button, &QPushButton::released, this, [this, cellIndex, targetIndex]() {
             onCompareReleased(cellIndex, targetIndex);
         });
         connect(button, &QPushButton::clicked, this, [this, cellIndex, targetIndex]() {
+            setCurrentCellIndex(cellIndex);
             onCompareClicked(cellIndex, targetIndex);
         });
 
@@ -958,6 +1001,8 @@ void ComparePanel::setupMarkButtonsForCell(int cellIndex)
             if (cellIndex < 0) {
                 return;
             }
+
+            setCurrentCellIndex(cellIndex);
 
             const QString targetCategory = (markForCell(cellIndex) == category)
                 ? QString()
@@ -1048,6 +1093,28 @@ void ComparePanel::markCell(int cellIndex, const QString &category)
     m_markManager->setMarkForImage(cell.folderPath, cell.imagePath, category);
 }
 
+void ComparePanel::markCurrentImage(const QString &category)
+{
+    const int cellIndex = currentCellIndex();
+    if (cellIndex < 0) {
+        return;
+    }
+
+    const QString targetCategory = (markForCell(cellIndex) == category)
+        ? QString()
+        : category;
+    markCell(cellIndex, targetCategory);
+}
+
+void ComparePanel::markAllImagesFromShortcut(const QString &category)
+{
+    const int cellIndex = currentCellIndex();
+    const QString targetCategory = (cellIndex >= 0 && markForCell(cellIndex) == category)
+        ? QString()
+        : category;
+    markAllCurrentImages(targetCategory);
+}
+
 void ComparePanel::markAllCurrentImages(const QString &category)
 {
     if (!m_markManager || (!category.isEmpty() && !ImageMarkManager::isValidCategory(category))) {
@@ -1071,6 +1138,49 @@ QString ComparePanel::markForCell(int cellIndex) const
     }
 
     return m_markManager->markForImage(cell.folderPath, cell.imagePath);
+}
+
+int ComparePanel::currentCellIndex() const
+{
+    if (m_currentCellIndex >= 0 &&
+        m_currentCellIndex < m_cells.size() &&
+        !m_cells[m_currentCellIndex].imagePath.isEmpty()) {
+        return m_currentCellIndex;
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        if (!m_cells[i].imagePath.isEmpty()) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+void ComparePanel::setCurrentCellIndex(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) {
+        cellIndex = -1;
+    }
+
+    if (m_currentCellIndex == cellIndex) {
+        return;
+    }
+
+    const int previousIndex = m_currentCellIndex;
+    m_currentCellIndex = cellIndex;
+    updateCurrentCellVisual(previousIndex);
+    updateCurrentCellVisual(m_currentCellIndex);
+}
+
+void ComparePanel::updateCurrentCellVisual(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size() || !m_cells[cellIndex].container) {
+        return;
+    }
+
+    m_cells[cellIndex].container->setStyleSheet(
+        compareCellContainerStyle(cellIndex == m_currentCellIndex));
 }
 
 void ComparePanel::loadImage(int cellIndex)

@@ -143,8 +143,13 @@ private:
     void updateMarkButtonsForCell(int cellIndex);
     void updateAllMarkButtons();
     void markCell(int cellIndex, const QString &category);
+    void markCurrentImage(const QString &category);
+    void markAllImagesFromShortcut(const QString &category);
     void markAllCurrentImages(const QString &category);
     QString markForCell(int cellIndex) const;
+    int currentCellIndex() const;
+    void setCurrentCellIndex(int cellIndex);
+    void updateCurrentCellVisual(int cellIndex);
     void loadImage(int cellIndex);
     void preloadImagesForSelection(const QList<QPair<QString, QString>> &selectedImages);
     void clearImage(int cellIndex);
@@ -196,6 +201,7 @@ private:
     QPoint m_cellDragStartPos;
     QObject *m_cellDragSourceObject = nullptr;
     int m_cellDragSourceIndex = -1;
+    int m_currentCellIndex = -1;
 };
 
 #endif // COMPAREPANEL_H
