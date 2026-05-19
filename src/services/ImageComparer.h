@@ -1,6 +1,7 @@
 #ifndef IMAGECOMPARER_H
 #define IMAGECOMPARER_H
 
+#include <QFuture>
 #include <QImage>
 
 /**
@@ -26,10 +27,30 @@ public:
      * If the images have different sizes, they are aligned at the top-left corner.
      * Pixels in imageB that fall outside imageA's bounds are treated as having
      * difference greater than threshold (red overlay).
+     *
+     * The work is parallelized across rows using QtConcurrent::blockingMap so the
+     * call returns once every worker thread has finished. The call still runs
+     * synchronously on whichever thread invokes it — see ::generateToleranceMapAsync
+     * for a non-blocking variant suitable for use from the GUI thread.
      */
     static QImage generateToleranceMap(const QImage &imageA,
                                        const QImage &imageB,
                                        int threshold = 10);
+
+    /**
+     * @brief Async variant of ::generateToleranceMap.
+     *
+     * Dispatches the synchronous implementation onto the global thread pool via
+     * QtConcurrent::run, returning immediately. The returned QFuture<QImage> will
+     * be completed with the same image that ::generateToleranceMap would have
+     * returned. Use a QFutureWatcher to observe completion without blocking the
+     * GUI thread. The underlying task is not cancellable; callers that need to
+     * discard stale results should track a generation token and check it inside
+     * the watcher slot.
+     */
+    static QFuture<QImage> generateToleranceMapAsync(const QImage &imageA,
+                                                     const QImage &imageB,
+                                                     int threshold = 10);
 
     /**
      * @brief Compute the per-pixel difference value between two colors.
