@@ -520,12 +520,10 @@ void tst_ComparePanel::toleranceMode_compareButtonTogglesTargetImage()
     QCOMPARE(compareToSecondButton->text(), QStringLiteral("2"));
 
     QTest::mouseClick(compareToSecondButton, Qt::LeftButton);
-    QCoreApplication::processEvents();
-    QVERIFY(targetImageWidget->image().pixelColor(0, 0) != QColor(Qt::blue));
+    QTRY_VERIFY(targetImageWidget->image().pixelColor(0, 0) != QColor(Qt::blue));
 
     QTest::mouseClick(compareToSecondButton, Qt::LeftButton);
-    QCoreApplication::processEvents();
-    QCOMPARE(targetImageWidget->image().pixelColor(0, 0), QColor(Qt::blue));
+    QTRY_COMPARE(targetImageWidget->image().pixelColor(0, 0), QColor(Qt::blue));
 }
 
 void tst_ComparePanel::toleranceMode_usesPreviewWhenFullImageIsNotLoaded()
@@ -579,8 +577,7 @@ void tst_ComparePanel::toleranceMode_usesPreviewWhenFullImageIsNotLoaded()
     QCOMPARE(compareToSecondButton->text(), QStringLiteral("2"));
 
     QTest::mouseClick(compareToSecondButton, Qt::LeftButton);
-    QCoreApplication::processEvents();
-    QVERIFY(targetImageWidget->image().pixelColor(0, 0) != QColor(Qt::blue));
+    QTRY_VERIFY(targetImageWidget->image().pixelColor(0, 0) != QColor(Qt::blue));
 }
 
 void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()

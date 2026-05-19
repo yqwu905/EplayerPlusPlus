@@ -35,6 +35,8 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QSignalBlocker>
+#include <QFutureWatcher>
+#include <QPointer>
 
 namespace
 {
@@ -218,7 +220,10 @@ void ComparePanel::setComparisonThreshold(int value)
 
     for (int i = 0; i < m_cells.size(); ++i) {
         if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
-            m_cells[i].cachedToleranceImage = QImage();
+            // No need to wipe cachedToleranceImage here — showToleranceMap
+            // compares cachedToleranceThreshold against the new m_threshold
+            // and triggers an async regeneration when they differ. Any in-flight
+            // job from a previous slider tick is cancelled inside showToleranceMap.
             showToleranceMap(m_cells[i].toleranceSourceIndex, i);
         }
     }
@@ -415,6 +420,7 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
         return;
     }
 
+    cancelToleranceWatcher(m_cells[removeIndex]);
     if (m_cells[removeIndex].container) {
         m_cells[removeIndex].container->removeEventFilter(this);
     }
@@ -472,9 +478,14 @@ void ComparePanel::onFoldersSwapped(int firstIndex, int secondIndex)
     }
 
     for (auto &cell : m_cells) {
+        // Any in-flight tolerance job was started against the pre-swap cell
+        // ordering; cancel it so the result doesn't get applied to the wrong
+        // cell index when it completes.
+        cancelToleranceWatcher(cell);
         if (cell.toleranceSourceIndex >= 0) {
             cell.toleranceSourceIndex = remapIndex(cell.toleranceSourceIndex);
             cell.cachedToleranceImage = QImage();
+            cell.cachedToleranceThreshold = -1;
         }
     }
 
@@ -816,6 +827,7 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 void ComparePanel::clearCells()
 {
     for (auto &cell : m_cells) {
+        cancelToleranceWatcher(cell);
         if (cell.container) {
             cell.container->removeEventFilter(this);
         }
@@ -1188,6 +1200,7 @@ void ComparePanel::loadImage(int cellIndex)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
+    cancelToleranceWatcher(cell);
     cell.previewImage = QImage();
     cell.showingPreview = false;
     if (m_imageLoader) {
@@ -1203,6 +1216,7 @@ void ComparePanel::loadImage(int cellIndex)
             m_imageLoader->requestImage(cell.imagePath);
             cell.hasImage = false;
             cell.cachedToleranceImage = QImage();
+            cell.cachedToleranceThreshold = -1;
             return;
         }
     } else {
@@ -1211,6 +1225,7 @@ void ComparePanel::loadImage(int cellIndex)
     cell.hasImage = !cell.originalImage.isNull();
     cell.showingPreview = false;
     cell.cachedToleranceImage = QImage();     // Invalidate tolerance cache
+    cell.cachedToleranceThreshold = -1;
 
     // Update geometry
     QRect r = cell.imageContainer->rect();
@@ -1246,10 +1261,12 @@ void ComparePanel::clearImage(int cellIndex)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
+    cancelToleranceWatcher(cell);
     cell.imagePath.clear();
     cell.originalImage = QImage();
     cell.previewImage = QImage();
     cell.cachedToleranceImage = QImage();
+    cell.cachedToleranceThreshold = -1;
     cell.hasImage = false;
     cell.showingPreview = false;
     cell.showingToleranceMap = false;
@@ -1305,6 +1322,20 @@ void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
     cell.toleranceSourceIndex = -1;
 }
 
+void ComparePanel::cancelToleranceWatcher(ImageCell &cell)
+{
+    // Bumping the generation makes any in-flight result get dropped when the
+    // watcher's finished slot fires. We also detach the watcher so we don't
+    // try to apply its result; QtConcurrent::run itself isn't cancellable, so
+    // the work keeps running but its output is discarded.
+    ++cell.toleranceGeneration;
+    if (cell.toleranceWatcher) {
+        cell.toleranceWatcher->disconnect();
+        cell.toleranceWatcher->deleteLater();
+        cell.toleranceWatcher = nullptr;
+    }
+}
+
 void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
 {
     if (sourceIndex < 0 || sourceIndex >= m_cells.size()) return;
@@ -1315,20 +1346,60 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
     const QImage targetImage = imageForCompare(targetIndex);
     if (sourceImage.isNull() || targetImage.isNull()) return;
 
-    // Only regenerate the tolerance image if source or threshold changed
-    bool needRegenerate = target.cachedToleranceImage.isNull()
-                          || target.toleranceSourceIndex != sourceIndex;
+    // Fast path: cache is valid for this source/threshold — display immediately
+    // without re-running the comparer.
+    const bool cacheUsable = !target.cachedToleranceImage.isNull()
+                             && target.toleranceSourceIndex == sourceIndex
+                             && target.cachedToleranceThreshold == m_threshold;
 
-    if (needRegenerate) {
-        target.cachedToleranceImage = ImageComparer::generateToleranceMap(
-            sourceImage, targetImage, m_threshold);
+    if (cacheUsable) {
+        target.imageWidget->setImage(target.cachedToleranceImage, false);
+        target.showingToleranceMap = true;
+        target.toleranceSourceIndex = sourceIndex;
+        return;
     }
 
-    if (target.cachedToleranceImage.isNull()) return;
-
-    target.imageWidget->setImage(target.cachedToleranceImage, false);
+    // Mark the intent immediately so click-to-toggle works while the async job
+    // is still running, then dispatch the heavy work off the GUI thread.
     target.showingToleranceMap = true;
     target.toleranceSourceIndex = sourceIndex;
+
+    cancelToleranceWatcher(target);
+
+    const quint64 generation = ++target.toleranceGeneration;
+    const int threshold = m_threshold;
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    target.toleranceWatcher = watcher;
+
+    QPointer<ComparePanel> guard(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished,
+            this, [this, guard, watcher, generation, sourceIndex, targetIndex, threshold]() {
+        watcher->deleteLater();
+        if (!guard) return;
+        if (targetIndex < 0 || targetIndex >= m_cells.size()) return;
+
+        ImageCell &cell = m_cells[targetIndex];
+        // Drop stale results — a newer threshold change or source change has
+        // already superseded this job. The generation token is the single
+        // source of truth for "is this watcher still current".
+        if (cell.toleranceWatcher != watcher) return;
+        if (cell.toleranceGeneration != generation) return;
+        cell.toleranceWatcher = nullptr;
+
+        const QImage result = watcher->result();
+        if (result.isNull()) return;
+
+        cell.cachedToleranceImage = result;
+        cell.cachedToleranceThreshold = threshold;
+        cell.toleranceSourceIndex = sourceIndex;
+
+        if (cell.showingToleranceMap && cell.toleranceSourceIndex == sourceIndex) {
+            cell.imageWidget->setImage(cell.cachedToleranceImage, false);
+        }
+    });
+
+    watcher->setFuture(
+        ImageComparer::generateToleranceMapAsync(sourceImage, targetImage, threshold));
 }
 
 void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)

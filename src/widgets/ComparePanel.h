@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QPoint>
 #include <QSize>
+#include <QFutureWatcher>
 
 class QGridLayout;
 class QSlider;
@@ -127,6 +128,9 @@ private:
         QImage originalImage;
         QImage previewImage;
         QImage cachedToleranceImage;   // Cached tolerance map (full res)
+        int cachedToleranceThreshold = -1;     // Threshold used to build the cache
+        QFutureWatcher<QImage> *toleranceWatcher = nullptr; // In-flight async job
+        quint64 toleranceGeneration = 0;       // Bumped to invalidate in-flight jobs
         bool hasImage = false;
         bool showingPreview = false;
         bool showingToleranceMap = false;
@@ -156,6 +160,7 @@ private:
     void showPreviewImage(int cellIndex, const QImage &preview, bool resetView = false);
     void showOriginalImage(int cellIndex, bool resetView = false);
     void showToleranceMap(int sourceIndex, int targetIndex);
+    void cancelToleranceWatcher(ImageCell &cell);
     void showSourceOnTarget(int sourceIndex, int targetIndex);
     void refreshCellsUsingFirstImage();
     void resizeImageCell(int cellIndex);
