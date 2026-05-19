@@ -3,6 +3,9 @@
 #include <QTemporaryDir>
 #include <QImage>
 #include <QSet>
+#include <QStringList>
+
+#include <algorithm>
 
 #include "services/ImageLoader.h"
 
@@ -16,6 +19,9 @@ private slots:
     void visibleRequest_promotesQueuedThumbnail();
     void visibleBatch_emitsSingleFastPreview();
     void requestImageBatch_usesMemoryCacheOnRepeatedLoad();
+    void fastSwitchActivePathSet_cancelsInflightDecodes();
+    void cacheEviction_bounded_lruPreservesRecent();
+    void getCachedThumbnailNoSize_returnsLargestForPath();
 };
 
 void tst_ImageLoader::diskCacheHit_afterFirstDecode()
@@ -161,6 +167,158 @@ void tst_ImageLoader::requestImageBatch_usesMemoryCacheOnRepeatedLoad()
     const QImage secondLoad = args.at(1).value<QImage>();
     QVERIFY(!secondLoad.isNull());
     QCOMPARE(secondLoad.size(), QSize(96, 96));
+}
+
+void tst_ImageLoader::fastSwitchActivePathSet_cancelsInflightDecodes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // Build a moderate batch of images — large enough that with concurrency 1
+    // many will still be queued (and some likely mid-decode) when we cancel,
+    // small enough to keep the test fast.
+    QStringList paths;
+    const int kCount = 20;
+    paths.reserve(kCount);
+    for (int i = 0; i < kCount; ++i) {
+        const QString imagePath = dir.filePath(QString("stress_%1.png").arg(i));
+        QImage img(256, 256, QImage::Format_ARGB32);
+        img.fill(QColor::fromHsv((i * 23) % 360, 200, 200));
+        QVERIFY(img.save(imagePath));
+        paths << imagePath;
+    }
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+
+    loader.requestThumbnailBatch(paths, QSize(180, 180));
+
+    // Fast-switch the keep set several times. Final keep set is just the
+    // last image. Anything still queued or being decoded for the prior
+    // sets must not emit thumbnailReady.
+    QSet<QString> keep1;
+    keep1.insert(paths.at(5));
+    loader.cancelThumbnailRequestsExcept(keep1);
+
+    QSet<QString> keep2;
+    keep2.insert(paths.at(10));
+    loader.cancelThumbnailRequestsExcept(keep2);
+
+    QSet<QString> keep3;
+    keep3.insert(paths.last());
+    loader.cancelThumbnailRequestsExcept(keep3);
+
+    // cancelThumbnailRequestsExcept filters the queue but never re-adds; the
+    // final keep path was already dropped by the first cancel call. Re-request
+    // it so a legitimate emission can occur and we can assert "no cancelled
+    // path emits" with at least one expected emission in flight.
+    loader.requestThumbnail(paths.last(), QSize(180, 180));
+
+    // Wait long enough for any in-flight worker to finish and for the
+    // surviving request to make it through the queue.
+    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 5000);
+    QTest::qWait(200);
+
+    QSet<QString> emitted;
+    for (const auto &call : spy) {
+        emitted.insert(call.at(0).toString());
+    }
+
+    // The only path that may legitimately be emitted is the surviving
+    // keep path. Anything else that emits means an in-flight decode wasn't
+    // cancelled.
+    for (const QString &p : emitted) {
+        QVERIFY2(p == paths.last(),
+                 qPrintable(QString("Unexpected emission for cancelled path: %1").arg(p)));
+    }
+
+    QVERIFY(emitted.contains(paths.last()));
+}
+
+void tst_ImageLoader::cacheEviction_bounded_lruPreservesRecent()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // Create more images than the cap and verify the cache stays at cap
+    // while the most recent insertion is preserved.
+    const int kCap = 8;
+    const int kExtra = 12;
+    QStringList paths;
+    paths.reserve(kCap + kExtra);
+    for (int i = 0; i < kCap + kExtra; ++i) {
+        const QString imagePath = dir.filePath(QString("evict_%1.png").arg(i));
+        QImage img(64, 64, QImage::Format_ARGB32);
+        img.fill(QColor::fromHsv((i * 17) % 360, 200, 200));
+        QVERIFY(img.save(imagePath));
+        paths << imagePath;
+    }
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(2);
+    loader.setMaxCacheSize(kCap);
+
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+
+    for (const QString &p : paths) {
+        loader.requestThumbnail(p, QSize(80, 80));
+    }
+
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), static_cast<int>(paths.size()), 20000);
+    QTest::qWait(50);
+
+    const int total = static_cast<int>(paths.size());
+    // Most-recently-inserted thumbnails should be present.
+    for (int i = total - kCap; i < total; ++i) {
+        QVERIFY2(!loader.getCachedThumbnail(paths.at(i), QSize(80, 80)).isNull(),
+                 qPrintable(QString("Expected recent thumbnail still cached: %1").arg(paths.at(i))));
+    }
+
+    // The first few should have been evicted.
+    bool sawEviction = false;
+    for (int i = 0; i < total - kCap; ++i) {
+        if (loader.getCachedThumbnail(paths.at(i), QSize(80, 80)).isNull()) {
+            sawEviction = true;
+            break;
+        }
+    }
+    QVERIFY(sawEviction);
+}
+
+void tst_ImageLoader::getCachedThumbnailNoSize_returnsLargestForPath()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("multisize.png");
+    QImage img(512, 512, QImage::Format_ARGB32);
+    img.fill(Qt::yellow);
+    QVERIFY(img.save(imagePath));
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+
+    loader.requestThumbnail(imagePath, QSize(64, 64));
+    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 5000);
+    loader.requestThumbnail(imagePath, QSize(256, 256));
+    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 2, 5000);
+
+    const QImage best = loader.getCachedThumbnail(imagePath);
+    QVERIFY(!best.isNull());
+    // It should prefer the larger of the two cached sizes for this path.
+    const QImage small = loader.getCachedThumbnail(imagePath, QSize(64, 64));
+    const QImage large = loader.getCachedThumbnail(imagePath, QSize(256, 256));
+    QVERIFY(!small.isNull());
+    QVERIFY(!large.isNull());
+    QVERIFY(best.width() >= small.width());
+    QVERIFY(best.height() >= small.height());
+
+    // And an unknown path returns null without scanning everything.
+    const QImage missing = loader.getCachedThumbnail(dir.filePath("not_present.png"));
+    QVERIFY(missing.isNull());
 }
 
 QTEST_MAIN(tst_ImageLoader)

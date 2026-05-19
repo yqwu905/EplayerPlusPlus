@@ -11,6 +11,7 @@
 #include <QCryptographicHash>
 
 #include <tuple>
+#include <utility>
 
 namespace
 {
@@ -20,7 +21,9 @@ constexpr int kPriorityVisible = 2;
 }
 
 ImageLoader::ImageLoader(QObject *parent)
-    : QObject(parent)
+    : QObject(parent),
+      m_thumbnailCancel(std::make_shared<CancellationState>()),
+      m_imageCancel(std::make_shared<CancellationState>())
 {
 }
 
@@ -66,14 +69,16 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
         QMutexLocker locker(&m_cacheMutex);
         ++m_metricRequests;
 
-        auto cacheIt = m_thumbnailCache.constFind(highQualityKey);
-        if (cacheIt == m_thumbnailCache.constEnd() && !highQuality) {
-            cacheIt = m_thumbnailCache.constFind(fastKey);
+        auto cacheIt = m_thumbnailIndex.find(highQualityKey);
+        if (cacheIt == m_thumbnailIndex.end() && !highQuality) {
+            cacheIt = m_thumbnailIndex.find(fastKey);
         }
-        if (cacheIt != m_thumbnailCache.constEnd()) {
-            cachedThumbnail = cacheIt->thumbnail;
+        if (cacheIt != m_thumbnailIndex.end()) {
+            ThumbnailIter listIt = cacheIt.value();
+            cachedThumbnail = listIt->thumbnail;
             hasCached = !cachedThumbnail.isNull();
             if (hasCached) {
+                touchThumbnailEntryUnlocked(listIt);
                 ++m_metricMemoryHits;
             }
         }
@@ -123,6 +128,7 @@ void ImageLoader::processQueue()
     while (true) {
         ThumbnailRequest request;
         bool hasRequest = false;
+        int capturedGeneration = 0;
 
         {
             QMutexLocker locker(&m_cacheMutex);
@@ -158,9 +164,46 @@ void ImageLoader::processQueue()
             }
 
             ++m_activeLoads;
+            capturedGeneration = m_thumbnailCancel->generation.load(std::memory_order_acquire);
         }
 
-        auto future = QtConcurrent::run([request]() {
+        // The worker captures a shared_ptr to the cancellation state so it
+        // stays valid even if ImageLoader is destroyed mid-decode. Before
+        // the expensive decode it consults the live generation / keep-set
+        // and self-aborts so fast folder switches don't burn CPU.
+        auto cancelState = m_thumbnailCancel;
+
+        auto future = QtConcurrent::run([request, cancelState, capturedGeneration]() {
+            const auto makeResult = [&request](const QImage &img,
+                                               const QDateTime &mod,
+                                               bool fromDisk,
+                                               bool cancelled) {
+                return std::make_tuple(request.key,
+                                       request.imagePath,
+                                       request.thumbnailSize,
+                                       img,
+                                       mod,
+                                       request.highQuality,
+                                       fromDisk,
+                                       cancelled);
+            };
+
+            const auto isCancelled = [&]() {
+                if (capturedGeneration ==
+                    cancelState->generation.load(std::memory_order_acquire)) {
+                    return false;
+                }
+                QMutexLocker locker(&cancelState->keepMutex);
+                return !cancelState->keepPaths.contains(request.imagePath);
+            };
+
+            // Cheap pre-decode cancellation check. Skipping the disk
+            // lookup on cancellation avoids even a filesystem stat for
+            // queued-but-stale work.
+            if (isCancelled()) {
+                return makeResult(QImage(), QDateTime(), false, true);
+            }
+
             const QDateTime modifiedUtc = sourceLastModifiedUtc(request.imagePath);
 
             if (QImage disk = tryLoadDiskCachedThumbnail(
@@ -169,13 +212,13 @@ void ImageLoader::processQueue()
                     modifiedUtc,
                     request.highQuality);
                 !disk.isNull()) {
-                return std::make_tuple(request.key,
-                                       request.imagePath,
-                                       request.thumbnailSize,
-                                       disk,
-                                       modifiedUtc,
-                                       request.highQuality,
-                                       true);
+                return makeResult(disk, modifiedUtc, true, false);
+            }
+
+            // Re-check before the expensive decode in case the generation
+            // moved while we were doing the disk lookup.
+            if (isCancelled()) {
+                return makeResult(QImage(), modifiedUtc, false, true);
             }
 
             const Qt::TransformationMode mode = request.highQuality
@@ -192,39 +235,41 @@ void ImageLoader::processQueue()
                                      request.highQuality);
             }
 
-            return std::make_tuple(request.key,
-                                   request.imagePath,
-                                   request.thumbnailSize,
-                                   generated,
-                                   modifiedUtc,
-                                   request.highQuality,
-                                   false);
+            return makeResult(generated, modifiedUtc, false, false);
         });
 
-        auto *watcher =
-            new QFutureWatcher<std::tuple<QString, QString, QSize, QImage, QDateTime, bool, bool>>(this);
-        connect(watcher,
-                &QFutureWatcher<std::tuple<QString, QString, QSize, QImage, QDateTime, bool, bool>>::finished,
-                this,
+        using ResultTuple = std::tuple<QString, QString, QSize, QImage, QDateTime, bool, bool, bool>;
+        auto *watcher = new QFutureWatcher<ResultTuple>(this);
+        connect(watcher, &QFutureWatcher<ResultTuple>::finished, this,
                 [this, watcher]() {
-                    auto [key, imagePath, thumbnailSize, thumbnail, modifiedUtc, highQuality, fromDisk] =
-                        watcher->result();
+                    auto [key, imagePath, thumbnailSize, thumbnail, modifiedUtc,
+                          highQuality, fromDisk, workerCancelled] = watcher->result();
                     watcher->deleteLater();
 
                     bool cancelledBeforeEmit = false;
                     {
                         QMutexLocker locker(&m_cacheMutex);
-                        if (fromDisk && !thumbnail.isNull()) {
-                            ++m_metricDiskHits;
-                        } else {
-                            ++m_metricDecodes;
-                        }
-
-                        if (m_pendingRequests.contains(key)) {
-                            m_pendingRequests.remove(key);
-                        } else {
+                        if (workerCancelled) {
+                            // Worker self-aborted; nothing to cache and
+                            // nothing to emit. Don't disturb m_pendingRequests:
+                            // if the user re-issued the request after the
+                            // cancel, the entry there belongs to that newer
+                            // request and a fresh worker will service it.
                             cancelledBeforeEmit = true;
                             ++m_metricCancelled;
+                        } else {
+                            if (fromDisk && !thumbnail.isNull()) {
+                                ++m_metricDiskHits;
+                            } else {
+                                ++m_metricDecodes;
+                            }
+
+                            if (m_pendingRequests.contains(key)) {
+                                m_pendingRequests.remove(key);
+                            } else {
+                                cancelledBeforeEmit = true;
+                                ++m_metricCancelled;
+                            }
                         }
 
                         m_activeLoads = qMax(0, m_activeLoads - 1);
@@ -232,7 +277,7 @@ void ImageLoader::processQueue()
 
                     finishRequest(imagePath,
                                   thumbnailSize,
-                                  thumbnail,
+                                  workerCancelled ? QImage() : thumbnail,
                                   modifiedUtc,
                                   highQuality,
                                   cancelledBeforeEmit);
@@ -254,19 +299,14 @@ void ImageLoader::finishRequest(const QString &imagePath,
         QMutexLocker locker(&m_cacheMutex);
         const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality);
         const qint64 bytes = imageByteSize(thumbnail);
-        auto oldIt = m_thumbnailCache.find(key);
-        if (oldIt != m_thumbnailCache.end()) {
-            m_currentThumbnailCacheBytes -= oldIt->byteSize;
-        }
-        m_thumbnailCache.insert(key,
-                                {imagePath,
-                                 thumbnail,
-                                 thumbnailSize,
-                                 lastModifiedUtc,
-                                 highQuality,
-                                 ++m_cacheSequenceCounter,
-                                 bytes});
-        m_currentThumbnailCacheBytes += bytes;
+        CacheEntry entry{key,
+                         imagePath,
+                         thumbnail,
+                         thumbnailSize,
+                         lastModifiedUtc,
+                         highQuality,
+                         bytes};
+        insertThumbnailEntryUnlocked(std::move(entry));
         trimCache();
     }
 
@@ -286,12 +326,13 @@ void ImageLoader::requestImage(const QString &imagePath)
     bool shouldProcess = false;
     {
         QMutexLocker locker(&m_cacheMutex);
-        auto it = m_imageCache.find(imagePath);
-        if (it != m_imageCache.end()) {
-            cachedImage = it->image;
+        auto it = m_imageIndex.find(imagePath);
+        if (it != m_imageIndex.end()) {
+            ImageIter listIt = it.value();
+            cachedImage = listIt->image;
             hasCached = !cachedImage.isNull();
             if (hasCached) {
-                it->sequence = ++m_imageCacheSequenceCounter;
+                touchImageEntryUnlocked(listIt);
             }
         }
 
@@ -325,6 +366,7 @@ void ImageLoader::processImageQueue()
 {
     while (true) {
         QString imagePath;
+        int capturedGeneration = 0;
 
         {
             QMutexLocker locker(&m_cacheMutex);
@@ -345,22 +387,44 @@ void ImageLoader::processImageQueue()
             }
 
             ++m_activeImageLoads;
+            capturedGeneration = m_imageCancel->generation.load(std::memory_order_acquire);
         }
 
-        auto future = QtConcurrent::run([imagePath]() {
-            return QImage(imagePath);
+        auto cancelState = m_imageCancel;
+        auto future = QtConcurrent::run([imagePath, cancelState, capturedGeneration]() {
+            if (capturedGeneration !=
+                cancelState->generation.load(std::memory_order_acquire)) {
+                bool keep = false;
+                {
+                    QMutexLocker locker(&cancelState->keepMutex);
+                    keep = cancelState->keepPaths.contains(imagePath);
+                }
+                if (!keep) {
+                    return std::make_pair(QImage(), true);
+                }
+            }
+            return std::make_pair(QImage(imagePath), false);
         });
 
-        auto *watcher = new QFutureWatcher<QImage>(this);
-        connect(watcher, &QFutureWatcher<QImage>::finished, this,
+        using ImageResult = std::pair<QImage, bool>;
+        auto *watcher = new QFutureWatcher<ImageResult>(this);
+        connect(watcher, &QFutureWatcher<ImageResult>::finished, this,
                 [this, watcher, imagePath]() {
-                    QImage image = watcher->result();
+                    auto result = watcher->result();
                     watcher->deleteLater();
+
+                    const QImage image = result.first;
+                    const bool workerCancelled = result.second;
 
                     bool cancelledBeforeEmit = false;
                     {
                         QMutexLocker locker(&m_cacheMutex);
-                        if (m_pendingImageRequests.contains(imagePath)) {
+                        if (workerCancelled) {
+                            // Self-aborted; leave m_pendingImageRequests
+                            // alone so a re-issued request can still be
+                            // serviced by a fresh worker.
+                            cancelledBeforeEmit = true;
+                        } else if (m_pendingImageRequests.contains(imagePath)) {
                             m_pendingImageRequests.remove(imagePath);
                         } else {
                             cancelledBeforeEmit = true;
@@ -368,7 +432,9 @@ void ImageLoader::processImageQueue()
                         m_activeImageLoads = qMax(0, m_activeImageLoads - 1);
                     }
 
-                    finishImageRequest(imagePath, image, cancelledBeforeEmit);
+                    finishImageRequest(imagePath,
+                                       workerCancelled ? QImage() : image,
+                                       cancelledBeforeEmit);
                     processImageQueue();
                 });
 
@@ -383,15 +449,8 @@ void ImageLoader::finishImageRequest(const QString &imagePath,
     if (!image.isNull()) {
         QMutexLocker locker(&m_cacheMutex);
         const qint64 bytes = imageByteSize(image);
-        auto oldIt = m_imageCache.find(imagePath);
-        if (oldIt != m_imageCache.end()) {
-            m_currentImageCacheBytes -= oldIt->byteSize;
-        }
-        m_imageCache.insert(imagePath,
-                            {image,
-                             ++m_imageCacheSequenceCounter,
-                             bytes});
-        m_currentImageCacheBytes += bytes;
+        ImageCacheEntry entry{imagePath, image, bytes};
+        insertImageEntryUnlocked(std::move(entry));
         trimImageCache();
     }
 
@@ -403,33 +462,51 @@ void ImageLoader::finishImageRequest(const QString &imagePath,
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
 {
     QMutexLocker locker(&m_cacheMutex);
-    CacheEntry best;
-    bool hasBest = false;
-    for (auto it = m_thumbnailCache.constBegin(); it != m_thumbnailCache.constEnd(); ++it) {
-        if (it->imagePath != imagePath || it->thumbnail.isNull()) {
+    auto pathIt = m_thumbnailPathIndex.constFind(imagePath);
+    if (pathIt == m_thumbnailPathIndex.constEnd()) {
+        return QImage();
+    }
+
+    // Walk only the (small) list of cached sizes for this path.
+    // Prefer high-quality over fast, then largest byte size.
+    QImage best;
+    qint64 bestBytes = 0;
+    bool bestHighQuality = false;
+    for (const QString &key : pathIt.value()) {
+        auto it = m_thumbnailIndex.constFind(key);
+        if (it == m_thumbnailIndex.constEnd()) {
             continue;
         }
-        if (!hasBest || (it->highQuality && !best.highQuality) ||
-            imageByteSize(it->thumbnail) > imageByteSize(best.thumbnail)) {
-            best = *it;
-            hasBest = true;
+        const CacheEntry &entry = *it.value();
+        if (entry.thumbnail.isNull()) {
+            continue;
+        }
+        const qint64 bytes = entry.byteSize;
+        const bool hq = entry.highQuality;
+        const bool better = best.isNull()
+            || (hq && !bestHighQuality)
+            || (hq == bestHighQuality && bytes > bestBytes);
+        if (better) {
+            best = entry.thumbnail;
+            bestBytes = bytes;
+            bestHighQuality = hq;
         }
     }
-    return hasBest ? best.thumbnail : QImage();
+    return best;
 }
 
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize) const
 {
     QMutexLocker locker(&m_cacheMutex);
     const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true);
-    auto it = m_thumbnailCache.constFind(highQualityKey);
-    if (it != m_thumbnailCache.constEnd()) {
-        return it->thumbnail;
+    auto it = m_thumbnailIndex.constFind(highQualityKey);
+    if (it != m_thumbnailIndex.constEnd()) {
+        return it.value()->thumbnail;
     }
     const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, false);
-    it = m_thumbnailCache.constFind(fastKey);
-    if (it != m_thumbnailCache.constEnd()) {
-        return it->thumbnail;
+    it = m_thumbnailIndex.constFind(fastKey);
+    if (it != m_thumbnailIndex.constEnd()) {
+        return it.value()->thumbnail;
     }
     return QImage();
 }
@@ -437,9 +514,9 @@ QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &th
 QImage ImageLoader::getCachedImage(const QString &imagePath) const
 {
     QMutexLocker locker(&m_cacheMutex);
-    auto it = m_imageCache.constFind(imagePath);
-    if (it != m_imageCache.constEnd()) {
-        return it->image;
+    auto it = m_imageIndex.constFind(imagePath);
+    if (it != m_imageIndex.constEnd()) {
+        return it.value()->image;
     }
     return QImage();
 }
@@ -447,8 +524,11 @@ QImage ImageLoader::getCachedImage(const QString &imagePath) const
 void ImageLoader::clearCache()
 {
     QMutexLocker locker(&m_cacheMutex);
-    m_thumbnailCache.clear();
-    m_imageCache.clear();
+    m_thumbnailLru.clear();
+    m_thumbnailIndex.clear();
+    m_thumbnailPathIndex.clear();
+    m_imageLru.clear();
+    m_imageIndex.clear();
     m_pendingRequests.clear();
     m_pendingImageRequests.clear();
     m_highPriorityQueue.clear();
@@ -478,31 +558,43 @@ void ImageLoader::setMaxConcurrentLoads(int maxConcurrentLoads)
 
 void ImageLoader::cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths)
 {
-    QMutexLocker locker(&m_cacheMutex);
+    {
+        QMutexLocker locker(&m_cacheMutex);
 
-    auto filterQueue = [&keepPaths](QQueue<ThumbnailRequest> &queue) {
-        QQueue<ThumbnailRequest> filtered;
-        while (!queue.isEmpty()) {
-            ThumbnailRequest req = queue.dequeue();
-            if (keepPaths.contains(req.imagePath)) {
-                filtered.enqueue(req);
+        auto filterQueue = [&keepPaths](QQueue<ThumbnailRequest> &queue) {
+            QQueue<ThumbnailRequest> filtered;
+            while (!queue.isEmpty()) {
+                ThumbnailRequest req = queue.dequeue();
+                if (keepPaths.contains(req.imagePath)) {
+                    filtered.enqueue(req);
+                }
+            }
+            queue = filtered;
+        };
+
+        filterQueue(m_highPriorityQueue);
+        filterQueue(m_normalPriorityQueue);
+        filterQueue(m_backgroundPriorityQueue);
+
+        for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end();) {
+            if (keepPaths.contains(it->imagePath)) {
+                ++it;
+            } else {
+                it = m_pendingRequests.erase(it);
+                ++m_metricCancelled;
             }
         }
-        queue = filtered;
-    };
-
-    filterQueue(m_highPriorityQueue);
-    filterQueue(m_normalPriorityQueue);
-    filterQueue(m_backgroundPriorityQueue);
-
-    for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end();) {
-        if (keepPaths.contains(it->imagePath)) {
-            ++it;
-        } else {
-            it = m_pendingRequests.erase(it);
-            ++m_metricCancelled;
-        }
     }
+
+    // Update the shared cancellation state. Workers that captured an
+    // older generation observe the new keep set under cancelState->keepMutex.
+    {
+        QMutexLocker locker(&m_thumbnailCancel->keepMutex);
+        m_thumbnailCancel->keepPaths = keepPaths;
+    }
+    // Release-ordered bump so workers that see the new generation also
+    // see the new keep set on the next load.
+    m_thumbnailCancel->generation.fetch_add(1, std::memory_order_release);
 }
 
 void ImageLoader::cancelAllThumbnailRequests()
@@ -512,24 +604,32 @@ void ImageLoader::cancelAllThumbnailRequests()
 
 void ImageLoader::cancelImageRequestsExcept(const QSet<QString> &keepPaths)
 {
-    QMutexLocker locker(&m_cacheMutex);
+    {
+        QMutexLocker locker(&m_cacheMutex);
 
-    QQueue<QString> filtered;
-    while (!m_imageQueue.isEmpty()) {
-        const QString path = m_imageQueue.dequeue();
-        if (keepPaths.contains(path)) {
-            filtered.enqueue(path);
+        QQueue<QString> filtered;
+        while (!m_imageQueue.isEmpty()) {
+            const QString path = m_imageQueue.dequeue();
+            if (keepPaths.contains(path)) {
+                filtered.enqueue(path);
+            }
+        }
+        m_imageQueue = filtered;
+
+        for (auto it = m_pendingImageRequests.begin(); it != m_pendingImageRequests.end();) {
+            if (keepPaths.contains(*it)) {
+                ++it;
+            } else {
+                it = m_pendingImageRequests.erase(it);
+            }
         }
     }
-    m_imageQueue = filtered;
 
-    for (auto it = m_pendingImageRequests.begin(); it != m_pendingImageRequests.end();) {
-        if (keepPaths.contains(*it)) {
-            ++it;
-        } else {
-            it = m_pendingImageRequests.erase(it);
-        }
+    {
+        QMutexLocker locker(&m_imageCancel->keepMutex);
+        m_imageCancel->keepPaths = keepPaths;
     }
+    m_imageCancel->generation.fetch_add(1, std::memory_order_release);
 }
 
 QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
@@ -546,33 +646,103 @@ QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
     };
 }
 
+void ImageLoader::touchThumbnailEntryUnlocked(ThumbnailIter it)
+{
+    // std::list::splice within the same list moves the node in O(1) and
+    // does NOT invalidate any iterators (the moved one included), so our
+    // QHash<Key, iterator> index stays valid.
+    if (it != m_thumbnailLru.begin()) {
+        m_thumbnailLru.splice(m_thumbnailLru.begin(), m_thumbnailLru, it);
+    }
+}
+
+void ImageLoader::insertThumbnailEntryUnlocked(CacheEntry &&entry)
+{
+    auto existing = m_thumbnailIndex.find(entry.key);
+    if (existing != m_thumbnailIndex.end()) {
+        ThumbnailIter listIt = existing.value();
+        m_currentThumbnailCacheBytes -= listIt->byteSize;
+        // Update in place and move to MRU; do not touch the path index
+        // because the (path, key) mapping is unchanged.
+        *listIt = std::move(entry);
+        m_currentThumbnailCacheBytes += listIt->byteSize;
+        touchThumbnailEntryUnlocked(listIt);
+        return;
+    }
+
+    m_thumbnailLru.push_front(std::move(entry));
+    ThumbnailIter listIt = m_thumbnailLru.begin();
+    m_thumbnailIndex.insert(listIt->key, listIt);
+    m_thumbnailPathIndex[listIt->imagePath].append(listIt->key);
+    m_currentThumbnailCacheBytes += listIt->byteSize;
+}
+
+void ImageLoader::eraseThumbnailEntryUnlocked(ThumbnailIter it)
+{
+    m_currentThumbnailCacheBytes -= it->byteSize;
+    m_thumbnailIndex.remove(it->key);
+
+    auto pathIt = m_thumbnailPathIndex.find(it->imagePath);
+    if (pathIt != m_thumbnailPathIndex.end()) {
+        pathIt.value().removeOne(it->key);
+        if (pathIt.value().isEmpty()) {
+            m_thumbnailPathIndex.erase(pathIt);
+        }
+    }
+
+    m_thumbnailLru.erase(it);
+}
+
+void ImageLoader::touchImageEntryUnlocked(ImageIter it)
+{
+    if (it != m_imageLru.begin()) {
+        m_imageLru.splice(m_imageLru.begin(), m_imageLru, it);
+    }
+}
+
+void ImageLoader::insertImageEntryUnlocked(ImageCacheEntry &&entry)
+{
+    auto existing = m_imageIndex.find(entry.imagePath);
+    if (existing != m_imageIndex.end()) {
+        ImageIter listIt = existing.value();
+        m_currentImageCacheBytes -= listIt->byteSize;
+        *listIt = std::move(entry);
+        m_currentImageCacheBytes += listIt->byteSize;
+        touchImageEntryUnlocked(listIt);
+        return;
+    }
+
+    m_imageLru.push_front(std::move(entry));
+    ImageIter listIt = m_imageLru.begin();
+    m_imageIndex.insert(listIt->imagePath, listIt);
+    m_currentImageCacheBytes += listIt->byteSize;
+}
+
+void ImageLoader::eraseImageEntryUnlocked(ImageIter it)
+{
+    m_currentImageCacheBytes -= it->byteSize;
+    m_imageIndex.remove(it->imagePath);
+    m_imageLru.erase(it);
+}
+
 void ImageLoader::trimCache()
 {
-    while (m_thumbnailCache.size() > m_maxCacheSize ||
-           m_currentThumbnailCacheBytes > m_maxThumbnailCacheBytes) {
-        auto oldestIt = m_thumbnailCache.begin();
-        for (auto it = m_thumbnailCache.begin(); it != m_thumbnailCache.end(); ++it) {
-            if (it->sequence < oldestIt->sequence) {
-                oldestIt = it;
-            }
-        }
-        m_currentThumbnailCacheBytes -= oldestIt->byteSize;
-        m_thumbnailCache.erase(oldestIt);
+    while (!m_thumbnailLru.empty() &&
+           (static_cast<int>(m_thumbnailLru.size()) > m_maxCacheSize ||
+            m_currentThumbnailCacheBytes > m_maxThumbnailCacheBytes)) {
+        // LRU node is at the back; O(1) eviction.
+        ThumbnailIter victim = std::prev(m_thumbnailLru.end());
+        eraseThumbnailEntryUnlocked(victim);
     }
 }
 
 void ImageLoader::trimImageCache()
 {
-    while (m_imageCache.size() > m_maxImageCacheSize ||
-           m_currentImageCacheBytes > m_maxImageCacheBytes) {
-        auto oldestIt = m_imageCache.begin();
-        for (auto it = m_imageCache.begin(); it != m_imageCache.end(); ++it) {
-            if (it->sequence < oldestIt->sequence) {
-                oldestIt = it;
-            }
-        }
-        m_currentImageCacheBytes -= oldestIt->byteSize;
-        m_imageCache.erase(oldestIt);
+    while (!m_imageLru.empty() &&
+           (static_cast<int>(m_imageLru.size()) > m_maxImageCacheSize ||
+            m_currentImageCacheBytes > m_maxImageCacheBytes)) {
+        ImageIter victim = std::prev(m_imageLru.end());
+        eraseImageEntryUnlocked(victim);
     }
 }
 

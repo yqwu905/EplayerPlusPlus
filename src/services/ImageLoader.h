@@ -4,11 +4,16 @@
 #include <QObject>
 #include <QImage>
 #include <QHash>
+#include <QList>
 #include <QSet>
 #include <QMutex>
 #include <QSize>
 #include <QDateTime>
 #include <QQueue>
+
+#include <atomic>
+#include <list>
+#include <memory>
 
 /**
  * @brief Asynchronous image and thumbnail loading service with caching.
@@ -97,18 +102,18 @@ signals:
 
 private:
     struct CacheEntry {
+        QString key;
         QString imagePath;
         QImage thumbnail;
         QSize requestedSize;
         QDateTime sourceLastModifiedUtc;
         bool highQuality = true;
-        qint64 sequence = 0;
         qint64 byteSize = 0;
     };
 
     struct ImageCacheEntry {
+        QString imagePath;
         QImage image;
-        qint64 sequence = 0;
         qint64 byteSize = 0;
     };
 
@@ -120,15 +125,40 @@ private:
         bool highQuality = true;
     };
 
+    using ThumbnailList = std::list<CacheEntry>;
+    using ThumbnailIter = ThumbnailList::iterator;
+    using ImageList = std::list<ImageCacheEntry>;
+    using ImageIter = ImageList::iterator;
+
+    // Cancellation state shared between the loader and any in-flight
+    // QtConcurrent worker. Held by shared_ptr so workers can safely
+    // outlive the ImageLoader. The mutex protects the keep-paths set.
+    struct CancellationState {
+        std::atomic<int> generation{0};
+        QMutex keepMutex;
+        QSet<QString> keepPaths;
+    };
+
     mutable QMutex m_cacheMutex;
-    QHash<QString, CacheEntry> m_thumbnailCache;
-    QHash<QString, ImageCacheEntry> m_imageCache;
+    // Intrusive LRU: list is ordered MRU (front) -> LRU (back). O(1) splice
+    // on access, O(1) pop_back on eviction.
+    ThumbnailList m_thumbnailLru;
+    QHash<QString, ThumbnailIter> m_thumbnailIndex;
+    // Secondary index path -> list of cache keys, so the no-size
+    // getCachedThumbnail() lookup avoids a linear scan of every entry.
+    QHash<QString, QList<QString>> m_thumbnailPathIndex;
+    ImageList m_imageLru;
+    QHash<QString, ImageIter> m_imageIndex;
     QHash<QString, ThumbnailRequest> m_pendingRequests;
     QSet<QString> m_pendingImageRequests;
     QQueue<ThumbnailRequest> m_highPriorityQueue;
     QQueue<ThumbnailRequest> m_normalPriorityQueue;
     QQueue<ThumbnailRequest> m_backgroundPriorityQueue;
     QQueue<QString> m_imageQueue;
+    // Shared cancellation state. Workers capture these by shared_ptr so
+    // they remain valid even if the ImageLoader is destroyed mid-decode.
+    std::shared_ptr<CancellationState> m_thumbnailCancel;
+    std::shared_ptr<CancellationState> m_imageCancel;
     int m_maxCacheSize = 1000;
     qint64 m_maxThumbnailCacheBytes = 256LL * 1024LL * 1024LL;
     qint64 m_currentThumbnailCacheBytes = 0;
@@ -139,8 +169,6 @@ private:
     int m_activeLoads = 0;
     int m_maxConcurrentImageLoads = 2;
     int m_activeImageLoads = 0;
-    qint64 m_cacheSequenceCounter = 0;
-    qint64 m_imageCacheSequenceCounter = 0;
     qint64 m_metricRequests = 0;
     qint64 m_metricMemoryHits = 0;
     qint64 m_metricDiskHits = 0;
@@ -182,6 +210,13 @@ private:
                        bool cancelledBeforeEmit);
     void processImageQueue();
     void finishImageRequest(const QString &imagePath, const QImage &image, bool cancelledBeforeEmit);
+
+    void touchThumbnailEntryUnlocked(ThumbnailIter it);
+    void insertThumbnailEntryUnlocked(CacheEntry &&entry);
+    void eraseThumbnailEntryUnlocked(ThumbnailIter it);
+    void touchImageEntryUnlocked(ImageIter it);
+    void insertImageEntryUnlocked(ImageCacheEntry &&entry);
+    void eraseImageEntryUnlocked(ImageIter it);
 
     void trimCache();
     void trimImageCache();
