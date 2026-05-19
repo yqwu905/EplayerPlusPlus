@@ -25,13 +25,13 @@ class tst_ComparePanel : public QObject
 
 private slots:
     void layout_oneToThreeImages_singleRow();
-    void layout_fourToSixImages_twoRows();
+    void layout_fourImages_twoRows();
     void compareButtons_nMinusOnePerImage();
     void compareHeader_placesTitleAndButtonsInHeaderBlock();
     void layout_imageAreaExpandsToFillAvailableGridHeight();
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
     void folderSwap_reordersGridCellsAndImages();
-    void layout_shrinksFromSixToTwo_cellsExpand();
+    void layout_shrinksFromFourToTwo_cellsExpand();
     void toleranceMode_compareButtonTogglesTargetImage();
     void toleranceMode_usesPreviewWhenFullImageIsNotLoaded();
     void resizeToFirstImage_toggleResizesOtherCells();
@@ -137,7 +137,7 @@ void tst_ComparePanel::layout_oneToThreeImages_singleRow()
     QCOMPARE(uniqueRows.size(), 1);
 }
 
-void tst_ComparePanel::layout_fourToSixImages_twoRows()
+void tst_ComparePanel::layout_fourImages_twoRows()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -150,7 +150,7 @@ void tst_ComparePanel::layout_fourToSixImages_twoRows()
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
 
     QList<QPair<QString, QString>> selected;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < CompareSession::MaxFolders; ++i) {
         const QString folder = root.filePath(QString("folder_%1").arg(i));
         QVERIFY(QDir().mkpath(folder));
         const QString imagePath = createImageInFolder(folder, "img.png", QColor::fromHsv((i * 40) % 360, 255, 255));
@@ -162,7 +162,7 @@ void tst_ComparePanel::layout_fourToSixImages_twoRows()
     QCoreApplication::processEvents();
 
     const auto cells = findCells(panel);
-    QCOMPARE(cells.size(), 6);
+    QCOMPARE(cells.size(), CompareSession::MaxFolders);
 
     QSet<int> uniqueRows;
     for (QWidget *cell : cells) {
@@ -184,7 +184,7 @@ void tst_ComparePanel::compareButtons_nMinusOnePerImage()
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
 
     QList<QPair<QString, QString>> selected;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < CompareSession::MaxFolders; ++i) {
         const QString folder = root.filePath(QString("folder_%1").arg(i));
         QVERIFY(QDir().mkpath(folder));
         const QString imagePath = createImageInFolder(folder, "img.png", QColor::fromHsv((i * 30) % 360, 255, 255));
@@ -196,7 +196,7 @@ void tst_ComparePanel::compareButtons_nMinusOnePerImage()
     QCoreApplication::processEvents();
 
     const auto cells = findCells(panel);
-    QCOMPARE(cells.size(), 6);
+    QCOMPARE(cells.size(), CompareSession::MaxFolders);
 
     for (QWidget *cell : cells) {
         const auto buttons = cell->findChildren<QPushButton *>(
@@ -205,12 +205,12 @@ void tst_ComparePanel::compareButtons_nMinusOnePerImage()
         for (QPushButton *button : buttons) {
             bool isNumber = false;
             const int targetNumber = button->text().toInt(&isNumber);
-            if (isNumber && targetNumber >= 1 && targetNumber <= 6) {
+            if (isNumber && targetNumber >= 1 && targetNumber <= CompareSession::MaxFolders) {
                 QVERIFY(!button->text().contains(QStringLiteral("对比")));
                 ++compareButtonCount;
             }
         }
-        QCOMPARE(compareButtonCount, 5);
+        QCOMPARE(compareButtonCount, CompareSession::MaxFolders - 1);
     }
 }
 
@@ -438,7 +438,7 @@ void tst_ComparePanel::folderSwap_reordersGridCellsAndImages()
     QCOMPARE(thirdBadge->text(), QStringLiteral("3"));
 }
 
-void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
+void tst_ComparePanel::layout_shrinksFromFourToTwo_cellsExpand()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -451,7 +451,7 @@ void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
 
     QList<QPair<QString, QString>> selected;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < CompareSession::MaxFolders; ++i) {
         const QString folder = root.filePath(QString("folder_%1").arg(i));
         QVERIFY(QDir().mkpath(folder));
         const QString imagePath = createImageInFolder(folder, "img.png", QColor::fromHsv((i * 35) % 360, 255, 255));
@@ -463,9 +463,9 @@ void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
     QCoreApplication::processEvents();
 
     auto cells = findCells(panel);
-    QCOMPARE(cells.size(), 6);
-    int widthBefore = cells.first()->width();
-    QVERIFY(widthBefore > 0);
+    QCOMPARE(cells.size(), CompareSession::MaxFolders);
+    int heightBefore = cells.first()->height();
+    QVERIFY(heightBefore > 0);
 
     while (session.folderCount() > 2) {
         QVERIFY(session.removeFolderAt(session.folderCount() - 1));
@@ -475,8 +475,10 @@ void tst_ComparePanel::layout_shrinksFromSixToTwo_cellsExpand()
     cells = findCells(panel);
     QCOMPARE(cells.size(), 2);
 
-    int widthAfter = cells.first()->width();
-    QVERIFY(widthAfter > widthBefore);
+    // 4 cells lay out as 2x2 and 2 cells as 1x2: the column count stays the
+    // same so per-cell width does not change, but per-cell height grows.
+    int heightAfter = cells.first()->height();
+    QVERIFY(heightAfter > heightBefore);
 }
 
 void tst_ComparePanel::toleranceMode_compareButtonTogglesTargetImage()

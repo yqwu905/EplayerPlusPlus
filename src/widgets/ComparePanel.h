@@ -98,7 +98,7 @@ private slots:
 
     // Zoom/pan sync slots
     void onCellZoomChanged(double zoomLevel, QPointF focalPoint);
-    void onCellPanChanged(QPointF offset);
+    void onCellPanChanged(QPointF normalizedOffset);
     void onCellViewReset();
     void onImageReady(const QString &imagePath, const QImage &image);
     void onThumbnailReady(const QString &imagePath, const QImage &thumbnail);

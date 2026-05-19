@@ -44,25 +44,53 @@ void ZoomableImageWidget::setText(const QString &text)
     update();
 }
 
+QPointF ZoomableImageWidget::normalizedPan() const
+{
+    if (m_image.isNull() || m_image.width() <= 0 || m_image.height() <= 0) {
+        return QPointF(0.0, 0.0);
+    }
+    return QPointF(m_panOffset.x() / m_image.width(),
+                   m_panOffset.y() / m_image.height());
+}
+
 void ZoomableImageWidget::setZoomLevel(double level, QPointF focalPoint,
                                         bool emitSignal)
 {
-    Q_UNUSED(focalPoint);
-    m_zoomLevel = qBound(kMinZoom, level, kMaxZoom);
-    clampPanOffset();
-    update();
+    if (m_image.isNull()) {
+        m_zoomLevel = qBound(kMinZoom, level, kMaxZoom);
+        update();
+        if (emitSignal) {
+            emit zoomChanged(m_zoomLevel, focalPoint);
+        }
+        return;
+    }
+
+    // focalPoint is in normalized image coordinates [0,1]. Anchor the
+    // image pixel currently at that normalized position to its current
+    // widget-space position across the zoom change. This mirrors the
+    // wheelEvent's "image point under cursor stays under cursor" behaviour.
+    const QPointF anchorWidget = normalizedImageToWidget(focalPoint);
+    applyZoom(level, anchorWidget);
+
     if (emitSignal) {
         emit zoomChanged(m_zoomLevel, focalPoint);
     }
 }
 
-void ZoomableImageWidget::setPanOffset(QPointF offset, bool emitSignal)
+void ZoomableImageWidget::setNormalizedPan(QPointF normalizedOffset, bool emitSignal)
 {
-    m_panOffset = offset;
+    if (m_image.isNull()) {
+        if (emitSignal) {
+            emit panChanged(QPointF(0.0, 0.0));
+        }
+        return;
+    }
+    m_panOffset = QPointF(normalizedOffset.x() * m_image.width(),
+                          normalizedOffset.y() * m_image.height());
     clampPanOffset();
     update();
     if (emitSignal) {
-        emit panChanged(m_panOffset);
+        emit panChanged(normalizedPan());
     }
 }
 
@@ -151,6 +179,60 @@ void ZoomableImageWidget::clampPanOffset()
     m_panOffset.setY(qBound(-maxPanY, m_panOffset.y(), maxPanY));
 }
 
+QPointF ZoomableImageWidget::normalizedImageToWidget(const QPointF &normalizedImage) const
+{
+    if (m_image.isNull()) {
+        return QPointF(width() / 2.0, height() / 2.0);
+    }
+    const double scale = effectiveScale();
+    const double imgW = m_image.width() * scale;
+    const double imgH = m_image.height() * scale;
+    const double ox = (width() - imgW) / 2.0 + m_panOffset.x() * scale;
+    const double oy = (height() - imgH) / 2.0 + m_panOffset.y() * scale;
+    return QPointF(ox + normalizedImage.x() * imgW,
+                   oy + normalizedImage.y() * imgH);
+}
+
+void ZoomableImageWidget::applyZoom(double newLevel, const QPointF &anchorWidget)
+{
+    if (m_image.isNull()) {
+        m_zoomLevel = qBound(kMinZoom, newLevel, kMaxZoom);
+        update();
+        return;
+    }
+
+    // Image coordinate under the anchor before the zoom change.
+    const double oldScale = effectiveScale();
+    const double oldImgW = m_image.width() * oldScale;
+    const double oldImgH = m_image.height() * oldScale;
+    const double oldOx = (width() - oldImgW) / 2.0 + m_panOffset.x() * oldScale;
+    const double oldOy = (height() - oldImgH) / 2.0 + m_panOffset.y() * oldScale;
+    const double imgX = (anchorWidget.x() - oldOx) / oldScale;
+    const double imgY = (anchorWidget.y() - oldOy) / oldScale;
+
+    // Apply new zoom (clamped).
+    m_zoomLevel = qBound(kMinZoom, newLevel, kMaxZoom);
+
+    // Solve for the pan that keeps (imgX, imgY) under anchorWidget.
+    // anchorWidget = newOxNoPan + (m_panOffset + (imgX, imgY)) * newScale
+    const double newScale = effectiveScale();
+    const double newImgW = m_image.width() * newScale;
+    const double newImgH = m_image.height() * newScale;
+    const double newOxNoPan = (width() - newImgW) / 2.0;
+    const double newOyNoPan = (height() - newImgH) / 2.0;
+    const double newPanX = (anchorWidget.x() - newOxNoPan - imgX * newScale) / newScale;
+    const double newPanY = (anchorWidget.y() - newOyNoPan - imgY * newScale) / newScale;
+    m_panOffset = QPointF(newPanX, newPanY);
+
+    // At fit-to-view, snap pan back to zero so the image stays centred.
+    if (qFuzzyCompare(m_zoomLevel, 1.0)) {
+        m_panOffset = QPointF(0.0, 0.0);
+    }
+
+    clampPanOffset();
+    update();
+}
+
 void ZoomableImageWidget::wheelEvent(QWheelEvent *event)
 {
     if (m_image.isNull()) {
@@ -158,47 +240,18 @@ void ZoomableImageWidget::wheelEvent(QWheelEvent *event)
         return;
     }
 
-    // Calculate focal point in image coordinates before zoom
-    QPointF focalWidget = event->position();
-    double oldScale = effectiveScale();
-    double oldImgW = m_image.width() * oldScale;
-    double oldImgH = m_image.height() * oldScale;
-    double oldOx = (width() - oldImgW) / 2.0 + m_panOffset.x() * oldScale;
-    double oldOy = (height() - oldImgH) / 2.0 + m_panOffset.y() * oldScale;
+    const QPointF focalWidget = event->position();
+    // Capture the focal point in normalized image coords *before* zoom so the
+    // emitted signal lets linked cells anchor on the same image-relative point.
+    const QPointF normalizedFocal = widgetToNormalized(focalWidget);
 
-    // Image coordinate under cursor before zoom
-    double imgX = (focalWidget.x() - oldOx) / oldScale;
-    double imgY = (focalWidget.y() - oldOy) / oldScale;
+    const int steps = event->angleDelta().y() / 120;
+    const double factor = qPow(kZoomStep, steps);
+    const double newLevel = m_zoomLevel * factor;
 
-    // Compute new zoom
-    int steps = event->angleDelta().y() / 120;
-    double factor = qPow(kZoomStep, steps);
-    m_zoomLevel = qBound(kMinZoom, m_zoomLevel * factor, kMaxZoom);
+    applyZoom(newLevel, focalWidget);
 
-    // Adjust pan so the same image point stays under the cursor
-    double newScale = effectiveScale();
-    // New widget position of the image point (without pan adjustment)
-    double newImgW = m_image.width() * newScale;
-    double newImgH = m_image.height() * newScale;
-    double newOxNoPan = (width() - newImgW) / 2.0;
-    double newOyNoPan = (height() - newImgH) / 2.0;
-
-    // We want: focalWidget.x() == newOxNoPan + m_panOffset.x() * newScale + imgX * newScale
-    double newPanX = (focalWidget.x() - newOxNoPan - imgX * newScale) / newScale;
-    double newPanY = (focalWidget.y() - newOyNoPan - imgY * newScale) / newScale;
-    m_panOffset = QPointF(newPanX, newPanY);
-
-    // If zoomed back to 1.0, reset pan
-    if (qFuzzyCompare(m_zoomLevel, 1.0)) {
-        m_panOffset = QPointF(0, 0);
-    }
-
-    clampPanOffset();
-    update();
-
-    QPointF normalizedFocal = widgetToNormalized(focalWidget);
     emit zoomChanged(m_zoomLevel, normalizedFocal);
-
     event->accept();
 }
 
@@ -226,7 +279,9 @@ void ZoomableImageWidget::mouseMoveEvent(QMouseEvent *event)
         clampPanOffset();
         update();
 
-        emit panChanged(m_panOffset);
+        // Emit normalized pan so linked cells with differently-sized images
+        // stay in agreement on which image region is centred.
+        emit panChanged(normalizedPan());
         event->accept();
         return;
     }
