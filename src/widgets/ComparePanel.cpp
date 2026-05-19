@@ -1625,14 +1625,20 @@ void ComparePanel::onCellZoomChanged(double zoomLevel, QPointF focalPoint)
     bool ctrlHeld = QApplication::keyboardModifiers() & Qt::ControlModifier;
 
     if (!ctrlHeld) {
-        // Linked mode: sync all other cells
+        // Linked mode: sync all other cells. setZoomLevel anchors focalPoint
+        // (in normalized image coords) so each cell zooms about the same
+        // image-relative point even though their widget sizes may differ.
+        // Then sync pan in normalized units so cells with differently-sized
+        // images stay aligned on the same image region.
+        QPointF normalizedPan;
+        if (sourceIdx >= 0 && m_cells[sourceIdx].imageWidget) {
+            normalizedPan = m_cells[sourceIdx].imageWidget->normalizedPan();
+        }
         for (int i = 0; i < m_cells.size(); ++i) {
             if (i != sourceIdx && m_cells[i].imageWidget) {
                 m_cells[i].imageWidget->setZoomLevel(zoomLevel, focalPoint, false);
-                // Also sync the pan offset from the source
                 if (sourceIdx >= 0) {
-                    QPointF srcPan = m_cells[sourceIdx].imageWidget->panOffset();
-                    m_cells[i].imageWidget->setPanOffset(srcPan, false);
+                    m_cells[i].imageWidget->setNormalizedPan(normalizedPan, false);
                 }
             }
         }
@@ -1641,7 +1647,7 @@ void ComparePanel::onCellZoomChanged(double zoomLevel, QPointF focalPoint)
     m_syncingViews = false;
 }
 
-void ComparePanel::onCellPanChanged(QPointF offset)
+void ComparePanel::onCellPanChanged(QPointF normalizedOffset)
 {
     if (m_syncingViews) return;
     m_syncingViews = true;
@@ -1651,9 +1657,10 @@ void ComparePanel::onCellPanChanged(QPointF offset)
     bool ctrlHeld = QApplication::keyboardModifiers() & Qt::ControlModifier;
 
     if (!ctrlHeld) {
+        // panChanged carries normalized pan, image-size independent.
         for (int i = 0; i < m_cells.size(); ++i) {
             if (i != sourceIdx && m_cells[i].imageWidget) {
-                m_cells[i].imageWidget->setPanOffset(offset, false);
+                m_cells[i].imageWidget->setNormalizedPan(normalizedOffset, false);
             }
         }
     }
