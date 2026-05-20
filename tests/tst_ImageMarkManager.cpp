@@ -22,6 +22,7 @@ private slots:
     void setMark_savesJsonAndReloads();
     void setMark_updatesAndClears();
     void setMark_rejectsInvalidCategory();
+    void marksForFolder_returnsOnlyClassifiedEntries();
     void setMark_usesRelativePathKeys();
     void loadFolder_appliesLegacyJsonBeforeJournal();
     void setMark_persistsWhenFolderJournalCannotBeWritten();
@@ -138,6 +139,41 @@ void tst_ImageMarkManager::setMark_rejectsInvalidCategory()
     QVERIFY(manager.markForImage(dir.path(), imagePath).isEmpty());
     QVERIFY(!QFile::exists(manager.markFilePath(dir.path())));
     QVERIFY(!QFile::exists(manager.markJournalPath(dir.path())));
+}
+
+void tst_ImageMarkManager::marksForFolder_returnsOnlyClassifiedEntries()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString a = dir.filePath("a.png");
+    const QString b = dir.filePath("b.png");
+    const QString c = dir.filePath("c.png");
+    QImage image(8, 8, QImage::Format_ARGB32);
+    image.fill(Qt::green);
+    for (const QString &p : {a, b, c}) {
+        QVERIFY(image.save(p));
+    }
+
+    ImageMarkManager manager;
+    QVERIFY(manager.loadFolder(dir.path()));
+
+    // Unloaded/empty folder yields nothing useful before marks exist.
+    QVERIFY(manager.marksForFolder(dir.path()).isEmpty());
+
+    QVERIFY(manager.setMarkForImage(dir.path(), a, "A"));
+    QVERIFY(manager.setMarkForImage(dir.path(), b, "C"));
+    QVERIFY(manager.setMarkForImage(dir.path(), c, "D"));
+    QVERIFY(manager.clearMarkForImage(dir.path(), c)); // c is now unclassified
+
+    const QHash<QString, QString> marks = manager.marksForFolder(dir.path());
+    QCOMPARE(marks.size(), 2);
+    QCOMPARE(marks.value(QStringLiteral("a.png")), QStringLiteral("A"));
+    QCOMPARE(marks.value(QStringLiteral("b.png")), QStringLiteral("C"));
+    QVERIFY(!marks.contains(QStringLiteral("c.png")));
+
+    // Unknown folder → empty.
+    QVERIFY(manager.marksForFolder(dir.filePath("nope")).isEmpty());
 }
 
 void tst_ImageMarkManager::setMark_usesRelativePathKeys()

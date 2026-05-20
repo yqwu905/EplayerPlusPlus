@@ -195,6 +195,12 @@ void FolderPanel::onContextMenu(const QPoint &pos)
         emit addToCompareRequested(path);
     });
 
+    // "Export Categories" — available for any folder
+    QAction *exportAction = contextMenu.addAction(tr("导出分类…"));
+    connect(exportAction, &QAction::triggered, this, [this, path]() {
+        emit exportCategoriesRequested(path);
+    });
+
     contextMenu.addSeparator();
 
     // "Refresh" — available for any folder

@@ -5,6 +5,7 @@
 #include "services/SettingsManager.h"
 #include "services/ImageLoader.h"
 #include "services/ImageMarkManager.h"
+#include "services/CategoryExporter.h"
 #include "models/CompareSession.h"
 
 #include <QSplitter>
@@ -13,11 +14,15 @@
 #include <QApplication>
 #include <QAction>
 #include <QActionGroup>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QShortcut>
 #include <QSlider>
 #include <QStatusBar>
@@ -276,6 +281,13 @@ void MainWindow::setupConnections()
     connect(m_folderPanel, &FolderPanel::addToCompareRequested,
             m_compareSession, &CompareSession::addFolder);
 
+    // Export folder classification → save dialog (from both folder tree and
+    // thumbnail-column blank-area context menus).
+    connect(m_folderPanel, &FolderPanel::exportCategoriesRequested,
+            this, &MainWindow::exportCategoriesForFolder);
+    connect(m_browsePanel, &BrowsePanel::exportCategoriesRequested,
+            this, &MainWindow::exportCategoriesForFolder);
+
     // BrowsePanel selection changes → ComparePanel
     connect(m_browsePanel, &BrowsePanel::selectionChanged,
             m_comparePanel, &ComparePanel::setSelectedImages);
@@ -315,6 +327,51 @@ void MainWindow::setupConnections()
             m_resizeToFirstAction->setChecked(enabled);
         }
     });
+}
+
+void MainWindow::exportCategoriesForFolder(const QString &folderPath)
+{
+    if (folderPath.isEmpty() || !m_imageMarkManager) {
+        return;
+    }
+
+    m_imageMarkManager->loadFolder(folderPath);
+    const QHash<QString, QString> marks = m_imageMarkManager->marksForFolder(folderPath);
+    if (marks.isEmpty()) {
+        QMessageBox::information(this, tr("导出分类"),
+                                 tr("该文件夹暂无已分类的图片。"));
+        return;
+    }
+
+    const QString defaultName = QFileInfo(folderPath).fileName() + tr("_分类") + QStringLiteral(".csv");
+    const QString defaultPath = QDir(folderPath).filePath(defaultName);
+    const QString filePath = QFileDialog::getSaveFileName(
+        this, tr("导出分类"), defaultPath,
+        tr("CSV (*.csv);;文本 (*.txt);;JSON (*.json)"));
+    if (filePath.isEmpty()) {
+        return;
+    }
+
+    const CategoryExporter::Format format =
+        CategoryExporter::formatForSuffix(QFileInfo(filePath).suffix());
+    const QString payload = CategoryExporter::serialize(marks, format);
+
+    QByteArray bytes;
+    if (format == CategoryExporter::Format::Csv) {
+        // UTF-8 BOM so Excel renders Chinese filenames correctly.
+        bytes.append("\xEF\xBB\xBF");
+    }
+    bytes.append(payload.toUtf8());
+
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size()
+        || !file.commit()) {
+        QMessageBox::warning(this, tr("导出分类"),
+                             tr("写入文件失败：%1").arg(filePath));
+        return;
+    }
+
+    statusBar()->showMessage(tr("已导出 %1 条分类到 %2").arg(marks.size()).arg(filePath), 5000);
 }
 
 void MainWindow::togglePanel(int panelIndex)

@@ -41,6 +41,7 @@ private:
                               const QObject *receiver,
                               const char *member);
     void setupConnections();
+    void exportCategoriesForFolder(const QString &folderPath);
     void togglePanel(int panelIndex);
     void saveSplitterSizes();
     void updateCompareModeActions();

@@ -42,6 +42,12 @@ signals:
      */
     void addToCompareRequested(const QString &path);
 
+    /**
+     * @brief Emitted when the user requests exporting a folder's classification.
+     * @param path Absolute path of the folder.
+     */
+    void exportCategoriesRequested(const QString &path);
+
 private slots:
     void onPathSubmitted();
     void onContextMenu(const QPoint &pos);

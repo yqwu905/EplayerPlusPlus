@@ -30,6 +30,8 @@ set(SOURCES
     services/SettingsManager.h
     services/ImageMarkManager.cpp
     services/ImageMarkManager.h
+    services/CategoryExporter.cpp
+    services/CategoryExporter.h
     services/ImageLoader.cpp
     services/ImageLoader.h
     services/ImageComparer.cpp
@@ -70,6 +72,8 @@ set(LIB_SOURCES
     services/SettingsManager.h
     services/ImageMarkManager.cpp
     services/ImageMarkManager.h
+    services/CategoryExporter.cpp
+    services/CategoryExporter.h
     services/ImageLoader.cpp
     services/ImageLoader.h
     services/ImageComparer.cpp

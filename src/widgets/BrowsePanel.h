@@ -47,6 +47,13 @@ signals:
     void selectionChanged(const QList<QPair<QString, QString>> &selectedImages);
     void scanStatusChanged(const QString &statusText);
 
+    /**
+     * @brief Emitted when the user requests exporting a folder's classification
+     * from a thumbnail column's blank-area context menu.
+     * @param folderPath Absolute path of the column's folder.
+     */
+    void exportCategoriesRequested(const QString &folderPath);
+
 public slots:
     /**
      * @brief Navigate to the next image in all columns that have a selection.

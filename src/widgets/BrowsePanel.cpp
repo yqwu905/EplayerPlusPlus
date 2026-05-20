@@ -22,6 +22,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
@@ -112,6 +113,16 @@ QRect thumbnailCardRect(const QRect &itemRect)
     return QRect(cardX, itemRect.y() + 2, kThumbnailCardWidth, kThumbnailItemHeight - 4);
 }
 
+// The actual thumbnail picture area within an item — matches the rect the
+// delegate paints the image into. Used to distinguish a right-click "on the
+// image" from one on the surrounding non-image area.
+QRect thumbnailImageRect(const QRect &itemRect)
+{
+    const QRect cardRect = thumbnailCardRect(itemRect);
+    return QRect(cardRect.x() + 6, cardRect.y() + 6,
+                 kThumbnailImageWidth, kThumbnailImageHeight);
+}
+
 QRect markButtonRect(const QRect &itemRect, int categoryIndex)
 {
     const QRect cardRect = thumbnailCardRect(itemRect);
@@ -170,6 +181,7 @@ public:
                                             const QString &,
                                             Qt::KeyboardModifiers)>;
     using ContextMenuCallback = std::function<void(const QModelIndex &, const QPoint &)>;
+    using BlankContextMenuCallback = std::function<void(const QPoint &)>;
     using ColumnIndexCallback = std::function<int()>;
     using SwapCallback = std::function<void(int, int)>;
 
@@ -187,6 +199,11 @@ public:
     void setContextMenuCallback(ContextMenuCallback callback)
     {
         m_contextMenuCallback = std::move(callback);
+    }
+
+    void setBlankContextMenuCallback(BlankContextMenuCallback callback)
+    {
+        m_blankContextMenuCallback = std::move(callback);
     }
 
     void setColumnIndexCallback(ColumnIndexCallback callback)
@@ -349,17 +366,28 @@ private:
     bool showContextMenu(QContextMenuEvent *event)
     {
         const QModelIndex modelIndex = indexAt(event->pos());
-        if (!modelIndex.isValid() || !m_contextMenuCallback) {
-            return false;
-        }
+        // A right-click counts as "on the image" only when it lands on the
+        // actual thumbnail picture; everywhere else in the column (card padding,
+        // text, gaps, empty space) is treated as non-image → folder menu.
+        const bool onImage = modelIndex.isValid()
+            && thumbnailImageRect(visualRect(modelIndex)).contains(event->pos());
 
-        m_contextMenuCallback(modelIndex, event->globalPos());
-        event->accept();
-        return true;
+        if (onImage && m_contextMenuCallback) {
+            m_contextMenuCallback(modelIndex, event->globalPos());
+            event->accept();
+            return true;
+        }
+        if (m_blankContextMenuCallback) {
+            m_blankContextMenuCallback(event->globalPos());
+            event->accept();
+            return true;
+        }
+        return false;
     }
 
     MarkCallback m_markCallback;
     ContextMenuCallback m_contextMenuCallback;
+    BlankContextMenuCallback m_blankContextMenuCallback;
     ColumnIndexCallback m_columnIndexCallback;
     SwapCallback m_swapCallback;
     QPoint m_dragStartPos;
@@ -739,6 +767,22 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
         const QString imagePath = modelIndex.data(ImageListModel::FilePathRole).toString();
         ImageContextMenu::showMenu(imagePath, globalPos, this);
+    });
+    thumbnailView->setBlankContextMenuCallback([this, modelPtr](const QPoint &globalPos) {
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex < 0 || !modelPtr) {
+            return;
+        }
+        const QString folderPath = modelPtr->folderPath();
+        if (folderPath.isEmpty()) {
+            return;
+        }
+        QMenu menu(this);
+        QAction *exportAction = menu.addAction(tr("导出分类…"));
+        connect(exportAction, &QAction::triggered, this, [this, folderPath]() {
+            emit exportCategoriesRequested(folderPath);
+        });
+        menu.exec(globalPos);
     });
 
     connect(col.model, &QAbstractItemModel::rowsInserted,

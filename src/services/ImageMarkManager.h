@@ -57,6 +57,10 @@ public:
     bool loadFolder(const QString &folderPath);
     QString markForImage(const QString &folderPath, const QString &imagePath) const;
     QString markForImageKey(const QString &folderPath, const QString &imageKey) const;
+    // Returns {imageKey (folder-relative path) -> category} for every image that
+    // currently carries an A/B/C/D mark. Unmarked entries are omitted. Returns an
+    // empty hash if the folder has not been loaded.
+    QHash<QString, QString> marksForFolder(const QString &folderPath) const;
     bool setMarkForImage(const QString &folderPath,
                          const QString &imagePath,
                          const QString &category);

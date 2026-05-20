@@ -549,6 +549,28 @@ QString ImageMarkManager::markForImageKey(const QString &folderPath,
     return markIt->category;
 }
 
+QHash<QString, QString> ImageMarkManager::marksForFolder(const QString &folderPath) const
+{
+    const QString normalizedFolder = normalizeFolderPath(folderPath);
+    if (normalizedFolder.isEmpty()) {
+        return {};
+    }
+
+    QMutexLocker locker(&m_mutex);
+    auto folderIt = m_folderMarks.constFind(normalizedFolder);
+    if (folderIt == m_folderMarks.constEnd() || !folderIt->loaded) {
+        return {};
+    }
+
+    QHash<QString, QString> result;
+    for (auto it = folderIt->marks.constBegin(); it != folderIt->marks.constEnd(); ++it) {
+        if (!it->category.isEmpty()) {
+            result.insert(it.key(), it->category);
+        }
+    }
+    return result;
+}
+
 // ---------------------------------------------------------------------------
 // Mutations
 // ---------------------------------------------------------------------------
