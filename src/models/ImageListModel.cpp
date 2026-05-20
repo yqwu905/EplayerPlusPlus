@@ -88,6 +88,7 @@ void ImageListModel::setFolder(const QString &folderPath)
     m_filteredSourceRows.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
+    m_sourceModifiedUtc.clear();
     m_nextLoadIndex = 0;
     endResetModel();
 
@@ -122,6 +123,7 @@ void ImageListModel::refresh()
     m_filteredSourceRows.clear();
     m_selectedIndices.clear();
     m_thumbnails.clear();
+    m_sourceModifiedUtc.clear();
     m_nextLoadIndex = 0;
     endResetModel();
 
@@ -370,7 +372,8 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
     }
 
     if (!visibleFirst.isEmpty()) {
-        m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst, kBrowseThumbnailSize);
+        m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst, kBrowseThumbnailSize,
+                                                         m_sourceModifiedUtc);
     }
 }
 
@@ -390,7 +393,8 @@ bool ImageListModel::loadNextThumbnailBatch(int batchSize)
         }
     }
     if (!pathsToLoad.isEmpty()) {
-        m_imageLoader->requestThumbnailBatch(pathsToLoad, kBrowseThumbnailSize);
+        m_imageLoader->requestThumbnailBatch(pathsToLoad, kBrowseThumbnailSize,
+                                             m_sourceModifiedUtc);
     }
     m_nextLoadIndex = end;
     return m_nextLoadIndex < imageCount();
@@ -472,7 +476,7 @@ void ImageListModel::startScan(const QString &path)
         FileUtils::scanForImagesBatched(
             path,
             options,
-            [this, generation](const QStringList &batch, bool /*initialBatch*/) {
+            [this, generation](const QVector<FileUtils::ScannedImage> &batch, bool /*initialBatch*/) {
                 if (batch.isEmpty()) {
                     return;
                 }
@@ -495,7 +499,7 @@ void ImageListModel::startScan(const QString &path)
     });
 }
 
-void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
+void ImageListModel::appendScanBatch(const QVector<FileUtils::ScannedImage> &batch, int generation)
 {
     if (generation != m_scanGeneration || batch.isEmpty()) {
         return;
@@ -508,12 +512,14 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
     m_markKeyToIndex.reserve(m_markKeyToIndex.size() + batch.size());
     m_fileNameToIndex.reserve(m_fileNameToIndex.size() + batch.size());
     m_filteredSourceRows.reserve(m_filteredSourceRows.size() + batch.size());
+    m_sourceModifiedUtc.reserve(m_sourceModifiedUtc.size() + batch.size());
 
     if (!hasActiveFilters()) {
         const int beginRow = m_imagePaths.size();
         const int endRow = beginRow + batch.size() - 1;
         beginInsertRows(QModelIndex(), beginRow, endRow);
-        for (const QString &path : batch) {
+        for (const FileUtils::ScannedImage &item : batch) {
+            const QString &path = item.path;
             const int index = m_imagePaths.size();
             const QString fileName = QFileInfo(path).fileName();
             const QString markKey = ImageMarkManager::imageKeyForPath(m_normalizedFolderPath, path);
@@ -527,10 +533,12 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
             }
             m_imagePaths.append(path);
             m_fileNames.append(fileName);
+            m_sourceModifiedUtc.insert(path, item.lastModifiedUtc);
         }
         endInsertRows();
     } else {
-        for (const QString &path : batch) {
+        for (const FileUtils::ScannedImage &item : batch) {
+            const QString &path = item.path;
             const int sourceIndex = m_imagePaths.size();
             const QString fileName = QFileInfo(path).fileName();
             const QString markKey = ImageMarkManager::imageKeyForPath(m_normalizedFolderPath, path);
@@ -544,6 +552,7 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
             }
             m_imagePaths.append(path);
             m_fileNames.append(fileName);
+            m_sourceModifiedUtc.insert(path, item.lastModifiedUtc);
 
             if (sourceImageMatchesFilters(sourceIndex)) {
                 const int row = m_filteredSourceRows.size();
@@ -557,7 +566,10 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
     if (m_imageLoader && m_initialPrefetchRemaining > 0) {
         QStringList candidates;
         if (!hasActiveFilters()) {
-            candidates = batch;
+            candidates.reserve(batch.size());
+            for (const FileUtils::ScannedImage &item : batch) {
+                candidates.append(item.path);
+            }
         } else {
             for (int i = qMax(0, imageCount() - batch.size()); i < imageCount(); ++i) {
                 const QString path = imagePathAt(i);
@@ -569,7 +581,8 @@ void ImageListModel::appendScanBatch(const QStringList &batch, int generation)
 
         const int count = qMin(m_initialPrefetchRemaining, candidates.size());
         m_imageLoader->requestThumbnailBatchVisibleFirst(candidates.mid(0, count),
-                                                         kBrowseThumbnailSize);
+                                                         kBrowseThumbnailSize,
+                                                         m_sourceModifiedUtc);
         m_initialPrefetchRemaining -= count;
     }
 }

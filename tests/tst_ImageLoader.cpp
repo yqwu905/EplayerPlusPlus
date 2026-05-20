@@ -4,6 +4,9 @@
 #include <QImage>
 #include <QSet>
 #include <QStringList>
+#include <QHash>
+#include <QDateTime>
+#include <QFileInfo>
 
 #include <algorithm>
 
@@ -22,6 +25,10 @@ private slots:
     void fastSwitchActivePathSet_cancelsInflightDecodes();
     void cacheEviction_bounded_lruPreservesRecent();
     void getCachedThumbnailNoSize_returnsLargestForPath();
+    void providedMtime_hitsDiskCacheWithoutStat();
+    void invalidProvidedMtime_fallsBackToStat();
+    void concurrencyPoolSanity();
+    void destructorDuringInflight_noCrash();
 };
 
 void tst_ImageLoader::diskCacheHit_afterFirstDecode()
@@ -319,6 +326,162 @@ void tst_ImageLoader::getCachedThumbnailNoSize_returnsLargestForPath()
     // And an unknown path returns null without scanning everything.
     const QImage missing = loader.getCachedThumbnail(dir.filePath("not_present.png"));
     QVERIFY(missing.isNull());
+}
+
+void tst_ImageLoader::providedMtime_hitsDiskCacheWithoutStat()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("provided_mtime.png");
+    QImage img(96, 96, QImage::Format_ARGB32);
+    img.fill(Qt::darkGreen);
+    QVERIFY(img.save(imagePath));
+
+    const QSize size(150, 150);
+
+    // Phase 1: populate the on-disk cache by decoding. No mtime is provided, so
+    // the worker stats the file to key the cache (high-quality batch path).
+    {
+        ImageLoader loader;
+        loader.setMaxConcurrentLoads(1);
+        QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+        loader.requestThumbnailBatch({imagePath}, size);
+        QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+        QVERIFY(loader.thumbnailMetrics().value(QStringLiteral("decodes")) >= 1);
+    }
+
+    // The mtime a scan would have captured — identical to what stat returns.
+    const QDateTime realMtime = QFileInfo(imagePath).lastModified().toUTC();
+
+    // Phase 2: a fresh loader given the correct mtime must hit the on-disk
+    // cache WITHOUT decoding. That is only possible if the *provided* mtime
+    // (not a re-stat) keyed the lookup.
+    {
+        ImageLoader loader;
+        loader.setMaxConcurrentLoads(1);
+        QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+        QHash<QString, QDateTime> mtimes;
+        mtimes.insert(imagePath, realMtime);
+        loader.requestThumbnailBatch({imagePath}, size, mtimes);
+        QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+        const auto metrics = loader.thumbnailMetrics();
+        QVERIFY(metrics.value(QStringLiteral("diskHits")) >= 1);
+        QCOMPARE(metrics.value(QStringLiteral("decodes")), qint64(0));
+    }
+
+    // Control: a deliberately wrong mtime must MISS the disk cache (different
+    // key) and force a decode — confirming the provided value drives the key.
+    {
+        ImageLoader loader;
+        loader.setMaxConcurrentLoads(1);
+        QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+        QHash<QString, QDateTime> mtimes;
+        mtimes.insert(imagePath, realMtime.addSecs(-100000)); // valid but wrong
+        loader.requestThumbnailBatch({imagePath}, size, mtimes);
+        QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+        const auto metrics = loader.thumbnailMetrics();
+        QCOMPARE(metrics.value(QStringLiteral("diskHits")), qint64(0));
+        QVERIFY(metrics.value(QStringLiteral("decodes")) >= 1);
+    }
+}
+
+void tst_ImageLoader::invalidProvidedMtime_fallsBackToStat()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("invalid_mtime.png");
+    QImage img(80, 80, QImage::Format_ARGB32);
+    img.fill(Qt::red);
+    QVERIFY(img.save(imagePath));
+
+    const QSize size(110, 110);
+    QHash<QString, QDateTime> mtimes;
+    mtimes.insert(imagePath, QDateTime()); // invalid -> worker must stat
+
+    // First load: invalid provided mtime, so the worker stats, decodes, persists.
+    {
+        ImageLoader loader;
+        loader.setMaxConcurrentLoads(1);
+        QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+        loader.requestThumbnailBatch({imagePath}, size, mtimes);
+        QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+        QVERIFY(loader.thumbnailMetrics().value(QStringLiteral("decodes")) >= 1);
+    }
+
+    // Second load, still invalid: the fallback stat reproduces the same cache
+    // key as the first persist, so this is a disk hit — proving the fallback
+    // path is exercised and correct.
+    {
+        ImageLoader loader;
+        loader.setMaxConcurrentLoads(1);
+        QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+        loader.requestThumbnailBatch({imagePath}, size, mtimes);
+        QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+        QVERIFY(loader.thumbnailMetrics().value(QStringLiteral("diskHits")) >= 1);
+    }
+}
+
+void tst_ImageLoader::concurrencyPoolSanity()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QStringList paths;
+    const int kCount = 16;
+    paths.reserve(kCount);
+    for (int i = 0; i < kCount; ++i) {
+        const QString p = dir.filePath(QString("pool_%1.png").arg(i));
+        QImage img(64, 64, QImage::Format_ARGB32);
+        img.fill(QColor::fromHsv((i * 19) % 360, 200, 200));
+        QVERIFY(img.save(p));
+        paths << p;
+    }
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(8);
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+
+    loader.requestThumbnailBatchVisibleFirst(paths, QSize(80, 80));
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), kCount, 20000);
+
+    // Every unique path is serviced exactly once, by decode or disk hit.
+    const auto metrics = loader.thumbnailMetrics();
+    QCOMPARE(metrics.value(QStringLiteral("decodes")) + metrics.value(QStringLiteral("diskHits")),
+             static_cast<qint64>(kCount));
+}
+
+void tst_ImageLoader::destructorDuringInflight_noCrash()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QStringList paths;
+    const int kCount = 24;
+    paths.reserve(kCount);
+    for (int i = 0; i < kCount; ++i) {
+        const QString p = dir.filePath(QString("inflight_%1.png").arg(i));
+        QImage img(256, 256, QImage::Format_ARGB32);
+        img.fill(QColor::fromHsv((i * 29) % 360, 200, 200));
+        QVERIFY(img.save(p));
+        paths << p;
+    }
+
+    {
+        ImageLoader loader;
+        loader.setMaxConcurrentLoads(8);
+        loader.requestThumbnailBatch(paths, QSize(200, 200));
+        // Let workers start, then let `loader` go out of scope mid-flight. The
+        // destructor must drain the pool and drop its watchers without crashing
+        // or delivering callbacks on a destroyed object.
+        QTest::qWait(20);
+    }
+
+    // Pump the event loop to surface any stray queued callbacks (there should
+    // be none). Reaching here without a crash means teardown is sound.
+    QTest::qWait(100);
+    QVERIFY(true);
 }
 
 QTEST_MAIN(tst_ImageLoader)

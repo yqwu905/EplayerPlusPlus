@@ -1,7 +1,10 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QImage>
+#include <QDateTime>
+#include <QVector>
 #include <memory>
 
 #include "utils/FileUtils.h"
@@ -27,6 +30,7 @@ private slots:
     void testScanForImagesBatched_batches();
     void testScanForImagesBatched_initialBatchFlushesEarly();
     void testScanForImagesBatched_cancel();
+    void testScanForImagesBatched_deliversValidMtime();
 
     void testGetSubdirectories();
     void testGetSubdirectories_empty();
@@ -194,8 +198,10 @@ void tst_FileUtils::testScanForImagesBatched_batches()
     FileUtils::scanForImagesBatched(
         m_tempDir.path(),
         options,
-        [&all](const QStringList &batch, bool /*initialBatch*/) {
-            all.append(batch);
+        [&all](const QVector<FileUtils::ScannedImage> &batch, bool /*initialBatch*/) {
+            for (const FileUtils::ScannedImage &item : batch) {
+                all.append(item.path);
+            }
         },
         [&progressUpdates](const FileUtils::ScanProgress &progress) {
             ++progressUpdates;
@@ -229,8 +235,8 @@ void tst_FileUtils::testScanForImagesBatched_initialBatchFlushesEarly()
     FileUtils::scanForImagesBatched(
         dir.path(),
         options,
-        [&batchSizes, &initialFlags](const QStringList &batch, bool initialBatch) {
-            batchSizes.append(batch.size());
+        [&batchSizes, &initialFlags](const QVector<FileUtils::ScannedImage> &batch, bool initialBatch) {
+            batchSizes.append(static_cast<int>(batch.size()));
             initialFlags.append(initialBatch);
         });
 
@@ -258,8 +264,10 @@ void tst_FileUtils::testScanForImagesBatched_cancel()
     FileUtils::scanForImagesBatched(
         m_tempDir.path(),
         options,
-        [&all, &token, &cancelledEarly](const QStringList &batch, bool /*initialBatch*/) {
-            all.append(batch);
+        [&all, &token, &cancelledEarly](const QVector<FileUtils::ScannedImage> &batch, bool /*initialBatch*/) {
+            for (const FileUtils::ScannedImage &item : batch) {
+                all.append(item.path);
+            }
             if (all.size() >= 10 && !token->isCancelled()) {
                 token->cancel();
                 cancelledEarly = true;
@@ -270,6 +278,34 @@ void tst_FileUtils::testScanForImagesBatched_cancel()
 
     QVERIFY(cancelledEarly);
     QVERIFY(all.size() < 60);
+}
+
+void tst_FileUtils::testScanForImagesBatched_deliversValidMtime()
+{
+    QVector<FileUtils::ScannedImage> all;
+    FileUtils::ScanOptions options;
+    options.recursive = true;
+    options.batchSize = 4;
+    options.initialBatchSize = 2;
+
+    FileUtils::scanForImagesBatched(
+        m_tempDir.path(),
+        options,
+        [&all](const QVector<FileUtils::ScannedImage> &batch, bool /*initialBatch*/) {
+            all.append(batch);
+        });
+
+    QVERIFY(all.size() >= 6);
+    for (const FileUtils::ScannedImage &item : all) {
+        QVERIFY(!item.path.isEmpty());
+        QVERIFY2(item.lastModifiedUtc.isValid(),
+                 qPrintable(QStringLiteral("invalid mtime for %1").arg(item.path)));
+        QCOMPARE(item.lastModifiedUtc.timeSpec(), Qt::UTC);
+        // The scan-time mtime must match a direct stat of the same file
+        // (allow a couple of seconds for filesystem timestamp granularity).
+        const QDateTime direct = QFileInfo(item.path).lastModified().toUTC();
+        QVERIFY(qAbs(item.lastModifiedUtc.secsTo(direct)) <= 2);
+    }
 }
 
 void tst_FileUtils::testGetSubdirectories()

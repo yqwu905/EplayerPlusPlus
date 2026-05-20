@@ -5,13 +5,14 @@
 #include <QStringList>
 #include <QImage>
 #include <QHash>
+#include <QDateTime>
+#include <QVector>
 #include <memory>
+
+#include "utils/FileUtils.h"
 
 class ImageLoader;
 class ImageMarkManager;
-namespace FileUtils {
-class ScanCancelToken;
-}
 
 /**
  * @brief List model for images within a single folder.
@@ -192,7 +193,7 @@ private slots:
 
 private:
     void startScan(const QString &path);
-    void appendScanBatch(const QStringList &batch, int generation);
+    void appendScanBatch(const QVector<FileUtils::ScannedImage> &batch, int generation);
     void finalizeScan(int generation);
     void cancelPendingScan();
     int sourceIndexForRow(int row) const;
@@ -216,6 +217,9 @@ private:
     QString m_categoryFilter;
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
+    // path -> source last-modified time captured during the folder scan, passed
+    // to ImageLoader so the decode worker can skip a redundant stat() per thumbnail.
+    QHash<QString, QDateTime> m_sourceModifiedUtc;
     ImageLoader *m_imageLoader = nullptr;
     ImageMarkManager *m_markManager = nullptr;
     std::shared_ptr<FileUtils::ScanCancelToken> m_scanCancelToken;

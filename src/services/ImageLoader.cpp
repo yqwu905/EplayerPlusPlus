@@ -4,6 +4,7 @@
 #include <QtConcurrent>
 #include <QMutexLocker>
 #include <QFutureWatcher>
+#include <QThread>
 #include <QMetaObject>
 #include <QFileInfo>
 #include <QDir>
@@ -25,33 +26,62 @@ ImageLoader::ImageLoader(QObject *parent)
       m_thumbnailCancel(std::make_shared<CancellationState>()),
       m_imageCancel(std::make_shared<CancellationState>())
 {
+    // More in-flight loads than CPU cores so network/slow-disk reads overlap
+    // their I/O latency. Bounded so we don't flood a share with connections.
+    m_decodePool.setMaxThreadCount(qBound(4, QThread::idealThreadCount() * 2, 12));
+    m_decodePool.setExpiryTimeout(30000);
 }
 
-ImageLoader::~ImageLoader() = default;
+ImageLoader::~ImageLoader()
+{
+    // Bump generations so any worker still in its pre-decode check self-aborts.
+    m_thumbnailCancel->generation.fetch_add(1, std::memory_order_release);
+    m_imageCancel->generation.fetch_add(1, std::memory_order_release);
+
+    // Drain the pool while `this` is still alive. Workers capture only a
+    // shared_ptr to the cancellation state (never `this`), so joining them is
+    // safe; clear() drops queued-but-unstarted runnables first.
+    m_decodePool.clear();
+    m_decodePool.waitForDone();
+
+    // The QFutureWatcher children's finished-slots capture `this`. Their futures
+    // are now finished, but the queued slot invocations have not run (we're on
+    // the main thread). Delete the watchers now so those invocations never fire
+    // on a half-destroyed object.
+    const auto watchers = findChildren<QFutureWatcherBase *>();
+    for (QFutureWatcherBase *watcher : watchers) {
+        delete watcher;
+    }
+}
 
 void ImageLoader::requestThumbnail(const QString &imagePath, const QSize &thumbnailSize)
 {
     enqueueThumbnailRequest(imagePath, thumbnailSize, kPriorityVisible, false);
 }
 
-void ImageLoader::requestThumbnailBatch(const QStringList &imagePaths, const QSize &thumbnailSize)
+void ImageLoader::requestThumbnailBatch(const QStringList &imagePaths, const QSize &thumbnailSize,
+                                        const QHash<QString, QDateTime> &sourceModifiedUtc)
 {
     for (const QString &path : imagePaths) {
-        enqueueThumbnailRequest(path, thumbnailSize, kPriorityBackground, true);
+        enqueueThumbnailRequest(path, thumbnailSize, kPriorityBackground, true,
+                                sourceModifiedUtc.value(path));
     }
 }
 
-void ImageLoader::requestThumbnailBatchVisibleFirst(const QStringList &imagePaths, const QSize &thumbnailSize)
+void ImageLoader::requestThumbnailBatchVisibleFirst(const QStringList &imagePaths, const QSize &thumbnailSize,
+                                                    const QHash<QString, QDateTime> &sourceModifiedUtc)
 {
     for (const QString &path : imagePaths) {
-        enqueueThumbnailRequest(path, thumbnailSize, kPriorityVisible, false);
+        enqueueThumbnailRequest(path, thumbnailSize, kPriorityVisible, false,
+                                sourceModifiedUtc.value(path));
     }
 }
 
 void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
                                           const QSize &thumbnailSize,
                                           int priority,
-                                          bool highQuality)
+                                          bool highQuality,
+                                          const QDateTime &sourceModifiedUtc)
 {
     if (imagePath.isEmpty() || !thumbnailSize.isValid()) {
         return;
@@ -84,7 +114,7 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
         }
 
         if (!hasCached) {
-            ThumbnailRequest request{key, imagePath, thumbnailSize, priority, highQuality};
+            ThumbnailRequest request{key, imagePath, thumbnailSize, priority, highQuality, sourceModifiedUtc};
             auto pendingIt = m_pendingRequests.find(key);
             if (pendingIt != m_pendingRequests.end()) {
                 if (priority > pendingIt->priority) {
@@ -173,7 +203,7 @@ void ImageLoader::processQueue()
         // and self-aborts so fast folder switches don't burn CPU.
         auto cancelState = m_thumbnailCancel;
 
-        auto future = QtConcurrent::run([request, cancelState, capturedGeneration]() {
+        auto future = QtConcurrent::run(&m_decodePool, [request, cancelState, capturedGeneration]() {
             const auto makeResult = [&request](const QImage &img,
                                                const QDateTime &mod,
                                                bool fromDisk,
@@ -204,7 +234,13 @@ void ImageLoader::processQueue()
                 return makeResult(QImage(), QDateTime(), false, true);
             }
 
-            const QDateTime modifiedUtc = sourceLastModifiedUtc(request.imagePath);
+            // Prefer the mtime captured during the folder scan; only stat the
+            // file ourselves when it wasn't provided (single requestThumbnail,
+            // full-image path, or a filesystem that couldn't report it). This
+            // removes one stat (a network round-trip) per thumbnail.
+            const QDateTime modifiedUtc = request.sourceLastModifiedUtc.isValid()
+                ? request.sourceLastModifiedUtc
+                : sourceLastModifiedUtc(request.imagePath);
 
             if (QImage disk = tryLoadDiskCachedThumbnail(
                     request.imagePath,
@@ -391,7 +427,7 @@ void ImageLoader::processImageQueue()
         }
 
         auto cancelState = m_imageCancel;
-        auto future = QtConcurrent::run([imagePath, cancelState, capturedGeneration]() {
+        auto future = QtConcurrent::run(&m_decodePool, [imagePath, cancelState, capturedGeneration]() {
             if (capturedGeneration !=
                 cancelState->generation.load(std::memory_order_acquire)) {
                 bool keep = false;
@@ -549,9 +585,16 @@ void ImageLoader::setMaxCacheSize(int maxSize)
 
 void ImageLoader::setMaxConcurrentLoads(int maxConcurrentLoads)
 {
+    int desired = 0;
     {
         QMutexLocker locker(&m_cacheMutex);
         m_maxConcurrentLoads = qBound(1, maxConcurrentLoads, 32);
+        desired = m_maxConcurrentLoads;
+    }
+    // Make sure the pool can actually run the requested number of loads
+    // concurrently (it never shrinks below its configured floor).
+    if (m_decodePool.maxThreadCount() < desired) {
+        m_decodePool.setMaxThreadCount(desired);
     }
     processQueue();
 }

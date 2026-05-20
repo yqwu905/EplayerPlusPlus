@@ -10,6 +10,7 @@
 #include <QSize>
 #include <QDateTime>
 #include <QQueue>
+#include <QThreadPool>
 
 #include <atomic>
 #include <list>
@@ -48,8 +49,10 @@ public:
      * it groups work into fewer QtConcurrent tasks and QFutureWatcher objects.
      * Each completed thumbnail still emits thumbnailReady individually.
      */
-    void requestThumbnailBatch(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200));
-    void requestThumbnailBatchVisibleFirst(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200));
+    void requestThumbnailBatch(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200),
+                               const QHash<QString, QDateTime> &sourceModifiedUtc = {});
+    void requestThumbnailBatchVisibleFirst(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200),
+                                           const QHash<QString, QDateTime> &sourceModifiedUtc = {});
 
     /**
      * @brief Request asynchronous loading of a full-size image.
@@ -123,6 +126,9 @@ private:
         QSize thumbnailSize;
         int priority = 0;
         bool highQuality = true;
+        // Source mtime captured during the folder scan. If invalid, the decode
+        // worker falls back to stat()ing the file itself.
+        QDateTime sourceLastModifiedUtc;
     };
 
     using ThumbnailList = std::list<CacheEntry>;
@@ -159,13 +165,18 @@ private:
     // they remain valid even if the ImageLoader is destroyed mid-decode.
     std::shared_ptr<CancellationState> m_thumbnailCancel;
     std::shared_ptr<CancellationState> m_imageCancel;
+    // Dedicated pool for decode/load workers. The global pool caps at
+    // ~idealThreadCount (CPU cores), which throttles concurrent reads from a
+    // network share; a dedicated pool lets us run more in-flight loads to
+    // overlap I/O latency. Drained explicitly in the destructor.
+    QThreadPool m_decodePool;
     int m_maxCacheSize = 1000;
     qint64 m_maxThumbnailCacheBytes = 256LL * 1024LL * 1024LL;
     qint64 m_currentThumbnailCacheBytes = 0;
     int m_maxImageCacheSize = 64;
     qint64 m_maxImageCacheBytes = 512LL * 1024LL * 1024LL;
     qint64 m_currentImageCacheBytes = 0;
-    int m_maxConcurrentLoads = 4;
+    int m_maxConcurrentLoads = 8;
     int m_activeLoads = 0;
     int m_maxConcurrentImageLoads = 2;
     int m_activeImageLoads = 0;
@@ -199,7 +210,8 @@ private:
     void enqueueThumbnailRequest(const QString &imagePath,
                                  const QSize &thumbnailSize,
                                  int priority,
-                                 bool highQuality);
+                                 bool highQuality,
+                                 const QDateTime &sourceModifiedUtc = {});
     void enqueueRequestUnlocked(const ThumbnailRequest &request);
     void processQueue();
     void finishRequest(const QString &imagePath,

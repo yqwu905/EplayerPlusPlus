@@ -3,6 +3,8 @@
 
 #include <QStringList>
 #include <QDir>
+#include <QDateTime>
+#include <QVector>
 #include <functional>
 #include <memory>
 #include <atomic>
@@ -26,6 +28,20 @@ private:
 struct ScanProgress {
     int discoveredCount = 0;
     bool finished = false;
+};
+
+/**
+ * @brief A discovered image file plus its last-modified time.
+ *
+ * The directory scan already materializes a QFileInfo per entry to apply the
+ * QDir::Files filter, so capturing the mtime here is essentially free. It is
+ * threaded through to the thumbnail loader so the decode worker can skip a
+ * redundant stat() (a network round-trip on a share) when keying the disk cache.
+ * lastModifiedUtc may be invalid if the filesystem cannot report it.
+ */
+struct ScannedImage {
+    QString path;
+    QDateTime lastModifiedUtc;
 };
 
 /**
@@ -69,7 +85,7 @@ QStringList scanForImages(const QString &dirPath,
 void scanForImagesBatched(
     const QString &dirPath,
     const ScanOptions &options,
-    const std::function<void(const QStringList &batch, bool initialBatch)> &onBatch,
+    const std::function<void(const QVector<ScannedImage> &batch, bool initialBatch)> &onBatch,
     const std::function<void(const ScanProgress &progress)> &onProgress = {},
     const std::shared_ptr<ScanCancelToken> &cancelToken = {});
 
