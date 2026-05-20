@@ -580,11 +580,18 @@ void BrowsePanel::setupUi()
         "QLabel#compareColumnHeaderLabel { color: #243041; background: transparent; border: none; }"
         "QLabel#compareColumnProgressLabel { color: #687385; font-size: 11px; background: transparent; border: none; }"
         "QLabel#browseFilterLabel { color: #4B5563; font-size: 12px; background: transparent; border: none; }"
-        "QLineEdit#fileNameFilterEdit, QComboBox#categoryFilterComboBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; color: #243041; }"
-        "QCheckBox#fuzzyFileNameCheckBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 10px; color: #243041; }"
-        "QCheckBox#fuzzyFileNameCheckBox::indicator { width: 0px; height: 0px; }"
-        "QCheckBox#fuzzyFileNameCheckBox:hover { background: #F8FAFC; border-color: #C7D2E1; }"
-        "QCheckBox#fuzzyFileNameCheckBox:checked { background: #E5F1FB; border-color: #0078D4; color: #0078D4; }"
+        "QLineEdit#fileNameFilterEdit { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; color: #243041; }"
+        "QLineEdit#fileNameFilterEdit:focus { border-color: #0078D4; }"
+        "QComboBox#categoryFilterComboBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; padding-right: 22px; color: #243041; }"
+        "QComboBox#categoryFilterComboBox:hover { border-color: #C7D2E1; }"
+        "QComboBox#categoryFilterComboBox:focus { border-color: #0078D4; }"
+        "QComboBox#categoryFilterComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border: none; background: transparent; }"
+        "QComboBox#categoryFilterComboBox::down-arrow { image: url(:/icons/chevron_down.svg); width: 12px; height: 12px; }"
+        "QComboBox#categoryFilterComboBox QAbstractItemView { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 2px; outline: none; selection-background-color: #E5F1FB; selection-color: #0078D4; }"
+        "QCheckBox#fuzzyFileNameCheckBox { background: transparent; border: none; padding: 0px; spacing: 6px; color: #243041; }"
+        "QCheckBox#fuzzyFileNameCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #C7D2E1; border-radius: 4px; background: #FFFFFF; }"
+        "QCheckBox#fuzzyFileNameCheckBox::indicator:hover { border-color: #0078D4; }"
+        "QCheckBox#fuzzyFileNameCheckBox::indicator:checked { background: #0078D4; border-color: #0078D4; image: url(:/icons/check.svg); }"
         "QListView#compareColumnListView { background-color: #FFFFFF; border: none; outline: none; }");
 }
 

@@ -3,5 +3,7 @@
         <file>icons/app_icon.png</file>
         <file>icons/branch_closed.svg</file>
         <file>icons/branch_open.svg</file>
+        <file>icons/chevron_down.svg</file>
+        <file>icons/check.svg</file>
     </qresource>
 </RCC>
