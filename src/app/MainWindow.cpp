@@ -115,8 +115,8 @@ void MainWindow::setupUi()
         "QFrame#commandSeparator { background: #E3E7EC; border: none; max-width: 1px; min-width: 1px; }"
         "QToolButton#commandButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px 10px; color: #1F2937; font-size: 12px; }"
         "QToolButton#commandButton:hover { background: #F4F7FB; border-color: #E2E8F0; }"
-        "QToolButton#commandButton:pressed { background: #EAF1FB; }"
-        "QToolButton#commandButton:checked { background: #EAF4FF; border-color: #CFE4FF; color: #186FD7; font-weight: 600; }"
+        "QToolButton#commandButton:pressed { background: #CCE4F7; }"
+        "QToolButton#commandButton:checked { background: #E5F1FB; border-color: #C7E0F4; color: #0078D4; font-weight: 600; }"
         "QPushButton#valuePill { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 10px; color: #243041; font-size: 12px; }"
         "QLabel#toolbarLabel { color: #263241; font-size: 12px; background: transparent; border: none; }");
 
@@ -255,9 +255,6 @@ QWidget *MainWindow::createCommandBar()
     addButton(m_resizeToFirstAction);
 
     layout->addStretch();
-
-    addButton(new QAction(QStringLiteral("⚙  设置"), bar));
-    addButton(new QAction(QStringLiteral("⋮"), bar));
 
     return bar;
 }

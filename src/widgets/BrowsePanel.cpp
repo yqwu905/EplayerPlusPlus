@@ -584,7 +584,7 @@ void BrowsePanel::setupUi()
         "QCheckBox#fuzzyFileNameCheckBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 10px; color: #243041; }"
         "QCheckBox#fuzzyFileNameCheckBox::indicator { width: 0px; height: 0px; }"
         "QCheckBox#fuzzyFileNameCheckBox:hover { background: #F8FAFC; border-color: #C7D2E1; }"
-        "QCheckBox#fuzzyFileNameCheckBox:checked { background: #EAF3FF; border-color: #2D7FF9; color: #1F5FBF; }"
+        "QCheckBox#fuzzyFileNameCheckBox:checked { background: #E5F1FB; border-color: #0078D4; color: #0078D4; }"
         "QListView#compareColumnListView { background-color: #FFFFFF; border: none; outline: none; }");
 }
 

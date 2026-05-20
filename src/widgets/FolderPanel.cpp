@@ -40,9 +40,9 @@ void FolderPanel::setupUi()
         "QTreeView#folderTreeView { background-color: #FFFFFF; border: none; padding: 2px; outline: none; }"
         "QTreeView#folderTreeView::item { padding: 3px 6px; border-radius: 5px; min-height: 24px; color: #243041; }"
         "QTreeView#folderTreeView::item:hover { background-color: #F5F7FA; }"
-        "QTreeView#folderTreeView::item:selected { background-color: #EAF4FF; color: #111827; }"
+        "QTreeView#folderTreeView::item:selected { background-color: #E5F1FB; color: #111827; }"
         "QLineEdit#folderPathInput { background-color: #F8FAFC; border: 1px solid #E5EAF1; border-radius: 6px; padding: 5px 8px; color: #374151; }"
-        "QLineEdit#folderPathInput:focus { background-color: #FFFFFF; border-color: #2D7FF9; }"
+        "QLineEdit#folderPathInput:focus { background-color: #FFFFFF; border-color: #0078D4; }"
         "QLabel#folderStatusLabel { color: #5E6A7A; font-size: 11px; border: none; background: transparent; }");
 
     // ---- Toolbar retained for command actions, hidden visually in the new shell ----

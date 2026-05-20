@@ -83,6 +83,8 @@ void tst_MainWindow::commandBar_removesDeadMenuAndBrowseButtons()
 
     QVERIFY(!commandTexts.contains(QStringLiteral("☰")));
     QVERIFY(!commandTexts.contains(QStringLiteral("▦  浏览")));
+    QVERIFY(!commandTexts.contains(QStringLiteral("⚙  设置")));
+    QVERIFY(!commandTexts.contains(QStringLiteral("⋮")));
     QVERIFY(commandTexts.contains(QStringLiteral("↑  上一张")));
     QVERIFY(commandTexts.contains(QStringLiteral("↓  下一张")));
 }

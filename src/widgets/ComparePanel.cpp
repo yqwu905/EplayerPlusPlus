@@ -66,7 +66,7 @@ QString compareCellContainerStyle(bool current)
     return QStringLiteral(
         "QWidget#compareCellContainer { background-color: #FFFFFF; "
         "border: 2px solid %1; border-radius: 8px; }")
-        .arg(current ? QStringLiteral("#2D7FF9") : QStringLiteral("transparent"));
+        .arg(current ? QStringLiteral("#0078D4") : QStringLiteral("transparent"));
 }
 
 QByteArray encodeFolderOrderDragIndex(int index)
@@ -943,13 +943,13 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
             "  padding: 0px;"
             "}"
             "QPushButton:hover {"
-            "  background-color: #EFF6FF;"
-            "  border-color: #2D7FF9;"
-            "  color: #186FD7;"
+            "  background-color: #E5F1FB;"
+            "  border-color: #0078D4;"
+            "  color: #0078D4;"
             "}"
             "QPushButton:pressed {"
-            "  background-color: #2D7FF9;"
-            "  border-color: #2D7FF9;"
+            "  background-color: #0078D4;"
+            "  border-color: #0078D4;"
             "  color: #FFFFFF;"
             "}");
 
@@ -1068,16 +1068,16 @@ void ComparePanel::updateMarkButtonsForCell(int cellIndex)
         const bool active = (button->text() == currentMark);
         button->setStyleSheet(active
             ? QStringLiteral(
-                  "QPushButton { border: 1px solid #2D7FF9; border-radius: 4px; "
-                  "background-color: #EAF4FF; color: #186FD7; font-weight: 700; "
+                  "QPushButton { border: 1px solid #0078D4; border-radius: 4px; "
+                  "background-color: #E5F1FB; color: #0078D4; font-weight: 700; "
                   "font-size: 11px; padding: 0px; }"
-                  "QPushButton:hover { background-color: #DDEEFF; }")
+                  "QPushButton:hover { background-color: #CCE4F7; }")
             : QStringLiteral(
                   "QPushButton { border: 1px solid #E0E5ED; border-radius: 4px; "
                   "background-color: #FFFFFF; color: #344054; font-weight: 600; "
                   "font-size: 11px; padding: 0px; }"
                   "QPushButton:hover { background-color: #F7FAFD; border-color: #B9C4D3; }"
-                  "QPushButton:pressed { background-color: #EAF4FF; border-color: #2D7FF9; }"));
+                  "QPushButton:pressed { background-color: #E5F1FB; border-color: #0078D4; }"));
     }
 }
 
