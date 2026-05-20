@@ -38,6 +38,7 @@ private slots:
     void folderSwap_reordersColumnsAndKeepsSelections();
     void scrollableColumn_keepsHeaderControlsVisible();
     void virtualizedColumn_doesNotCreateThumbnailWidgetsForRows();
+    void panelWidth_locksToMinimumAndTracksFolderCount();
 
 private:
     static QList<QListView *> sortedViews(BrowsePanel &panel);
@@ -293,12 +294,9 @@ void tst_BrowsePanel::altClick_exactVsFuzzyFileNameMatch()
               (views[0]->model()->rowCount() == 1 && views[1]->model()->rowCount() == 2))),
         8000);
 
-    auto *fuzzyCheckBox = panel.findChild<QCheckBox *>("fuzzyFileNameCheckBox");
-    QVERIFY(fuzzyCheckBox != nullptr);
-    QVERIFY(fuzzyCheckBox->isVisibleTo(&panel));
-    QCOMPARE(fuzzyCheckBox->text(), QStringLiteral("模糊匹配"));
-    QVERIFY(!fuzzyCheckBox->isChecked());
-    fuzzyCheckBox->setChecked(true);
+    // Fuzzy matching is now driven from the command bar via this setter rather
+    // than an in-panel checkbox.
+    panel.setFuzzyFileNameMatchEnabled(true);
 
     QListView *anchorView = nullptr;
     QListView *fuzzyView = nullptr;
@@ -708,6 +706,44 @@ void tst_BrowsePanel::virtualizedColumn_doesNotCreateThumbnailWidgetsForRows()
     QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
     waitForRows(views[0], 200);
     QCOMPARE(panel.findChildren<ThumbnailWidget *>().size(), 0);
+}
+
+void tst_BrowsePanel::panelWidth_locksToMinimumAndTracksFolderCount()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage(16, 16, QImage::Format_ARGB32).save(dir.filePath("a.png"));
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    // Width is locked: minimum and maximum coincide regardless of folder count.
+    const int emptyWidth = panel.maximumWidth();
+    QCOMPARE(panel.minimumWidth(), emptyWidth);
+
+    QVERIFY(session.addFolder(dir.path()));
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
+    const int oneFolderWidth = panel.maximumWidth();
+    QCOMPARE(panel.minimumWidth(), oneFolderWidth);
+
+    QVERIFY(session.addFolder(dir.path()));
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    const int twoFolderWidth = panel.maximumWidth();
+    QCOMPARE(panel.minimumWidth(), twoFolderWidth);
+
+    // Each added column widens the panel; the empty panel matches a single column.
+    QCOMPARE(oneFolderWidth, emptyWidth);
+    QVERIFY2(twoFolderWidth > oneFolderWidth,
+             qPrintable(QString("one=%1 two=%2").arg(oneFolderWidth).arg(twoFolderWidth)));
+
+    // Removing a folder shrinks it back.
+    session.removeFolderAt(1);
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
+    QCOMPARE(panel.maximumWidth(), oneFolderWidth);
 }
 
 QTEST_MAIN(tst_BrowsePanel)

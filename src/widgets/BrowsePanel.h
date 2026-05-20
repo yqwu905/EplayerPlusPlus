@@ -38,6 +38,14 @@ public:
 
     void setImageMarkManager(ImageMarkManager *manager);
 
+    /**
+     * @brief Enable/disable fuzzy file-name matching for Alt+click selection.
+     *
+     * The toggle control lives in the main command bar; this lets it drive the
+     * matching behaviour without the panel owning the widget.
+     */
+    void setFuzzyFileNameMatchEnabled(bool enabled);
+
 signals:
     /**
      * @brief Emitted when the image selection changes.
@@ -93,6 +101,7 @@ private:
     void setupUi();
     void clearAllColumns();
     void rebuildColumnLayout();
+    void updatePanelWidth();
     void updateColumnVisuals(int columnIndex);
     void clearSelection();
     void navigateSelection(int delta);
@@ -136,7 +145,7 @@ private:
     ImageMarkManager *m_markManager = nullptr;
     QVBoxLayout *m_rootLayout = nullptr;
     QLabel *m_scanStatusLabel = nullptr;
-    QCheckBox *m_fuzzyFileNameCheckBox = nullptr;
+    bool m_fuzzyFileNameMatch = false;
     QLineEdit *m_fileNameFilterEdit = nullptr;
     QComboBox *m_categoryFilterCombo = nullptr;
     QHBoxLayout *m_columnsLayout = nullptr;

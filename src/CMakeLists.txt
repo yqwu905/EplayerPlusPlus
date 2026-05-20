@@ -12,6 +12,8 @@ set(SOURCES
     widgets/FolderPanel.h
     widgets/BrowsePanel.cpp
     widgets/BrowsePanel.h
+    widgets/FlowLayout.cpp
+    widgets/FlowLayout.h
     widgets/ComparePanel.cpp
     widgets/ComparePanel.h
     widgets/ImageContextMenu.cpp
@@ -54,6 +56,8 @@ set(LIB_SOURCES
     widgets/FolderPanel.h
     widgets/BrowsePanel.cpp
     widgets/BrowsePanel.h
+    widgets/FlowLayout.cpp
+    widgets/FlowLayout.h
     widgets/ComparePanel.cpp
     widgets/ComparePanel.h
     widgets/ImageContextMenu.cpp

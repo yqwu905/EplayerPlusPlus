@@ -1,4 +1,5 @@
 #include "BrowsePanel.h"
+#include "FlowLayout.h"
 #include "ImageContextMenu.h"
 #include "models/CompareSession.h"
 #include "models/ImageListModel.h"
@@ -7,7 +8,6 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
-#include <QCheckBox>
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDataStream>
@@ -22,6 +22,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QMargins>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -48,6 +49,11 @@ constexpr int kThumbnailImageHeight = 96;
 constexpr int kThumbnailItemHeight = 142;
 constexpr int kColumnHorizontalMargins = 16;
 constexpr int kScrollAreaSafetyPadding = 4;
+// Filter toolbar control widths; also used to floor the panel width so the two
+// inputs always fit on a single row even when only one folder column is shown.
+constexpr int kFilterEditWidth = 120;
+constexpr int kFilterComboWidth = 110;
+constexpr int kFilterRowSpacing = 8;
 constexpr int kPrefetchMinimumRows = 32;
 constexpr int kMarkButtonSize = 18;
 constexpr int kMarkButtonGap = 3;
@@ -537,6 +543,11 @@ void BrowsePanel::setImageMarkManager(ImageMarkManager *manager)
     }
 }
 
+void BrowsePanel::setFuzzyFileNameMatchEnabled(bool enabled)
+{
+    m_fuzzyFileNameMatch = enabled;
+}
+
 void BrowsePanel::setupUi()
 {
     m_rootLayout = new QVBoxLayout(this);
@@ -544,24 +555,20 @@ void BrowsePanel::setupUi()
     m_rootLayout->setSpacing(8);
     setObjectName(QStringLiteral("browsePanelRoot"));
 
-    auto *optionsRow = new QHBoxLayout();
-    optionsRow->setContentsMargins(0, 0, 0, 0);
-    optionsRow->setSpacing(8);
-
-    auto *fileNameLabel = new QLabel(tr("文件名"), this);
-    fileNameLabel->setObjectName(QStringLiteral("browseFilterLabel"));
-    optionsRow->addWidget(fileNameLabel);
+    // The filter toolbar lives in a flow layout so its controls wrap onto a
+    // second row only when the panel is locked to a single narrow column, and
+    // collapse back to one row as soon as more folders widen the panel. Labels
+    // are omitted — the placeholder text and the combo's default entry already
+    // tell the user what each control filters. "模糊匹配" lives in the top
+    // command bar (next to "同步尺寸") so it never crowds this row.
+    auto *optionsRow = new FlowLayout(0, kFilterRowSpacing, 6);
 
     m_fileNameFilterEdit = new QLineEdit(this);
     m_fileNameFilterEdit->setObjectName(QStringLiteral("fileNameFilterEdit"));
     m_fileNameFilterEdit->setPlaceholderText(tr("过滤文件名"));
     m_fileNameFilterEdit->setClearButtonEnabled(true);
-    m_fileNameFilterEdit->setFixedWidth(180);
+    m_fileNameFilterEdit->setFixedWidth(kFilterEditWidth);
     optionsRow->addWidget(m_fileNameFilterEdit);
-
-    auto *categoryLabel = new QLabel(tr("分类"), this);
-    categoryLabel->setObjectName(QStringLiteral("browseFilterLabel"));
-    optionsRow->addWidget(categoryLabel);
 
     m_categoryFilterCombo = new QComboBox(this);
     m_categoryFilterCombo->setObjectName(QStringLiteral("categoryFilterComboBox"));
@@ -571,16 +578,8 @@ void BrowsePanel::setupUi()
     for (const QString &category : categories) {
         m_categoryFilterCombo->addItem(category, category);
     }
-    m_categoryFilterCombo->setFixedWidth(112);
+    m_categoryFilterCombo->setFixedWidth(kFilterComboWidth);
     optionsRow->addWidget(m_categoryFilterCombo);
-
-    m_fuzzyFileNameCheckBox = new QCheckBox(tr("模糊匹配"), this);
-    m_fuzzyFileNameCheckBox->setObjectName(QStringLiteral("fuzzyFileNameCheckBox"));
-    m_fuzzyFileNameCheckBox->setChecked(false);
-    m_fuzzyFileNameCheckBox->setToolTip(
-        tr("开启后，Alt+点击会按最接近的文件名匹配其他对比文件夹中的图片。"));
-    optionsRow->addWidget(m_fuzzyFileNameCheckBox);
-    optionsRow->addStretch();
 
     connect(m_fileNameFilterEdit, &QLineEdit::textChanged,
             this, &BrowsePanel::applyCurrentFilters);
@@ -601,13 +600,14 @@ void BrowsePanel::setupUi()
     m_rootLayout->addLayout(m_columnsLayout, 1);
     m_rootLayout->addWidget(m_scanStatusLabel);
 
+    updatePanelWidth();
+
     setStyleSheet(
         "QWidget#browsePanelRoot { background-color: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
         "QWidget#compareColumnWidget { background-color: #FFFFFF; }"
         "QWidget#compareColumnHeader { background-color: #FFFFFF; border: none; border-bottom: 1px solid #EEF1F5; }"
         "QLabel#compareColumnHeaderLabel { color: #243041; background: transparent; border: none; }"
         "QLabel#compareColumnProgressLabel { color: #687385; font-size: 11px; background: transparent; border: none; }"
-        "QLabel#browseFilterLabel { color: #4B5563; font-size: 12px; background: transparent; border: none; }"
         "QLineEdit#fileNameFilterEdit { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; color: #243041; }"
         "QLineEdit#fileNameFilterEdit:focus { border-color: #0078D4; }"
         "QComboBox#categoryFilterComboBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; padding-right: 22px; color: #243041; }"
@@ -616,10 +616,6 @@ void BrowsePanel::setupUi()
         "QComboBox#categoryFilterComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border: none; background: transparent; }"
         "QComboBox#categoryFilterComboBox::down-arrow { image: url(:/icons/chevron_down.svg); width: 12px; height: 12px; }"
         "QComboBox#categoryFilterComboBox QAbstractItemView { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 2px; outline: none; selection-background-color: #E5F1FB; selection-color: #0078D4; }"
-        "QCheckBox#fuzzyFileNameCheckBox { background: transparent; border: none; padding: 0px; spacing: 6px; color: #243041; }"
-        "QCheckBox#fuzzyFileNameCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #C7D2E1; border-radius: 4px; background: #FFFFFF; }"
-        "QCheckBox#fuzzyFileNameCheckBox::indicator:hover { border-color: #0078D4; }"
-        "QCheckBox#fuzzyFileNameCheckBox::indicator:checked { background: #0078D4; border-color: #0078D4; image: url(:/icons/check.svg); }"
         "QListView#compareColumnListView { background-color: #FFFFFF; border: none; outline: none; }");
 }
 
@@ -862,6 +858,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     });
 
     col.model->setFolder(folderPath);
+    updatePanelWidth();
     updateGlobalScanStatus();
 }
 
@@ -908,6 +905,7 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
         updateColumnVisuals(i);
     }
 
+    updatePanelWidth();
     updateGlobalScanStatus();
     emitSelectionChanged();
 }
@@ -1116,6 +1114,33 @@ void BrowsePanel::clearAllColumns()
         m_scanStatusLabel->setText(tr("Idle"));
     }
     emit scanStatusChanged(tr("Idle"));
+    updatePanelWidth();
+}
+
+void BrowsePanel::updatePanelWidth()
+{
+    // Lock the panel to the minimum width that fits the current folder columns,
+    // so it grows/shrinks with the number of added folders and never steals
+    // horizontal space from the compare panel. The width never drops below what
+    // the filter toolbar needs for a single row, so the two inputs always fit on
+    // one line; once enough columns push past that floor we follow the columns.
+    const QMargins margins = m_rootLayout
+        ? m_rootLayout->contentsMargins()
+        : QMargins(14, 14, 14, 8);
+    const int scrollBarWidth = style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this);
+    const int perColumnWidth = kThumbnailCardWidth
+                               + kColumnHorizontalMargins
+                               + scrollBarWidth
+                               + kScrollAreaSafetyPadding;
+    const int columnCount = qMax(1, m_columns.size());
+    const int spacing = m_columnsLayout ? m_columnsLayout->spacing() : 8;
+    const int columnsContent = columnCount * perColumnWidth + (columnCount - 1) * spacing;
+    // +4 safety: FlowLayout wraps when an item's right edge meets the available
+    // right edge, so the floor needs a couple of spare pixels to keep both
+    // inputs on one row.
+    const int filterRowContent = kFilterEditWidth + kFilterRowSpacing + kFilterComboWidth + 4;
+    const int content = qMax(columnsContent, filterRowContent);
+    setFixedWidth(margins.left() + margins.right() + content);
 }
 
 void BrowsePanel::rebuildColumnLayout()
@@ -1279,7 +1304,7 @@ int BrowsePanel::findFileNameMatchIndex(int column, const QString &targetFileNam
     }
 
     const auto *model = m_columns[column].model;
-    if (!m_fuzzyFileNameCheckBox || !m_fuzzyFileNameCheckBox->isChecked()) {
+    if (!m_fuzzyFileNameMatch) {
         return model->indexOfFileName(targetFileName);
     }
 
