@@ -254,6 +254,15 @@ QWidget *MainWindow::createCommandBar()
             m_comparePanel, &ComparePanel::setResizeToFirstImageEnabled);
     addButton(m_resizeToFirstAction);
 
+    auto *fuzzyMatchAction = new QAction(QStringLiteral("模糊匹配"), bar);
+    fuzzyMatchAction->setCheckable(true);
+    fuzzyMatchAction->setChecked(false);
+    fuzzyMatchAction->setToolTip(
+        tr("开启后，Alt+点击会按最接近的文件名匹配其他对比文件夹中的图片。"));
+    connect(fuzzyMatchAction, &QAction::toggled,
+            m_browsePanel, &BrowsePanel::setFuzzyFileNameMatchEnabled);
+    addButton(fuzzyMatchAction);
+
     layout->addStretch();
 
     return bar;
