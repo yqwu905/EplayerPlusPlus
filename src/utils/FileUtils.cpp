@@ -84,18 +84,17 @@ void scanForImagesBatched(
         }
     };
 
+    // Files are delivered in directory-iteration (discovery) order so thumbnails
+    // can paint as soon as they are found. The order is *not* sorted here:
+    // ImageListModel re-sorts the whole list by path once the scan completes
+    // (see ImageListModel::finalizeScan). Sorting per batch would be wasted work
+    // and could not produce a correct global order across batches anyway.
     QVector<ScannedImage> buffer;
     buffer.reserve(batchSize);
     auto flush = [&](bool initialBatch) {
         if (buffer.isEmpty()) {
             return;
         }
-
-        // Sort by path to preserve the existing per-batch ordering.
-        std::sort(buffer.begin(), buffer.end(),
-                  [](const ScannedImage &a, const ScannedImage &b) {
-                      return a.path < b.path;
-                  });
         onBatch(buffer, initialBatch);
         buffer.clear();
         emitProgress(false);
@@ -119,11 +118,11 @@ void scanForImagesBatched(
         }
 
         it.next();
-        // it.fileInfo() reuses the QFileInfo the iterator already materialized
-        // to apply the QDir::Files | NoSymLinks filter, so reading lastModified()
-        // here costs no extra stat. toUTC() matches ImageLoader::sourceLastModifiedUtc
-        // so the disk-cache key is byte-identical whether the mtime comes from
-        // the scan or a fallback stat.
+        // it.fileInfo() reuses the QFileInfo the iterator already materialized to
+        // apply the QDir::Files | NoSymLinks filter, so reading lastModified() here
+        // costs no extra stat. toUTC() matches ImageLoader::sourceLastModifiedUtc so
+        // the disk-cache key is byte-identical whether the mtime comes from the scan
+        // or a fallback stat.
         buffer.push_back({it.filePath(), it.fileInfo().lastModified().toUTC()});
         ++discoveredCount;
         if (!initialBatchSent && buffer.size() >= initialBatchSize) {

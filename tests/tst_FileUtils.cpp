@@ -31,6 +31,7 @@ private slots:
     void testScanForImagesBatched_initialBatchFlushesEarly();
     void testScanForImagesBatched_cancel();
     void testScanForImagesBatched_deliversValidMtime();
+    void testScanForImagesBatched_deliversAllAcrossBatches();
 
     void testGetSubdirectories();
     void testGetSubdirectories_empty();
@@ -306,6 +307,50 @@ void tst_FileUtils::testScanForImagesBatched_deliversValidMtime()
         const QDateTime direct = QFileInfo(item.path).lastModified().toUTC();
         QVERIFY(qAbs(item.lastModifiedUtc.secsTo(direct)) <= 2);
     }
+}
+
+void tst_FileUtils::testScanForImagesBatched_deliversAllAcrossBatches()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // The scan delivers in discovery order (ImageListModel sorts once the scan
+    // completes), so this guards the scan's actual contract: every discovered file
+    // is handed back exactly once -- none dropped or duplicated -- even when the
+    // listing spans many batches.
+    const int fileCount = 40;
+    QStringList expected;
+    for (int i = 0; i < fileCount; ++i) {
+        const int n = (i * 17 + 3) % fileCount; // permutation of 0..39 -> shuffled creation order
+        const QString name = QStringLiteral("img_%1.png").arg(n, 3, 10, QChar('0'));
+        QImage img(4, 4, QImage::Format_ARGB32);
+        img.fill(Qt::red);
+        QVERIFY(img.save(dir.filePath(name)));
+        expected.append(dir.filePath(name));
+    }
+    std::sort(expected.begin(), expected.end());
+
+    QStringList delivered;
+    int batchCount = 0;
+    FileUtils::ScanOptions options;
+    options.recursive = false;
+    options.batchSize = 8;
+    options.initialBatchSize = 4;
+
+    FileUtils::scanForImagesBatched(
+        dir.path(),
+        options,
+        [&delivered, &batchCount](const QVector<FileUtils::ScannedImage> &batch, bool /*initialBatch*/) {
+            ++batchCount;
+            for (const FileUtils::ScannedImage &item : batch) {
+                delivered.append(item.path);
+            }
+        });
+
+    QVERIFY2(batchCount > 1, "test must span multiple batches");
+    QCOMPARE(delivered.size(), fileCount);
+    std::sort(delivered.begin(), delivered.end());
+    QCOMPARE(delivered, expected);
 }
 
 void tst_FileUtils::testGetSubdirectories()

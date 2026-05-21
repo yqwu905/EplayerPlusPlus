@@ -195,6 +195,11 @@ private:
     void startScan(const QString &path);
     void appendScanBatch(const QVector<FileUtils::ScannedImage> &batch, int generation);
     void finalizeScan(int generation);
+    // Reorder the source arrays into globally sorted (by path) order. The scan
+    // delivers images in discovery order so they paint immediately; this runs once
+    // when the scan completes to put the list into its final, comparison-stable
+    // order. No-op when the list is already sorted.
+    void sortSourcesByPath();
     void cancelPendingScan();
     int sourceIndexForRow(int row) const;
     int rowForSourceIndex(int sourceIndex) const;

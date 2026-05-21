@@ -50,6 +50,7 @@ private slots:
 
     void testHasMoreToLoad_initial();
     void testScanProgressAndIncrementalInsert();
+    void testFolderOrder_sortedAcrossBatches();
     void testLoadNextThumbnailBatch();
     void testLoadNextThumbnailBatch_resetsOnSetFolder();
     void testHasMoreToLoad_emptyFolder();
@@ -550,6 +551,48 @@ void tst_ImageListModel::testScanProgressAndIncrementalInsert()
     QCOMPARE(insertSpy.first().at(1).toInt(), 0);
     QCOMPARE(insertSpy.first().at(2).toInt(), 23);
     QVERIFY(progressSpy.count() >= 2);
+}
+
+void tst_ImageListModel::testFolderOrder_sortedAcrossBatches()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // Span several scan batches (initial batch is 24, then 64 each) with names
+    // created in a deliberately shuffled order, so the directory listing is
+    // unlikely to arrive pre-sorted. After the scan completes the model must
+    // expose every image in globally sorted order, regardless of discovery order.
+    const int fileCount = 100;
+    QStringList expected;
+    for (int i = 0; i < fileCount; ++i) {
+        const int n = (i * 37 + 11) % fileCount; // permutation of 0..99 -> shuffled order
+        const QString name = QStringLiteral("img_%1.png").arg(n, 3, 10, QChar('0'));
+        QImage img(8, 8, QImage::Format_ARGB32);
+        img.fill(Qt::red);
+        QVERIFY(img.save(dir.filePath(name)));
+        expected.append(name);
+    }
+    std::sort(expected.begin(), expected.end());
+
+    ImageListModel model;
+    setFolderAndWait(model, dir.path());
+
+    QCOMPARE(model.imageCount(), fileCount);
+
+    QStringList actual;
+    actual.reserve(fileCount);
+    for (int i = 0; i < model.imageCount(); ++i) {
+        actual.append(model.fileNameAt(i));
+    }
+    QCOMPARE(actual, expected);
+
+    // Paths must agree with the filenames and be strictly ascending.
+    for (int i = 0; i < model.imageCount(); ++i) {
+        QVERIFY(model.imagePathAt(i).endsWith(expected.at(i)));
+        if (i > 0) {
+            QVERIFY(model.imagePathAt(i - 1) < model.imagePathAt(i));
+        }
+    }
 }
 
 void tst_ImageListModel::testLoadNextThumbnailBatch()

@@ -9,6 +9,7 @@
 #include <QMetaObject>
 
 #include <algorithm>
+#include <numeric>
 #include <utility>
 
 namespace
@@ -597,9 +598,98 @@ void ImageListModel::finalizeScan(int generation)
         return;
     }
 
+    // The scan delivered images in discovery order for fast first paint; now that
+    // every file is known, snap the list into its final globally sorted order.
+    sortSourcesByPath();
+
     m_loading = false;
     m_nextLoadIndex = 0;
     emit folderReady();
+}
+
+void ImageListModel::sortSourcesByPath()
+{
+    const int n = m_imagePaths.size();
+    if (n <= 1) {
+        return;
+    }
+
+    // order[newIndex] = old source index that belongs at newIndex once sorted.
+    QVector<int> order(n);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [this](int a, int b) {
+        return m_imagePaths.at(a) < m_imagePaths.at(b);
+    });
+
+    // Skip the reset (and the view churn it causes) when discovery order already
+    // happened to be sorted.
+    if (std::is_sorted(order.cbegin(), order.cend())) {
+        return;
+    }
+
+    // Selection and thumbnails are keyed by path, which is stable across the
+    // reorder; snapshot the selected paths so we can restore the set afterwards.
+    QSet<QString> selectedPaths;
+    selectedPaths.reserve(m_selectedIndices.size());
+    for (int oldIndex : std::as_const(m_selectedIndices)) {
+        if (oldIndex >= 0 && oldIndex < n) {
+            selectedPaths.insert(m_imagePaths.at(oldIndex));
+        }
+    }
+
+    QStringList sortedPaths;
+    QStringList sortedFileNames;
+    QStringList sortedMarkKeys;
+    sortedPaths.reserve(n);
+    sortedFileNames.reserve(n);
+    sortedMarkKeys.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        const int oldIndex = order.at(i);
+        sortedPaths.append(m_imagePaths.at(oldIndex));
+        sortedFileNames.append(m_fileNames.at(oldIndex));
+        sortedMarkKeys.append(m_markKeys.at(oldIndex));
+    }
+
+    beginResetModel();
+
+    m_imagePaths = std::move(sortedPaths);
+    m_fileNames = std::move(sortedFileNames);
+    m_markKeys = std::move(sortedMarkKeys);
+
+    // Rebuild the value->index maps, mirroring appendScanBatch's collision rules:
+    // path is unique; markKey (when non-empty) takes the last index; fileName keeps
+    // the first index seen in sorted order.
+    m_pathToIndex.clear();
+    m_pathToIndex.reserve(n);
+    m_markKeyToIndex.clear();
+    m_markKeyToIndex.reserve(n);
+    m_fileNameToIndex.clear();
+    m_fileNameToIndex.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        m_pathToIndex.insert(m_imagePaths.at(i), i);
+        const QString &markKey = m_markKeys.at(i);
+        if (!markKey.isEmpty()) {
+            m_markKeyToIndex.insert(markKey, i);
+        }
+        const QString &fileName = m_fileNames.at(i);
+        if (!m_fileNameToIndex.contains(fileName)) {
+            m_fileNameToIndex.insert(fileName, i);
+        }
+    }
+
+    m_selectedIndices.clear();
+    if (!selectedPaths.isEmpty()) {
+        for (int i = 0; i < n; ++i) {
+            if (selectedPaths.contains(m_imagePaths.at(i))) {
+                m_selectedIndices.insert(i);
+            }
+        }
+    }
+
+    rebuildFilteredRows();
+    m_nextLoadIndex = 0;
+
+    endResetModel();
 }
 
 void ImageListModel::cancelPendingScan()
