@@ -85,7 +85,7 @@ bool copyPathToClipboard(const QString &imagePath)
         return false;
     }
 
-    clipboard->setText(normalizedPath);
+    clipboard->setText(QDir::toNativeSeparators(normalizedPath));
     return true;
 }
 
