@@ -9,7 +9,7 @@ int main(int argc, char *argv[])
 
     // Application metadata
     QApplication::setApplicationName("ImageCompare");
-    QApplication::setApplicationVersion("0.1.0");
+    QApplication::setApplicationVersion("1.6.0");
     QApplication::setOrganizationName("ImageCompare");
 
     // Application icon

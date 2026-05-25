@@ -56,6 +56,45 @@ jobs:
           Copy-Item $exePath "deploy/"
           windeployqt --release --no-translations --no-opengl-sw "deploy/ImageCompare.exe"
 
+      # ----------------------------------------------------------------
+      # Optional: sign deploy/ImageCompare.exe BEFORE it gets packaged
+      # into both the .zip portable and the Inno Setup installer, so the
+      # signed binary appears in every distribution channel.
+      #
+      # Activated once SignPath OSS approves this project and these two
+      # repo settings are filled in:
+      #   • Variable  ENABLE_SIGNING        = "true"
+      #   • Variable  SIGNPATH_ORG_ID       = <org GUID from SignPath>
+      #   • Secret    SIGNPATH_API_TOKEN    = <CI user API token>
+      # The SignPath project slug + policy slug below default to
+      # "imagecompare" / "release-signing" — adjust if your SignPath
+      # project uses different names.
+      # ----------------------------------------------------------------
+      - name: Upload unsigned ImageCompare.exe for signing
+        id: upload-unsigned-exe
+        if: vars.ENABLE_SIGNING == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ImageCompare-exe
+          path: deploy/ImageCompare.exe
+
+      - name: Sign ImageCompare.exe via SignPath
+        if: vars.ENABLE_SIGNING == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORG_ID }}
+          project-slug: imagecompare
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload-unsigned-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-exe
+
+      - name: Replace deploy ImageCompare.exe with signed copy
+        if: vars.ENABLE_SIGNING == 'true'
+        shell: pwsh
+        run: Copy-Item -Force signed-exe/ImageCompare.exe deploy/ImageCompare.exe
+
       - name: Package
         shell: pwsh
         run: |
@@ -66,11 +105,39 @@ jobs:
           if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -match '^v(.*)$') {
             $appVersion = $Matches[1]
           }
-          
+
+          # Inno Setup wants a 4-part numeric VersionInfoVersion. Strip any
+          # pre-release suffix (e.g. v0.2.0-beta1 → 0.2.0) and pad to 4 parts.
+          if ($appVersion -match '^([0-9]+(?:\.[0-9]+){0,3})') {
+            $numeric = $Matches[1]
+            $parts = $numeric.Split('.')
+            while ($parts.Length -lt 4) { $parts += '0' }
+            $versionInfo = ($parts[0..3] -join '.')
+          } else {
+            $versionInfo = '0.0.0.0'
+          }
+
+          $publisher    = "wuyuanqing"
+          $publisherUrl = "https://github.com/yqwu905/EplayerPlusPlus"
+          # Stable AppId — must NEVER change once published, otherwise Windows
+          # treats new builds as a different app, breaking upgrades AND
+          # forcing SmartScreen to re-accumulate reputation from scratch.
+          $appId        = "{{E09282BF-72E4-428D-9293-D7AE12C21753}"
+
           $issContent = @"
           [Setup]
+          AppId=$appId
           AppName=$appName
           AppVersion=$appVersion
+          AppPublisher=$publisher
+          AppPublisherURL=$publisherUrl
+          AppSupportURL=$publisherUrl/issues
+          AppUpdatesURL=$publisherUrl/releases
+          AppCopyright=Copyright (C) 2026 $publisher
+          VersionInfoVersion=$versionInfo
+          VersionInfoCompany=$publisher
+          VersionInfoProductName=$appName
+          VersionInfoDescription=$appName Setup
           DefaultDirName={autopf}\$appName
           DefaultGroupName=$appName
           OutputDir=.
@@ -79,6 +146,10 @@ jobs:
           SolidCompression=yes
           ArchitecturesAllowed=x64
           ArchitecturesInstallIn64BitMode=x64
+          WizardStyle=modern
+          SetupIconFile=resources\icons\app.ico
+          UninstallDisplayIcon={app}\${appName}.exe
+          UninstallDisplayName=$appName
 
           [Files]
           Source: "deploy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -90,9 +161,36 @@ jobs:
           [Tasks]
           Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
           "@
-          
+
           Set-Content -Path "installer.iss" -Value $issContent
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer.iss"
+
+      # Sign the Inno Setup installer itself. Same activation gates as
+      # the earlier ImageCompare.exe signing step.
+      - name: Upload unsigned installer for signing
+        id: upload-unsigned-installer
+        if: vars.ENABLE_SIGNING == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: ImageCompare-windows-x64-installer.exe
+
+      - name: Sign installer via SignPath
+        if: vars.ENABLE_SIGNING == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORG_ID }}
+          project-slug: imagecompare
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-installer
+
+      - name: Replace installer with signed copy
+        if: vars.ENABLE_SIGNING == 'true'
+        shell: pwsh
+        run: Copy-Item -Force signed-installer/ImageCompare-windows-x64-installer.exe ImageCompare-windows-x64-installer.exe
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
