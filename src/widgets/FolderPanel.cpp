@@ -12,6 +12,9 @@
 #include <QMessageBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QClipboard>
+#include <QDir>
+#include <QGuiApplication>
 
 FolderPanel::FolderPanel(SettingsManager *settingsManager, QWidget *parent)
     : QWidget(parent)
@@ -199,6 +202,19 @@ void FolderPanel::onContextMenu(const QPoint &pos)
     QAction *exportAction = contextMenu.addAction(tr("导出分类…"));
     connect(exportAction, &QAction::triggered, this, [this, path]() {
         emit exportCategoriesRequested(path);
+    });
+
+    // "Copy Path" — available for any folder
+    QAction *copyPathAction = contextMenu.addAction(tr("复制路径"));
+    copyPathAction->setObjectName(QStringLiteral("copyFolderPathAction"));
+    copyPathAction->setEnabled(!path.isEmpty());
+    connect(copyPathAction, &QAction::triggered, this, [path]() {
+        if (path.isEmpty()) {
+            return;
+        }
+        if (QClipboard *clipboard = QGuiApplication::clipboard()) {
+            clipboard->setText(QDir::toNativeSeparators(path));
+        }
     });
 
     contextMenu.addSeparator();
