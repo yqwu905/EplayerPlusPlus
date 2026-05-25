@@ -106,7 +106,8 @@ void tst_ImageContextMenu::copyPathToClipboard_usesNormalizedAbsolutePath()
 
     QVERIFY(ImageContextMenu::copyPathToClipboard(imagePath));
     QCOMPARE(QGuiApplication::clipboard()->text(),
-             QDir::cleanPath(QFileInfo(imagePath).absoluteFilePath()));
+             QDir::toNativeSeparators(
+                 QDir::cleanPath(QFileInfo(imagePath).absoluteFilePath())));
 }
 
 void tst_ImageContextMenu::copyImageToClipboard_setsImageData()
