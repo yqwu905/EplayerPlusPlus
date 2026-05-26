@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Cross-platform image comparison tool (`ImageCompare`) — a Qt 6 / C++17 desktop app for browsing up to four folders side-by-side and inspecting per-pixel diffs between selected images. See `AGENTS.md` for the original feature spec (written in Chinese); user-facing strings in the app are in Chinese.
+Cross-platform image comparison tool (`ImageCompare`) — a Qt 6 / C++17 desktop app for browsing up to four folders side-by-side and inspecting per-pixel diffs between selected images. See [README.md](README.md) (or [README.zh-CN.md](README.zh-CN.md) for Chinese) for the user-facing overview; user-facing strings in the app are in Chinese.
 
 ## Build & test commands
 
