@@ -25,13 +25,13 @@ class tst_ComparePanel : public QObject
 
 private slots:
     void layout_oneToThreeImages_singleRow();
-    void layout_fourImages_twoRows();
+    void layout_maxFolders_spansThreeColumnsTwoRows();
     void compareButtons_nMinusOnePerImage();
     void compareHeader_placesTitleAndButtonsInHeaderBlock();
     void layout_imageAreaExpandsToFillAvailableGridHeight();
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
     void folderSwap_reordersGridCellsAndImages();
-    void layout_shrinksFromFourToTwo_cellsExpand();
+    void layout_shrinksFromMaxFoldersToTwo_cellsExpand();
     void toleranceMode_compareButtonTogglesTargetImage();
     void toleranceMode_usesPreviewWhenFullImageIsNotLoaded();
     void resizeToFirstImage_toggleResizesOtherCells();
@@ -137,7 +137,7 @@ void tst_ComparePanel::layout_oneToThreeImages_singleRow()
     QCOMPARE(uniqueRows.size(), 1);
 }
 
-void tst_ComparePanel::layout_fourImages_twoRows()
+void tst_ComparePanel::layout_maxFolders_spansThreeColumnsTwoRows()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -164,11 +164,16 @@ void tst_ComparePanel::layout_fourImages_twoRows()
     const auto cells = findCells(panel);
     QCOMPARE(cells.size(), CompareSession::MaxFolders);
 
+    // MaxFolders == 6 fills a 3-column × 2-row grid exactly.
     QSet<int> uniqueRows;
+    QSet<int> uniqueCols;
     for (QWidget *cell : cells) {
-        uniqueRows.insert(cell->mapTo(&panel, QPoint(0, 0)).y() / 20);
+        const QPoint origin = cell->mapTo(&panel, QPoint(0, 0));
+        uniqueRows.insert(origin.y() / 20);
+        uniqueCols.insert(origin.x() / 20);
     }
     QCOMPARE(uniqueRows.size(), 2);
+    QCOMPARE(uniqueCols.size(), 3);
 }
 
 void tst_ComparePanel::compareButtons_nMinusOnePerImage()
@@ -438,7 +443,7 @@ void tst_ComparePanel::folderSwap_reordersGridCellsAndImages()
     QCOMPARE(thirdBadge->text(), QStringLiteral("3"));
 }
 
-void tst_ComparePanel::layout_shrinksFromFourToTwo_cellsExpand()
+void tst_ComparePanel::layout_shrinksFromMaxFoldersToTwo_cellsExpand()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -475,8 +480,9 @@ void tst_ComparePanel::layout_shrinksFromFourToTwo_cellsExpand()
     cells = findCells(panel);
     QCOMPARE(cells.size(), 2);
 
-    // 4 cells lay out as 2x2 and 2 cells as 1x2: the column count stays the
-    // same so per-cell width does not change, but per-cell height grows.
+    // MaxFolders (6) cells lay out as 3×2 and 2 cells as 1×2: shrinking
+    // reduces both the column and the row count, so each remaining cell
+    // gains both width and height. We only assert on height here.
     int heightAfter = cells.first()->height();
     QVERIFY(heightAfter > heightBefore);
 }

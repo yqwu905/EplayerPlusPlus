@@ -10,13 +10,13 @@ Cross-platform desktop application for browsing and **visually diffing image fol
 
 ## Features
 
-- **Side-by-side browse of up to 4 folders** — each folder becomes a scrollable column of thumbnails, all aligned for visual comparison.
+- **Side-by-side browse of up to 6 folders** — each folder becomes a scrollable column of thumbnails, all aligned for visual comparison.
 - **Three selection modes** for picking what to compare:
   - **Click** — select a single image in one column.
   - **Ctrl + click** — select the image and the same-index image in every other column.
   - **Alt + click** — select the image and the same-filename image in every other column.
 - **Per-pixel tolerance diff overlay** — for any pair of selected images, replace one with a colorized diff: red where the channel delta exceeds the threshold, blue where it is below, desaturated where they match exactly. The threshold is adjustable from a slider in the toolbar.
-- **A / B / C / D marks** persisted **outside** the source folders so read-only or shared folders work, with an automatic journal + snapshot so marks survive crashes.
+- **A / B / C / D / E / F marks** persisted **outside** the source folders so read-only or shared folders work, with an automatic journal + snapshot so marks survive crashes.
 - **Folder list persistence** — the folders you added are restored on next launch via `QSettings`.
 - **Fluent 2 styling** — a custom stylesheet applied globally for a consistent look across Windows, macOS, and Linux.
 
@@ -57,7 +57,7 @@ ctest --test-dir build --output-on-failure --timeout 120
 
 The codebase is layered as `utils → services/models → widgets → app`. Cross-cutting services (`SettingsManager`, `CompareSession`, `ImageLoader`, `ImageMarkManager`) are owned by `MainWindow` and injected into panels — no globals, no singletons. See [CLAUDE.md](CLAUDE.md) for a fuller architectural tour intended for contributors.
 
-The UI is three panels (left to right): `FolderPanel` (tree of added folders) → `BrowsePanel` (one scrollable column of thumbnails per folder, up to 4) → `ComparePanel` (grid of selected images with arrow overlays for swap / tolerance diff).
+The UI is three panels (left to right): `FolderPanel` (tree of added folders) → `BrowsePanel` (one scrollable column of thumbnails per folder, up to 6) → `ComparePanel` (grid of selected images with arrow overlays for swap / tolerance diff).
 
 ## Contributing
 

@@ -90,7 +90,8 @@ void tst_BrowsePanel::clickMarkButton(QListView *view,
                                       Qt::KeyboardModifiers modifiers)
 {
     QVERIFY(view != nullptr);
-    QVERIFY(categoryIndex >= 0 && categoryIndex < 4);
+    const int categoryCount = ImageMarkManager::categories().size();
+    QVERIFY(categoryIndex >= 0 && categoryIndex < categoryCount);
 
     auto *model = view->model();
     QVERIFY(model != nullptr);
@@ -110,7 +111,7 @@ void tst_BrowsePanel::clickMarkButton(QListView *view,
     constexpr int rightMargin = 10;
     const int cardX = itemRect.x() + qMax(0, (itemRect.width() - cardWidth) / 2);
     const int cardY = itemRect.y() + 2;
-    const int totalWidth = 4 * buttonSize + 3 * buttonGap;
+    const int totalWidth = categoryCount * buttonSize + (categoryCount - 1) * buttonGap;
     const int buttonX = cardX + cardWidth - rightMargin - totalWidth
                         + categoryIndex * (buttonSize + buttonGap);
     const QPoint point(buttonX + buttonSize / 2,

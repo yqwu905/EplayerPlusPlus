@@ -285,7 +285,9 @@ QStringList ImageMarkManager::categories()
         QStringLiteral("A"),
         QStringLiteral("B"),
         QStringLiteral("C"),
-        QStringLiteral("D")
+        QStringLiteral("D"),
+        QStringLiteral("E"),
+        QStringLiteral("F")
     };
 }
 
