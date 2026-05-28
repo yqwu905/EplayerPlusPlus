@@ -18,7 +18,7 @@ class tst_ImageMarkManager : public QObject
 
 private slots:
     void initTestCase();
-    void categories_areLimitedToABCD();
+    void categories_areLimitedToABCDEF();
     void setMark_savesJsonAndReloads();
     void setMark_updatesAndClears();
     void setMark_rejectsInvalidCategory();
@@ -66,12 +66,15 @@ QString reloadedMark(const QString &folderPath, const QString &imagePath)
 }
 }
 
-void tst_ImageMarkManager::categories_areLimitedToABCD()
+void tst_ImageMarkManager::categories_areLimitedToABCDEF()
 {
-    QCOMPARE(ImageMarkManager::categories(), QStringList({"A", "B", "C", "D"}));
+    QCOMPARE(ImageMarkManager::categories(),
+             QStringList({"A", "B", "C", "D", "E", "F"}));
     QVERIFY(ImageMarkManager::isValidCategory("A"));
     QVERIFY(ImageMarkManager::isValidCategory("D"));
-    QVERIFY(!ImageMarkManager::isValidCategory("E"));
+    QVERIFY(ImageMarkManager::isValidCategory("E"));
+    QVERIFY(ImageMarkManager::isValidCategory("F"));
+    QVERIFY(!ImageMarkManager::isValidCategory("G"));
     QVERIFY(!ImageMarkManager::isValidCategory(QString()));
 }
 
@@ -135,7 +138,7 @@ void tst_ImageMarkManager::setMark_rejectsInvalidCategory()
     QVERIFY(image.save(imagePath));
 
     ImageMarkManager manager;
-    QVERIFY(!manager.setMarkForImage(dir.path(), imagePath, "E"));
+    QVERIFY(!manager.setMarkForImage(dir.path(), imagePath, "Z"));
     QVERIFY(manager.markForImage(dir.path(), imagePath).isEmpty());
     QVERIFY(!QFile::exists(manager.markFilePath(dir.path())));
     QVERIFY(!QFile::exists(manager.markJournalPath(dir.path())));
