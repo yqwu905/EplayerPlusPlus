@@ -24,6 +24,9 @@ private slots:
     void testResizeToFirstImage_defaultOff();
     void testResizeToFirstImage_setAndRead();
 
+    void testIgnoreImageColorProfile_defaultOn();
+    void testSetIgnoreImageColorProfile();
+
 private:
     SettingsManager *m_manager = nullptr;
 };
@@ -138,6 +141,22 @@ void tst_SettingsManager::testResizeToFirstImage_setAndRead()
 
     m_manager->setResizeToFirstImageEnabled(false);
     QCOMPARE(m_manager->resizeToFirstImageEnabled(), false);
+}
+
+void tst_SettingsManager::testIgnoreImageColorProfile_defaultOn()
+{
+    // A pixel-diff tool wants determinism by default, so the setting starts
+    // enabled on first launch.
+    QCOMPARE(m_manager->ignoreImageColorProfile(), true);
+}
+
+void tst_SettingsManager::testSetIgnoreImageColorProfile()
+{
+    m_manager->setIgnoreImageColorProfile(false);
+    QCOMPARE(m_manager->ignoreImageColorProfile(), false);
+
+    m_manager->setIgnoreImageColorProfile(true);
+    QCOMPARE(m_manager->ignoreImageColorProfile(), true);
 }
 
 QTEST_MAIN(tst_SettingsManager)

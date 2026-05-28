@@ -73,6 +73,15 @@ public slots:
      */
     void navigatePrevious();
 
+    /**
+     * @brief Re-issue thumbnail requests for the visible region of every column.
+     *
+     * Used after a configuration change (e.g. ICC strip toggled) that invalidated
+     * the upstream thumbnail cache: forces visible thumbs to re-decode under the
+     * new policy without waiting for a scroll.
+     */
+    void refreshAllVisibleThumbnails();
+
 private slots:
     void onFolderAdded(const QString &folderPath, int index);
     void onFolderRemoved(const QString &folderPath, int index);

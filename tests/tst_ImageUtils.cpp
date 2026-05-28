@@ -1,5 +1,6 @@
 #include <QtTest>
 #include <QTemporaryDir>
+#include <QColorSpace>
 #include <QImage>
 
 #include "utils/ImageUtils.h"
@@ -27,6 +28,11 @@ private slots:
 
     void testGetImageSize();
     void testGetImageSize_invalidFile();
+
+    void testStripColorProfile_clearsTag();
+    void testStripColorProfile_nullImageIsNoop();
+    void testGenerateThumbnail_ignoreColorProfileStripsTag();
+    void testGenerateThumbnail_keepsColorProfileByDefault();
 
 private:
     QTemporaryDir m_tempDir;
@@ -153,6 +159,50 @@ void tst_ImageUtils::testGetImageSize_invalidFile()
 {
     QSize size = ImageUtils::getImageSize("/nonexistent/path.png");
     QVERIFY(!size.isValid());
+}
+
+void tst_ImageUtils::testStripColorProfile_clearsTag()
+{
+    QImage img(16, 16, QImage::Format_ARGB32);
+    img.fill(Qt::white);
+    img.setColorSpace(QColorSpace(QColorSpace::SRgb));
+    QVERIFY(img.colorSpace().isValid());
+
+    ImageUtils::stripColorProfile(img);
+    QVERIFY(!img.colorSpace().isValid());
+}
+
+void tst_ImageUtils::testStripColorProfile_nullImageIsNoop()
+{
+    QImage img;
+    ImageUtils::stripColorProfile(img); // must not crash
+    QVERIFY(img.isNull());
+}
+
+void tst_ImageUtils::testGenerateThumbnail_ignoreColorProfileStripsTag()
+{
+    QImage source(64, 64, QImage::Format_ARGB32);
+    source.fill(Qt::green);
+    source.setColorSpace(QColorSpace(QColorSpace::SRgb));
+
+    const QImage stripped = ImageUtils::generateThumbnail(
+        source, QSize(32, 32), Qt::SmoothTransformation, /*ignoreColorProfile=*/true);
+    QVERIFY(!stripped.isNull());
+    QVERIFY(!stripped.colorSpace().isValid());
+}
+
+void tst_ImageUtils::testGenerateThumbnail_keepsColorProfileByDefault()
+{
+    QImage source(64, 64, QImage::Format_ARGB32);
+    source.fill(Qt::green);
+    source.setColorSpace(QColorSpace(QColorSpace::SRgb));
+
+    // QImage::scaled preserves the source colorSpace, so without the strip
+    // request the thumbnail keeps the tag.
+    const QImage tagged = ImageUtils::generateThumbnail(
+        source, QSize(32, 32), Qt::SmoothTransformation, /*ignoreColorProfile=*/false);
+    QVERIFY(!tagged.isNull());
+    QVERIFY(tagged.colorSpace().isValid());
 }
 
 QTEST_MAIN(tst_ImageUtils)

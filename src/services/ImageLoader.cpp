@@ -91,9 +91,13 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
     bool hasCached = false;
     bool shouldProcess = false;
 
-    const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality);
-    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true);
-    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, false);
+    // Snapshot the strip-profile flag now so a runtime toggle can't make the
+    // decode and the cache key disagree about whether the result is stripped.
+    const bool ignoreColorProfile = m_ignoreColorProfile.load(std::memory_order_acquire);
+
+    const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality, ignoreColorProfile);
+    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true, ignoreColorProfile);
+    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, false, ignoreColorProfile);
 
     {
         QMutexLocker locker(&m_cacheMutex);
@@ -114,7 +118,8 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
         }
 
         if (!hasCached) {
-            ThumbnailRequest request{key, imagePath, thumbnailSize, priority, highQuality, sourceModifiedUtc};
+            ThumbnailRequest request{key, imagePath, thumbnailSize, priority, highQuality,
+                                     ignoreColorProfile, sourceModifiedUtc};
             auto pendingIt = m_pendingRequests.find(key);
             if (pendingIt != m_pendingRequests.end()) {
                 if (priority > pendingIt->priority) {
@@ -214,6 +219,7 @@ void ImageLoader::processQueue()
                                        img,
                                        mod,
                                        request.highQuality,
+                                       request.ignoreColorProfile,
                                        fromDisk,
                                        cancelled);
             };
@@ -246,7 +252,8 @@ void ImageLoader::processQueue()
                     request.imagePath,
                     request.thumbnailSize,
                     modifiedUtc,
-                    request.highQuality);
+                    request.highQuality,
+                    request.ignoreColorProfile);
                 !disk.isNull()) {
                 return makeResult(disk, modifiedUtc, true, false);
             }
@@ -261,25 +268,27 @@ void ImageLoader::processQueue()
                 ? Qt::SmoothTransformation
                 : Qt::FastTransformation;
             QImage generated = ImageUtils::generateThumbnail(
-                request.imagePath, request.thumbnailSize, mode);
+                request.imagePath, request.thumbnailSize, mode,
+                request.ignoreColorProfile);
 
             if (!generated.isNull()) {
                 persistDiskThumbnail(request.imagePath,
                                      request.thumbnailSize,
                                      modifiedUtc,
                                      generated,
-                                     request.highQuality);
+                                     request.highQuality,
+                                     request.ignoreColorProfile);
             }
 
             return makeResult(generated, modifiedUtc, false, false);
         });
 
-        using ResultTuple = std::tuple<QString, QString, QSize, QImage, QDateTime, bool, bool, bool>;
+        using ResultTuple = std::tuple<QString, QString, QSize, QImage, QDateTime, bool, bool, bool, bool>;
         auto *watcher = new QFutureWatcher<ResultTuple>(this);
         connect(watcher, &QFutureWatcher<ResultTuple>::finished, this,
                 [this, watcher]() {
                     auto [key, imagePath, thumbnailSize, thumbnail, modifiedUtc,
-                          highQuality, fromDisk, workerCancelled] = watcher->result();
+                          highQuality, ignoreColorProfile, fromDisk, workerCancelled] = watcher->result();
                     watcher->deleteLater();
 
                     bool cancelledBeforeEmit = false;
@@ -316,6 +325,7 @@ void ImageLoader::processQueue()
                                   workerCancelled ? QImage() : thumbnail,
                                   modifiedUtc,
                                   highQuality,
+                                  ignoreColorProfile,
                                   cancelledBeforeEmit);
                     processQueue();
                 });
@@ -329,11 +339,12 @@ void ImageLoader::finishRequest(const QString &imagePath,
                                 const QImage &thumbnail,
                                 const QDateTime &lastModifiedUtc,
                                 bool highQuality,
+                                bool ignoreColorProfile,
                                 bool cancelledBeforeEmit)
 {
     if (!thumbnail.isNull()) {
         QMutexLocker locker(&m_cacheMutex);
-        const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality);
+        const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality, ignoreColorProfile);
         const qint64 bytes = imageByteSize(thumbnail);
         CacheEntry entry{key,
                          imagePath,
@@ -341,6 +352,7 @@ void ImageLoader::finishRequest(const QString &imagePath,
                          thumbnailSize,
                          lastModifiedUtc,
                          highQuality,
+                         ignoreColorProfile,
                          bytes};
         insertThumbnailEntryUnlocked(std::move(entry));
         trimCache();
@@ -427,7 +439,10 @@ void ImageLoader::processImageQueue()
         }
 
         auto cancelState = m_imageCancel;
-        auto future = QtConcurrent::run(&m_decodePool, [imagePath, cancelState, capturedGeneration]() {
+        // Snapshot the strip-profile flag for this load so a runtime toggle
+        // can't make the in-flight decode disagree with the user's intent.
+        const bool ignoreColorProfile = m_ignoreColorProfile.load(std::memory_order_acquire);
+        auto future = QtConcurrent::run(&m_decodePool, [imagePath, cancelState, capturedGeneration, ignoreColorProfile]() {
             if (capturedGeneration !=
                 cancelState->generation.load(std::memory_order_acquire)) {
                 bool keep = false;
@@ -439,7 +454,11 @@ void ImageLoader::processImageQueue()
                     return std::make_pair(QImage(), true);
                 }
             }
-            return std::make_pair(QImage(imagePath), false);
+            QImage image(imagePath);
+            if (ignoreColorProfile) {
+                ImageUtils::stripColorProfile(image);
+            }
+            return std::make_pair(image, false);
         });
 
         using ImageResult = std::pair<QImage, bool>;
@@ -533,13 +552,14 @@ QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
 
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize) const
 {
+    const bool ignoreColorProfile = m_ignoreColorProfile.load(std::memory_order_acquire);
     QMutexLocker locker(&m_cacheMutex);
-    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true);
+    const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true, ignoreColorProfile);
     auto it = m_thumbnailIndex.constFind(highQualityKey);
     if (it != m_thumbnailIndex.constEnd()) {
         return it.value()->thumbnail;
     }
-    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, false);
+    const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, false, ignoreColorProfile);
     it = m_thumbnailIndex.constFind(fastKey);
     if (it != m_thumbnailIndex.constEnd()) {
         return it.value()->thumbnail;
@@ -675,6 +695,41 @@ void ImageLoader::cancelImageRequestsExcept(const QSet<QString> &keepPaths)
     m_imageCancel->generation.fetch_add(1, std::memory_order_release);
 }
 
+bool ImageLoader::ignoreColorProfile() const
+{
+    return m_ignoreColorProfile.load(std::memory_order_acquire);
+}
+
+void ImageLoader::setIgnoreColorProfile(bool enabled)
+{
+    const bool previous = m_ignoreColorProfile.exchange(enabled, std::memory_order_acq_rel);
+    if (previous == enabled) {
+        return;
+    }
+
+    // Drop all cached results — they were produced under the previous policy
+    // and we don't want callers to receive an inconsistent mix of stripped
+    // and tagged images. Pending requests stay queued; their snapshotted flag
+    // is still consistent with their cache key, so they'll just land under
+    // the (now-cleared) cache with the right key.
+    {
+        QMutexLocker locker(&m_cacheMutex);
+        m_thumbnailLru.clear();
+        m_thumbnailIndex.clear();
+        m_thumbnailPathIndex.clear();
+        m_imageLru.clear();
+        m_imageIndex.clear();
+        m_currentThumbnailCacheBytes = 0;
+        m_currentImageCacheBytes = 0;
+    }
+
+    // Bump cancel generations so any in-flight worker that started under the
+    // old policy and is not on the keep path can self-abort before doing
+    // pointless work — its output would be discarded by the cache anyway.
+    m_thumbnailCancel->generation.fetch_add(1, std::memory_order_release);
+    m_imageCancel->generation.fetch_add(1, std::memory_order_release);
+}
+
 QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
 {
     QMutexLocker locker(&m_cacheMutex);
@@ -791,7 +846,8 @@ void ImageLoader::trimImageCache()
 
 QString ImageLoader::memoryCacheKey(const QString &imagePath,
                                     const QSize &thumbnailSize,
-                                    bool highQuality)
+                                    bool highQuality,
+                                    bool ignoreColorProfile)
 {
     return imagePath
         + QLatin1Char('|')
@@ -799,13 +855,16 @@ QString ImageLoader::memoryCacheKey(const QString &imagePath,
         + QLatin1Char('x')
         + QString::number(thumbnailSize.height())
         + QLatin1Char('|')
-        + (highQuality ? QStringLiteral("hq") : QStringLiteral("fast"));
+        + (highQuality ? QStringLiteral("hq") : QStringLiteral("fast"))
+        + QLatin1Char('|')
+        + (ignoreColorProfile ? QStringLiteral("noicc") : QStringLiteral("icc"));
 }
 
 QString ImageLoader::makeCacheKey(const QString &imagePath,
                                   const QSize &thumbnailSize,
                                   const QDateTime &lastModifiedUtc,
-                                  bool highQuality)
+                                  bool highQuality,
+                                  bool ignoreColorProfile)
 {
     const QByteArray raw = imagePath.toUtf8()
         + '|'
@@ -815,7 +874,9 @@ QString ImageLoader::makeCacheKey(const QString &imagePath,
         + '|'
         + QByteArray::number(lastModifiedUtc.toMSecsSinceEpoch())
         + '|'
-        + (highQuality ? "hq" : "fast");
+        + (highQuality ? "hq" : "fast")
+        + '|'
+        + (ignoreColorProfile ? "noicc" : "icc");
 
     return QString::fromLatin1(QCryptographicHash::hash(raw, QCryptographicHash::Sha1).toHex());
 }
@@ -861,13 +922,15 @@ QDateTime ImageLoader::sourceLastModifiedUtc(const QString &imagePath)
 QImage ImageLoader::tryLoadDiskCachedThumbnail(const QString &imagePath,
                                                const QSize &thumbnailSize,
                                                const QDateTime &lastModifiedUtc,
-                                               bool highQuality)
+                                               bool highQuality,
+                                               bool ignoreColorProfile)
 {
     if (!lastModifiedUtc.isValid()) {
         return QImage();
     }
 
-    const QString cacheKey = makeCacheKey(imagePath, thumbnailSize, lastModifiedUtc, highQuality);
+    const QString cacheKey = makeCacheKey(imagePath, thumbnailSize, lastModifiedUtc, highQuality,
+                                          ignoreColorProfile);
     const QString cachePath = cachePathForKey(cacheKey);
     QImage cached(cachePath);
     if (cached.isNull()) {
@@ -880,13 +943,15 @@ void ImageLoader::persistDiskThumbnail(const QString &imagePath,
                                        const QSize &thumbnailSize,
                                        const QDateTime &lastModifiedUtc,
                                        const QImage &thumbnail,
-                                       bool highQuality)
+                                       bool highQuality,
+                                       bool ignoreColorProfile)
 {
     if (thumbnail.isNull() || !lastModifiedUtc.isValid()) {
         return;
     }
 
-    const QString cacheKey = makeCacheKey(imagePath, thumbnailSize, lastModifiedUtc, highQuality);
+    const QString cacheKey = makeCacheKey(imagePath, thumbnailSize, lastModifiedUtc, highQuality,
+                                          ignoreColorProfile);
     const QString path = cachePathForKey(cacheKey);
     QFileInfo fi(path);
     QDir().mkpath(fi.absolutePath());

@@ -58,6 +58,16 @@ public:
     void clear();
     void setImageMarkManager(ImageMarkManager *manager);
 
+    /**
+     * @brief Re-issue load requests for every cell currently displaying an image.
+     *
+     * Used after a configuration change (e.g. ICC strip toggled) that invalidated
+     * the upstream image cache: walks the cell list and re-runs loadImage() for
+     * each non-empty cell so the user sees the new policy applied without
+     * having to re-select images.
+     */
+    void reloadAllImages();
+
     CompareMode compareMode() const { return m_compareMode; }
     int comparisonThreshold() const { return m_threshold; }
     bool resizeToFirstImageEnabled() const { return m_resizeToFirstImageEnabled; }
