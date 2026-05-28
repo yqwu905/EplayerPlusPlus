@@ -6,6 +6,7 @@
 const QString SettingsManager::kFolderListKey = QStringLiteral("folders/list");
 const QString SettingsManager::kComparisonThresholdKey = QStringLiteral("comparison/threshold");
 const QString SettingsManager::kResizeToFirstImageKey = QStringLiteral("comparison/resize_to_first_image");
+const QString SettingsManager::kIgnoreImageColorProfileKey = QStringLiteral("image/ignore_color_profile");
 
 SettingsManager::SettingsManager(QObject *parent)
     : QObject(parent)
@@ -70,4 +71,19 @@ void SettingsManager::setResizeToFirstImageEnabled(bool enabled)
 {
     QSettings settings;
     settings.setValue(kResizeToFirstImageKey, enabled);
+}
+
+bool SettingsManager::ignoreImageColorProfile() const
+{
+    QSettings settings;
+    // Default ON: a pixel-diff tool wants two visually-identical files with
+    // different color profiles to compare equal. Users who care about
+    // color-managed rendering can opt out.
+    return settings.value(kIgnoreImageColorProfileKey, true).toBool();
+}
+
+void SettingsManager::setIgnoreImageColorProfile(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(kIgnoreImageColorProfileKey, enabled);
 }

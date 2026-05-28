@@ -1,5 +1,6 @@
 #include "ImageUtils.h"
 
+#include <QColorSpace>
 #include <QImageReader>
 
 namespace ImageUtils
@@ -7,7 +8,8 @@ namespace ImageUtils
 
 QImage generateThumbnail(const QString &imagePath,
                          const QSize &thumbnailSize,
-                         Qt::TransformationMode transformMode)
+                         Qt::TransformationMode transformMode,
+                         bool ignoreColorProfile)
 {
     QImageReader reader(imagePath);
     reader.setAutoTransform(true);
@@ -26,20 +28,39 @@ QImage generateThumbnail(const QString &imagePath,
 
     // If the reader didn't support setScaledSize, scale manually
     if (image.size() != image.size().scaled(thumbnailSize, Qt::KeepAspectRatio)) {
-        return image.scaled(thumbnailSize, Qt::KeepAspectRatio, transformMode);
+        image = image.scaled(thumbnailSize, Qt::KeepAspectRatio, transformMode);
     }
 
+    if (ignoreColorProfile) {
+        stripColorProfile(image);
+    }
     return image;
 }
 
 QImage generateThumbnail(const QImage &image,
                          const QSize &thumbnailSize,
-                         Qt::TransformationMode transformMode)
+                         Qt::TransformationMode transformMode,
+                         bool ignoreColorProfile)
 {
     if (image.isNull()) {
         return QImage();
     }
-    return image.scaled(thumbnailSize, Qt::KeepAspectRatio, transformMode);
+    QImage scaled = image.scaled(thumbnailSize, Qt::KeepAspectRatio, transformMode);
+    if (ignoreColorProfile) {
+        stripColorProfile(scaled);
+    }
+    return scaled;
+}
+
+void stripColorProfile(QImage &image)
+{
+    if (image.isNull()) {
+        return;
+    }
+    // Assigning a default-constructed (invalid) QColorSpace clears any embedded
+    // ICC tag. QImage::setColorSpace does not touch pixel data when the new
+    // colorSpace is invalid — it simply drops the tag.
+    image.setColorSpace(QColorSpace());
 }
 
 QImage scaleImage(const QImage &image, const QSize &targetSize)

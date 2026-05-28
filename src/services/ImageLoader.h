@@ -86,6 +86,22 @@ public:
     void cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths);
     void cancelAllThumbnailRequests();
     void cancelImageRequestsExcept(const QSet<QString> &keepPaths);
+
+    /**
+     * @brief Whether decoded images have their embedded ICC profile stripped.
+     */
+    bool ignoreColorProfile() const;
+
+    /**
+     * @brief Configure whether decoded images should have their ICC profile stripped.
+     *
+     * When the flag changes, the in-memory thumbnail and full-image caches are
+     * cleared so subsequent requests see freshly-decoded images that reflect the
+     * new policy. In-flight workers continue using the value they snapshotted at
+     * enqueue time, but their results are correctly keyed in the (possibly
+     * cleared) cache by that snapshotted flag.
+     */
+    void setIgnoreColorProfile(bool enabled);
     QHash<QString, qint64> thumbnailMetrics() const;
 
 signals:
@@ -111,6 +127,7 @@ private:
         QSize requestedSize;
         QDateTime sourceLastModifiedUtc;
         bool highQuality = true;
+        bool ignoreColorProfile = false;
         qint64 byteSize = 0;
     };
 
@@ -126,6 +143,9 @@ private:
         QSize thumbnailSize;
         int priority = 0;
         bool highQuality = true;
+        // Snapshotted at enqueue time so a runtime toggle does not race the
+        // decoder vs. the cache-key write: both use this captured value.
+        bool ignoreColorProfile = false;
         // Source mtime captured during the folder scan. If invalid, the decode
         // worker falls back to stat()ing the file itself.
         QDateTime sourceLastModifiedUtc;
@@ -180,6 +200,9 @@ private:
     int m_activeLoads = 0;
     int m_maxConcurrentImageLoads = 2;
     int m_activeImageLoads = 0;
+    // Strip ICC profile from decoded images. Atomic so the enqueue path can
+    // snapshot it lock-free without taking m_cacheMutex.
+    std::atomic<bool> m_ignoreColorProfile{true};
     qint64 m_metricRequests = 0;
     qint64 m_metricMemoryHits = 0;
     qint64 m_metricDiskHits = 0;
@@ -188,23 +211,27 @@ private:
 
     static QString memoryCacheKey(const QString &imagePath,
                                   const QSize &thumbnailSize,
-                                  bool highQuality);
+                                  bool highQuality,
+                                  bool ignoreColorProfile);
     static QString makeCacheKey(const QString &imagePath,
                                 const QSize &thumbnailSize,
                                 const QDateTime &lastModifiedUtc,
-                                bool highQuality);
+                                bool highQuality,
+                                bool ignoreColorProfile);
     static QString cacheRootDir();
     static QString cachePathForKey(const QString &cacheKey);
     static QDateTime sourceLastModifiedUtc(const QString &imagePath);
     static QImage tryLoadDiskCachedThumbnail(const QString &imagePath,
                                              const QSize &thumbnailSize,
                                              const QDateTime &lastModifiedUtc,
-                                             bool highQuality);
+                                             bool highQuality,
+                                             bool ignoreColorProfile);
     static void persistDiskThumbnail(const QString &imagePath,
                                      const QSize &thumbnailSize,
                                      const QDateTime &lastModifiedUtc,
                                      const QImage &thumbnail,
-                                     bool highQuality);
+                                     bool highQuality,
+                                     bool ignoreColorProfile);
     static qint64 imageByteSize(const QImage &image);
 
     void enqueueThumbnailRequest(const QString &imagePath,
@@ -219,6 +246,7 @@ private:
                        const QImage &thumbnail,
                        const QDateTime &lastModifiedUtc,
                        bool highQuality,
+                       bool ignoreColorProfile,
                        bool cancelledBeforeEmit);
     void processImageQueue();
     void finishImageRequest(const QString &imagePath, const QImage &image, bool cancelledBeforeEmit);

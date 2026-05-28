@@ -1541,6 +1541,11 @@ QPair<int, int> BrowsePanel::prefetchRangeForColumn(const ColumnInfo &column) co
     };
 }
 
+void BrowsePanel::refreshAllVisibleThumbnails()
+{
+    requestVisibleThumbnailsForAllColumns();
+}
+
 void BrowsePanel::requestVisibleThumbnailsForAllColumns()
 {
     for (int i = 0; i < m_columns.size(); ++i) {

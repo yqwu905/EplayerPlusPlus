@@ -1,6 +1,7 @@
 #include <QTest>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QColorSpace>
 #include <QImage>
 #include <QSet>
 #include <QStringList>
@@ -29,6 +30,10 @@ private slots:
     void invalidProvidedMtime_fallsBackToStat();
     void concurrencyPoolSanity();
     void destructorDuringInflight_noCrash();
+    void ignoreColorProfile_stripsLoadedThumbnail();
+    void ignoreColorProfile_offKeepsTagOnThumbnail();
+    void ignoreColorProfile_stripsLoadedFullImage();
+    void setIgnoreColorProfile_toggleInvalidatesMemoryCache();
 };
 
 void tst_ImageLoader::diskCacheHit_afterFirstDecode()
@@ -482,6 +487,123 @@ void tst_ImageLoader::destructorDuringInflight_noCrash()
     // be none). Reaching here without a crash means teardown is sound.
     QTest::qWait(100);
     QVERIFY(true);
+}
+
+void tst_ImageLoader::ignoreColorProfile_stripsLoadedThumbnail()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // Tag the source with an explicit sRGB profile so the saved PNG carries
+    // an embedded iCCP/sRGB chunk; on the read path, QImageReader restores
+    // the tag — unless the loader strips it as we configured.
+    const QString imagePath = dir.filePath("strip_on.png");
+    QImage tagged(96, 96, QImage::Format_ARGB32);
+    tagged.fill(Qt::magenta);
+    tagged.setColorSpace(QColorSpace(QColorSpace::SRgb));
+    QVERIFY(tagged.save(imagePath));
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    loader.setIgnoreColorProfile(true);
+    QCOMPARE(loader.ignoreColorProfile(), true);
+
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+    loader.requestThumbnail(imagePath, QSize(48, 48));
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+
+    const QImage emitted = spy.takeFirst().at(1).value<QImage>();
+    QVERIFY(!emitted.isNull());
+    QVERIFY2(!emitted.colorSpace().isValid(),
+             "ICC profile should be stripped when ignoreColorProfile is enabled");
+}
+
+void tst_ImageLoader::ignoreColorProfile_offKeepsTagOnThumbnail()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("strip_off.png");
+    QImage tagged(96, 96, QImage::Format_ARGB32);
+    tagged.fill(Qt::cyan);
+    tagged.setColorSpace(QColorSpace(QColorSpace::SRgb));
+    QVERIFY(tagged.save(imagePath));
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    loader.setIgnoreColorProfile(false);
+
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+    loader.requestThumbnail(imagePath, QSize(48, 48));
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+
+    const QImage emitted = spy.takeFirst().at(1).value<QImage>();
+    QVERIFY(!emitted.isNull());
+    QVERIFY2(emitted.colorSpace().isValid(),
+             "ICC profile should survive when ignoreColorProfile is disabled");
+}
+
+void tst_ImageLoader::ignoreColorProfile_stripsLoadedFullImage()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("full_strip.png");
+    QImage tagged(64, 64, QImage::Format_ARGB32);
+    tagged.fill(Qt::yellow);
+    tagged.setColorSpace(QColorSpace(QColorSpace::SRgb));
+    QVERIFY(tagged.save(imagePath));
+
+    ImageLoader loader;
+    loader.setIgnoreColorProfile(true);
+
+    QSignalSpy spy(&loader, &ImageLoader::imageReady);
+    loader.requestImage(imagePath);
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+
+    const QImage emitted = spy.takeFirst().at(1).value<QImage>();
+    QVERIFY(!emitted.isNull());
+    QVERIFY2(!emitted.colorSpace().isValid(),
+             "Full-image load should also strip the color profile when enabled");
+}
+
+void tst_ImageLoader::setIgnoreColorProfile_toggleInvalidatesMemoryCache()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("toggle_invalidate.png");
+    QImage img(96, 96, QImage::Format_ARGB32);
+    img.fill(Qt::red);
+    QVERIFY(img.save(imagePath));
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    loader.setIgnoreColorProfile(false);
+
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+    loader.requestThumbnail(imagePath, QSize(48, 48));
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+    QVERIFY(loader.thumbnailMetrics().value(QStringLiteral("decodes")) >= 1);
+
+    // Same policy: the second request should be a pure in-memory hit.
+    spy.clear();
+    loader.requestThumbnail(imagePath, QSize(48, 48));
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 1000);
+    const qint64 memoryHitsBeforeToggle =
+        loader.thumbnailMetrics().value(QStringLiteral("memoryHits"));
+    QCOMPARE(memoryHitsBeforeToggle, qint64(1));
+
+    // Toggling the policy clears the in-memory cache and bumps cancel
+    // generations. The follow-up request must NOT count as a memoryHit;
+    // the prior entry was discarded.
+    loader.setIgnoreColorProfile(true);
+
+    spy.clear();
+    loader.requestThumbnail(imagePath, QSize(48, 48));
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+    QCOMPARE(loader.thumbnailMetrics().value(QStringLiteral("memoryHits")),
+             memoryHitsBeforeToggle);
 }
 
 QTEST_MAIN(tst_ImageLoader)

@@ -1256,6 +1256,19 @@ void ComparePanel::preloadImagesForSelection(const QList<QPair<QString, QString>
     }
 }
 
+void ComparePanel::reloadAllImages()
+{
+    // Walk the cell list and re-issue loadImage for every cell that still
+    // holds a path. loadImage already drops the cached original and asks the
+    // ImageLoader for a fresh copy — exactly what we need after an upstream
+    // setting (e.g. ICC strip) invalidated the loader cache.
+    for (int i = 0; i < m_cells.size(); ++i) {
+        if (!m_cells[i].imagePath.isEmpty()) {
+            loadImage(i);
+        }
+    }
+}
+
 void ComparePanel::clearImage(int cellIndex)
 {
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;

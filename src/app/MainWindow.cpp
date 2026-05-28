@@ -37,6 +37,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_imageLoader = new ImageLoader(this);
     m_imageMarkManager = new ImageMarkManager(this);
 
+    // Push persisted color-profile policy into the loader before any decode
+    // is requested, so the first thumbnail batch already uses the right key.
+    m_imageLoader->setIgnoreColorProfile(m_settingsManager->ignoreImageColorProfile());
+
     setupUi();
     setupMenuBar();
     setupConnections();
@@ -258,6 +262,27 @@ QWidget *MainWindow::createCommandBar()
     connect(m_resizeToFirstAction, &QAction::toggled,
             m_comparePanel, &ComparePanel::setResizeToFirstImageEnabled);
     addButton(m_resizeToFirstAction);
+
+    m_ignoreColorProfileAction = new QAction(QStringLiteral("忽略 ICC"), bar);
+    m_ignoreColorProfileAction->setCheckable(true);
+    m_ignoreColorProfileAction->setChecked(m_settingsManager->ignoreImageColorProfile());
+    m_ignoreColorProfileAction->setToolTip(
+        tr("开启后，加载图片时丢弃嵌入的 ICC 色彩配置，使带不同色彩标签的同源图片按字节对比一致。"));
+    connect(m_ignoreColorProfileAction, &QAction::toggled,
+            this, [this](bool enabled) {
+        m_settingsManager->setIgnoreImageColorProfile(enabled);
+        m_imageLoader->setIgnoreColorProfile(enabled);
+        // The loader cleared its caches; nudge the panels to re-decode what's
+        // currently on screen so the new policy is visible without waiting
+        // for a scroll or selection change.
+        if (m_browsePanel) {
+            m_browsePanel->refreshAllVisibleThumbnails();
+        }
+        if (m_comparePanel) {
+            m_comparePanel->reloadAllImages();
+        }
+    });
+    addButton(m_ignoreColorProfileAction);
 
     auto *fuzzyMatchAction = new QAction(QStringLiteral("模糊匹配"), bar);
     fuzzyMatchAction->setCheckable(true);

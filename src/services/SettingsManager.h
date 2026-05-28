@@ -71,10 +71,27 @@ public:
      */
     void setResizeToFirstImageEnabled(bool enabled);
 
+    /**
+     * @brief Whether embedded ICC / color-profile info on loaded images should be stripped.
+     *
+     * When enabled, QImage::setColorSpace(QColorSpace()) is applied after decode so two
+     * visually-identical files with different color profiles render identically and
+     * compare bit-for-bit. Pixel data is not transformed; only the profile tag is dropped.
+     * Default: true — most users of a pixel-diff tool want determinism over color accuracy.
+     */
+    bool ignoreImageColorProfile() const;
+
+    /**
+     * @brief Enable or disable ignoring the embedded ICC / color-profile info on images.
+     * @param enabled True to strip color profiles after decode.
+     */
+    void setIgnoreImageColorProfile(bool enabled);
+
 private:
     static const QString kFolderListKey;
     static const QString kComparisonThresholdKey;
     static const QString kResizeToFirstImageKey;
+    static const QString kIgnoreImageColorProfileKey;
 };
 
 #endif // SETTINGSMANAGER_H
