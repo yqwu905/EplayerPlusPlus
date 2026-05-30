@@ -1,12 +1,14 @@
 #include "SettingsManager.h"
 
 #include <QSettings>
+#include <QVariant>
 #include <algorithm>
 
 const QString SettingsManager::kFolderListKey = QStringLiteral("folders/list");
 const QString SettingsManager::kComparisonThresholdKey = QStringLiteral("comparison/threshold");
 const QString SettingsManager::kResizeToFirstImageKey = QStringLiteral("comparison/resize_to_first_image");
 const QString SettingsManager::kIgnoreImageColorProfileKey = QStringLiteral("image/ignore_color_profile");
+const QString SettingsManager::kSplitterSizesKey = QStringLiteral("ui/splitter_sizes");
 
 SettingsManager::SettingsManager(QObject *parent)
     : QObject(parent)
@@ -86,4 +88,27 @@ void SettingsManager::setIgnoreImageColorProfile(bool enabled)
 {
     QSettings settings;
     settings.setValue(kIgnoreImageColorProfileKey, enabled);
+}
+
+QList<int> SettingsManager::splitterSizes() const
+{
+    QSettings settings;
+    const QVariantList stored = settings.value(kSplitterSizesKey).toList();
+    QList<int> sizes;
+    sizes.reserve(stored.size());
+    for (const QVariant &value : stored) {
+        sizes.append(value.toInt());
+    }
+    return sizes;
+}
+
+void SettingsManager::setSplitterSizes(const QList<int> &sizes)
+{
+    QVariantList stored;
+    stored.reserve(sizes.size());
+    for (int size : sizes) {
+        stored.append(size);
+    }
+    QSettings settings;
+    settings.setValue(kSplitterSizesKey, stored);
 }

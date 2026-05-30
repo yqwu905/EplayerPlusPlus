@@ -55,6 +55,7 @@ private slots:
     void testLoadNextThumbnailBatch_resetsOnSetFolder();
     void testHasMoreToLoad_emptyFolder();
     void testThumbnailReady_ignoresLargeSharedPreview();
+    void testSetThumbnailSize_upgradesVisibleThumbnailResolution();
 
 private:
     // Helper: set folder and wait for async scan to complete
@@ -686,6 +687,41 @@ void tst_ImageListModel::testThumbnailReady_ignoresLargeSharedPreview()
         model.data(index, ImageListModel::ThumbnailRole).value<QImage>();
     QVERIFY(currentThumbnail.width() <= 180);
     QVERIFY(currentThumbnail.height() <= 180);
+}
+
+void tst_ImageListModel::testSetThumbnailSize_upgradesVisibleThumbnailResolution()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("square.png");
+    QImage image(512, 512, QImage::Format_ARGB32);
+    image.fill(Qt::darkCyan);
+    QVERIFY(image.save(imagePath));
+
+    ImageLoader loader;
+    ImageListModel model;
+    model.setImageLoader(&loader);
+    setFolderAndWait(model, dir.path());
+    QCOMPARE(model.imageCount(), 1);
+
+    QCOMPARE(model.thumbnailSize(), QSize(180, 180));
+
+    // Decode at a small bucket first.
+    model.setThumbnailSize(QSize(128, 128));
+    QCOMPARE(model.thumbnailSize(), QSize(128, 128));
+
+    const QModelIndex index = model.index(0, 0);
+    model.loadThumbnailsForRange(0, 0);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        model.data(index, ImageListModel::ThumbnailRole).value<QImage>().width(), 128, 5000);
+
+    // Zooming in must upgrade the cached thumbnail to a sharper decode and be
+    // accepted by the (now larger) size guard.
+    model.setThumbnailSize(QSize(256, 256));
+    model.loadThumbnailsForRange(0, 0);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        model.data(index, ImageListModel::ThumbnailRole).value<QImage>().width(), 256, 5000);
 }
 
 QTEST_MAIN(tst_ImageListModel)

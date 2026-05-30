@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QStringList>
+#include <QList>
 
 /**
  * @brief Manages persistent application settings using QSettings.
@@ -87,11 +88,26 @@ public:
      */
     void setIgnoreImageColorProfile(bool enabled);
 
+    /**
+     * @brief The persisted main-splitter panel widths (folder / browse / compare).
+     *
+     * Persisting the browse-panel width makes the user's chosen thumbnail zoom
+     * level (which is a function of that width) survive across sessions.
+     * @return The saved sizes, or an empty list if none were saved yet.
+     */
+    QList<int> splitterSizes() const;
+
+    /**
+     * @brief Persist the main-splitter panel widths.
+     */
+    void setSplitterSizes(const QList<int> &sizes);
+
 private:
     static const QString kFolderListKey;
     static const QString kComparisonThresholdKey;
     static const QString kResizeToFirstImageKey;
     static const QString kIgnoreImageColorProfileKey;
+    static const QString kSplitterSizesKey;
 };
 
 #endif // SETTINGSMANAGER_H

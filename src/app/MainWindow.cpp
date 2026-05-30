@@ -51,7 +51,9 @@ MainWindow::~MainWindow() = default;
 void MainWindow::setupUi()
 {
     setWindowTitle(tr("图像对比"));
-    setMinimumSize(1200, 800);
+    // Roomy enough that FolderPanel(280) + a usable BrowsePanel + ComparePanel(650)
+    // plus splitter handles all fit without squeezing the compare area.
+    setMinimumSize(1280, 800);
     resize(1680, 940);
     statusBar()->hide();
 
@@ -87,16 +89,33 @@ void MainWindow::setupUi()
     m_mainSplitter->addWidget(m_browsePanel);
     m_mainSplitter->addWidget(m_comparePanel);
 
-    // Enable collapsible for FolderPanel and BrowsePanel
+    // FolderPanel can be collapsed by dragging; BrowsePanel cannot — dragging its
+    // handle to the edge just shrinks the thumbnails to their minimum and stops,
+    // rather than collapsing the panel. The Browse panel is still fully hidable via
+    // its toggle action (Ctrl+2), which hides the widget instead of collapsing it.
     m_mainSplitter->setCollapsible(0, true);
-    m_mainSplitter->setCollapsible(1, true);
+    m_mainSplitter->setCollapsible(1, false);
     m_mainSplitter->setCollapsible(2, false);
 
-    // Match the reference layout: slim folder rail, dense browser, large compare area.
-    m_mainSplitter->setStretchFactor(0, 1);
-    m_mainSplitter->setStretchFactor(1, 2);
-    m_mainSplitter->setStretchFactor(2, 3);
-    m_mainSplitter->setSizes({280, 700, 700});
+    // Only the compare panel grows on window resize; the folder rail and the
+    // browse panel keep their user-set widths (the browse width is the thumbnail
+    // zoom level, so it should stay where the user dragged it — and be restored
+    // from settings across sessions).
+    m_mainSplitter->setStretchFactor(0, 0);
+    m_mainSplitter->setStretchFactor(1, 0);
+    m_mainSplitter->setStretchFactor(2, 1);
+
+    const QList<int> savedSizes = m_settingsManager->splitterSizes();
+    int savedTotal = 0;
+    for (int s : savedSizes) {
+        savedTotal += s;
+    }
+    if (savedSizes.size() == 3 && savedTotal > 0) {
+        m_mainSplitter->setSizes(savedSizes);
+    } else {
+        // Compact-ish browser, large compare area by default.
+        m_mainSplitter->setSizes({280, 430, 970});
+    }
     m_savedSplitterSizes = m_mainSplitter->sizes();
 
     // Track splitter moves to keep toggle actions in sync
@@ -410,15 +429,27 @@ void MainWindow::exportCategoriesForFolder(const QString &folderPath)
 
 void MainWindow::togglePanel(int panelIndex)
 {
-    QList<int> sizes = m_mainSplitter->sizes();
+    QWidget *panel = (panelIndex == 0) ? static_cast<QWidget *>(m_folderPanel)
+                   : (panelIndex == 1) ? static_cast<QWidget *>(m_browsePanel)
+                                       : nullptr;
 
-    if (sizes.at(panelIndex) > 0) {
-        // Collapse: save current sizes, then set this panel to 0
+    QList<int> sizes = m_mainSplitter->sizes();
+    const bool visible = panel ? !panel->isHidden() : (sizes.at(panelIndex) > 0);
+
+    if (visible) {
+        // Collapse: remember the current widths, then hide the widget. We hide it
+        // (rather than setting its size to 0) because a non-collapsible pane clamps
+        // a 0 size back to its minimum — hiding fully removes it and its handle.
         m_savedSplitterSizes = sizes;
-        sizes[panelIndex] = 0;
-        m_mainSplitter->setSizes(sizes);
+        if (panel) {
+            panel->hide();
+        } else {
+            sizes[panelIndex] = 0;
+            m_mainSplitter->setSizes(sizes);
+        }
     } else {
-        // Expand: restore saved size (or use a reasonable default)
+        // Expand: show the widget and restore its saved width (show() alone only
+        // brings it back at its minimum width).
         int restoreSize = 0;
         if (panelIndex < m_savedSplitterSizes.size()) {
             restoreSize = m_savedSplitterSizes.at(panelIndex);
@@ -426,15 +457,19 @@ void MainWindow::togglePanel(int panelIndex)
         if (restoreSize <= 0) {
             restoreSize = (panelIndex == 0) ? 240 : 480;
         }
+        if (panel) {
+            panel->show();
+        }
+        sizes = m_mainSplitter->sizes();
         sizes[panelIndex] = restoreSize;
         m_mainSplitter->setSizes(sizes);
     }
 
     // Update toggle action checked state
     if (panelIndex == 0 && m_toggleFolderPanelAction) {
-        m_toggleFolderPanelAction->setChecked(sizes.at(0) > 0);
+        m_toggleFolderPanelAction->setChecked(m_folderPanel && !m_folderPanel->isHidden());
     } else if (panelIndex == 1 && m_toggleBrowsePanelAction) {
-        m_toggleBrowsePanelAction->setChecked(sizes.at(1) > 0);
+        m_toggleBrowsePanelAction->setChecked(m_browsePanel && !m_browsePanel->isHidden());
     }
 }
 
@@ -457,5 +492,10 @@ void MainWindow::saveSplitterSizes()
         if (sizes.at(i) > 0 && i < m_savedSplitterSizes.size()) {
             m_savedSplitterSizes[i] = sizes.at(i);
         }
+    }
+    // Persist so the browse-panel width (i.e. the thumbnail zoom level) is
+    // restored on the next launch.
+    if (m_settingsManager) {
+        m_settingsManager->setSplitterSizes(m_savedSplitterSizes);
     }
 }

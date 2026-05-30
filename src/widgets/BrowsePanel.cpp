@@ -43,11 +43,31 @@
 
 namespace
 {
+// Baseline thumbnail geometry. These are now the *minimum* / aspect-ratio basis:
+// the live size scales up from here as the browse column is widened.
 constexpr int kThumbnailCardWidth = 166;
 constexpr int kThumbnailImageWidth = 154;
 constexpr int kThumbnailImageHeight = 96;
 constexpr int kThumbnailItemHeight = 142;
-constexpr int kColumnHorizontalMargins = 16;
+// Fixed chrome around the scalable image area, derived from the baseline so the
+// card padding and the (non-scaling) filename row keep their original sizes.
+constexpr int kHorizontalChrome = kThumbnailCardWidth - kThumbnailImageWidth;   // 12
+constexpr int kVerticalChrome = kThumbnailItemHeight - kThumbnailImageHeight;   // 46
+// Bounds for the on-screen image width as the column is resized. The minimum is
+// deliberately small so several columns can be squeezed into a narrow panel (each
+// column = panelWidth / N); the user enlarges thumbnails by dragging the panel
+// wider. The minimum must stay below the header's intrinsic floor (~58px) so the
+// thumbnail — not a fixed minimum — is what limits how narrow a column can get.
+constexpr int kMinImageWidth = 40;
+constexpr int kMaxImageWidth = 460;
+// Small inset so the card never collides with the vertical scrollbar.
+constexpr int kCardBreath = 4;
+// Decode "buckets": thumbnails are decoded at a quantized size and painted scaled
+// to the exact rect. Quantizing keeps the number of distinct cached sizes (and the
+// re-decode rate during a drag) small; the cap bounds per-image memory.
+constexpr int kDecodeBucketStep = 64;
+constexpr int kMinDecodeBucket = 128;
+constexpr int kMaxDecodeBucket = 320;
 constexpr int kScrollAreaSafetyPadding = 4;
 // Filter toolbar control widths; also used to floor the panel width so the two
 // inputs always fit on a single row even when only one folder column is shown.
@@ -61,6 +81,26 @@ constexpr int kMarkButtonTopMargin = 10;
 constexpr int kMarkButtonRightMargin = 10;
 const char kFolderOrderMimeType[] = "application/x-eplayer-folder-index";
 const QString kUnmarkedCategoryFilter = QStringLiteral("__unmarked__");
+
+// Defined on BrowsePanel so it can be a member; the delegate, the list view and
+// the free helpers below all share it (by pointer) so paint and hit-testing can
+// never disagree about where the card, image and mark buttons are.
+using ThumbMetrics = BrowsePanel::ThumbMetrics;
+
+// Build metrics for a target on-screen image width, preserving the image aspect
+// ratio and snapping the decode size to a bucket.
+ThumbMetrics metricsForImageWidth(int targetImageWidth)
+{
+    ThumbMetrics m;
+    m.imageWidth = qBound(kMinImageWidth, targetImageWidth, kMaxImageWidth);
+    m.imageHeight = qRound(double(m.imageWidth) * kThumbnailImageHeight / kThumbnailImageWidth);
+    m.cardWidth = m.imageWidth + kHorizontalChrome;
+    m.itemHeight = m.imageHeight + kVerticalChrome;
+    const int longSide = qMax(m.imageWidth, m.imageHeight);
+    const int bucket = ((longSide + kDecodeBucketStep - 1) / kDecodeBucketStep) * kDecodeBucketStep;
+    m.decodeExtent = qBound(kMinDecodeBucket, bucket, kMaxDecodeBucket);
+    return m;
+}
 
 const QColor kBrowseColors[] = {
     QColor(0x18, 0x6F, 0xD7),
@@ -113,25 +153,25 @@ bool decodeFolderOrderDragIndex(const QMimeData *mimeData, int *index)
     return stream.status() == QDataStream::Ok;
 }
 
-QRect thumbnailCardRect(const QRect &itemRect)
+QRect thumbnailCardRect(const QRect &itemRect, const ThumbMetrics &m)
 {
-    const int cardX = itemRect.x() + qMax(0, (itemRect.width() - kThumbnailCardWidth) / 2);
-    return QRect(cardX, itemRect.y() + 2, kThumbnailCardWidth, kThumbnailItemHeight - 4);
+    const int cardX = itemRect.x() + qMax(0, (itemRect.width() - m.cardWidth) / 2);
+    return QRect(cardX, itemRect.y() + 2, m.cardWidth, m.itemHeight - 4);
 }
 
 // The actual thumbnail picture area within an item — matches the rect the
 // delegate paints the image into. Used to distinguish a right-click "on the
 // image" from one on the surrounding non-image area.
-QRect thumbnailImageRect(const QRect &itemRect)
+QRect thumbnailImageRect(const QRect &itemRect, const ThumbMetrics &m)
 {
-    const QRect cardRect = thumbnailCardRect(itemRect);
+    const QRect cardRect = thumbnailCardRect(itemRect, m);
     return QRect(cardRect.x() + 6, cardRect.y() + 6,
-                 kThumbnailImageWidth, kThumbnailImageHeight);
+                 m.imageWidth, m.imageHeight);
 }
 
-QRect markButtonRect(const QRect &itemRect, int categoryIndex)
+QRect markButtonRect(const QRect &itemRect, int categoryIndex, const ThumbMetrics &m)
 {
-    const QRect cardRect = thumbnailCardRect(itemRect);
+    const QRect cardRect = thumbnailCardRect(itemRect, m);
     const int categoryCount = ImageMarkManager::categories().size();
     const int totalWidth = categoryCount * kMarkButtonSize
                            + (categoryCount - 1) * kMarkButtonGap;
@@ -141,11 +181,11 @@ QRect markButtonRect(const QRect &itemRect, int categoryIndex)
     return QRect(x, y, kMarkButtonSize, kMarkButtonSize);
 }
 
-QString markCategoryAtPosition(const QRect &itemRect, const QPoint &pos)
+QString markCategoryAtPosition(const QRect &itemRect, const QPoint &pos, const ThumbMetrics &m)
 {
     const QStringList categories = ImageMarkManager::categories();
     for (int i = 0; i < categories.size(); ++i) {
-        if (markButtonRect(itemRect, i).contains(pos)) {
+        if (markButtonRect(itemRect, i, m).contains(pos)) {
             return categories.at(i);
         }
     }
@@ -155,7 +195,8 @@ QString markCategoryAtPosition(const QRect &itemRect, const QPoint &pos)
 void paintMarkButtons(QPainter *painter,
                       const QRect &itemRect,
                       const QString &currentMark,
-                      bool hovered)
+                      bool hovered,
+                      const ThumbMetrics &m)
 {
     if (currentMark.isEmpty() && !hovered) {
         return;
@@ -169,7 +210,7 @@ void paintMarkButtons(QPainter *painter,
 
     for (int i = 0; i < categories.size(); ++i) {
         const QString category = categories.at(i);
-        const QRect rect = markButtonRect(itemRect, i);
+        const QRect rect = markButtonRect(itemRect, i, m);
         const bool active = (category == currentMark);
 
         painter->setPen(QPen(active ? QColor(0x00, 0x78, 0xD4) : QColor(0xC8, 0xC8, 0xC8), 1));
@@ -222,6 +263,13 @@ public:
         m_swapCallback = std::move(callback);
     }
 
+    // Live thumbnail geometry, owned by BrowsePanel; used so hit-testing matches
+    // exactly what the delegate paints.
+    void setMetrics(const ThumbMetrics *metrics)
+    {
+        m_metrics = metrics;
+    }
+
 protected:
     void mousePressEvent(QMouseEvent *event) override
     {
@@ -229,7 +277,7 @@ protected:
             const QModelIndex modelIndex = indexAt(event->pos());
             if (modelIndex.isValid()) {
                 const QString category = markCategoryAtPosition(visualRect(modelIndex),
-                                                                event->pos());
+                                                                event->pos(), metrics());
                 if (!category.isEmpty()) {
                     m_dragCandidateIndex = QModelIndex();
                     if (m_markCallback) {
@@ -376,7 +424,7 @@ private:
         // actual thumbnail picture; everywhere else in the column (card padding,
         // text, gaps, empty space) is treated as non-image → folder menu.
         const bool onImage = modelIndex.isValid()
-            && thumbnailImageRect(visualRect(modelIndex)).contains(event->pos());
+            && thumbnailImageRect(visualRect(modelIndex), metrics()).contains(event->pos());
 
         if (onImage && m_contextMenuCallback) {
             m_contextMenuCallback(modelIndex, event->globalPos());
@@ -391,11 +439,18 @@ private:
         return false;
     }
 
+    // Returns the live metrics, or sensible defaults if not yet wired.
+    ThumbMetrics metrics() const
+    {
+        return m_metrics ? *m_metrics : ThumbMetrics{};
+    }
+
     MarkCallback m_markCallback;
     ContextMenuCallback m_contextMenuCallback;
     BlankContextMenuCallback m_blankContextMenuCallback;
     ColumnIndexCallback m_columnIndexCallback;
     SwapCallback m_swapCallback;
+    const ThumbMetrics *m_metrics = nullptr;
     QPoint m_dragStartPos;
     QModelIndex m_dragCandidateIndex;
 };
@@ -403,16 +458,18 @@ private:
 class ThumbnailDelegate final : public QStyledItemDelegate
 {
 public:
-    explicit ThumbnailDelegate(int colorIndex, QObject *parent = nullptr)
+    explicit ThumbnailDelegate(int colorIndex, const ThumbMetrics *metrics, QObject *parent = nullptr)
         : QStyledItemDelegate(parent)
         , m_accentColor(browseColor(colorIndex))
+        , m_metrics(metrics)
     {
     }
 
     QSize sizeHint(const QStyleOptionViewItem & /*option*/,
                    const QModelIndex & /*index*/) const override
     {
-        return QSize(kThumbnailCardWidth + 16, kThumbnailItemHeight);
+        const ThumbMetrics m = metrics();
+        return QSize(m.cardWidth + 16, m.itemHeight);
     }
 
     void paint(QPainter *painter,
@@ -422,10 +479,11 @@ public:
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
 
+        const ThumbMetrics m = metrics();
         const bool selected = index.data(ImageListModel::IsSelectedRole).toBool();
         const QString currentMark = index.data(ImageListModel::MarkRole).toString();
         const bool hovered = option.state & QStyle::State_MouseOver;
-        const QRect cardRect = thumbnailCardRect(option.rect);
+        const QRect cardRect = thumbnailCardRect(option.rect, m);
 
         if (selected) {
             painter->setPen(QPen(m_accentColor, 2));
@@ -441,8 +499,8 @@ public:
 
         const QRect thumbArea(cardRect.x() + 6,
                               cardRect.y() + 6,
-                              kThumbnailImageWidth,
-                              kThumbnailImageHeight);
+                              m.imageWidth,
+                              m.imageHeight);
 
         QPainterPath clipPath;
         clipPath.addRoundedRect(thumbArea, 6, 6);
@@ -483,7 +541,7 @@ public:
 
         const QRect textArea(cardRect.x() + 7,
                              thumbArea.bottom() + 4,
-                             kThumbnailImageWidth,
+                             m.imageWidth,
                              26);
         painter->setPen(QColor(0x61, 0x61, 0x61));
         QFont font = painter->font();
@@ -495,18 +553,24 @@ public:
                           Qt::AlignCenter,
                           fm.elidedText(fileName, Qt::ElideMiddle, textArea.width()));
 
-        paintMarkButtons(painter, option.rect, currentMark, hovered);
+        paintMarkButtons(painter, option.rect, currentMark, hovered, m);
 
         painter->restore();
     }
 
 private:
+    ThumbMetrics metrics() const
+    {
+        return m_metrics ? *m_metrics : ThumbMetrics{};
+    }
+
     QColor m_accentColor;
+    const ThumbMetrics *m_metrics = nullptr;
 };
 
-int rowExtent(const QListView *view)
+int rowExtent(const QListView *view, const ThumbMetrics &m)
 {
-    return kThumbnailItemHeight + (view ? view->spacing() : 0);
+    return m.itemHeight + (view ? view->spacing() : 0);
 }
 }
 
@@ -517,6 +581,15 @@ BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
     , m_imageLoader(imageLoader)
 {
     setupUi();
+
+    // Coalesces a burst of resize events (a splitter drag) into a single
+    // re-decode once the size has settled, so dragging only rescales the cached
+    // pixmaps live and never floods the decoder.
+    m_decodeReloadTimer = new QTimer(this);
+    m_decodeReloadTimer->setSingleShot(true);
+    m_decodeReloadTimer->setInterval(150);
+    connect(m_decodeReloadTimer, &QTimer::timeout,
+            this, &BrowsePanel::onDecodeReloadTimeout);
 
     connect(m_session, &CompareSession::folderAdded,
             this, &BrowsePanel::onFolderAdded);
@@ -546,6 +619,14 @@ void BrowsePanel::setImageMarkManager(ImageMarkManager *manager)
 void BrowsePanel::setFuzzyFileNameMatchEnabled(bool enabled)
 {
     m_fuzzyFileNameMatch = enabled;
+}
+
+void BrowsePanel::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    // Dragging the splitter handle (or resizing the window) changes our width;
+    // rescale the thumbnails to fill the new column width.
+    recomputeThumbnailMetrics();
 }
 
 void BrowsePanel::setupUi()
@@ -595,12 +676,11 @@ void BrowsePanel::setupUi()
     m_columnsLayout = new QHBoxLayout();
     m_columnsLayout->setContentsMargins(0, 0, 0, 0);
     m_columnsLayout->setSpacing(8);
-    m_columnsLayout->addStretch();
+    // No trailing stretch: the columns themselves (stretch 1, MinimumExpanding)
+    // fill the panel width so each thumbnail card grows/shrinks with the column.
     m_rootLayout->addLayout(optionsRow);
     m_rootLayout->addLayout(m_columnsLayout, 1);
     m_rootLayout->addWidget(m_scanStatusLabel);
-
-    updatePanelWidth();
 
     setStyleSheet(
         "QWidget#browsePanelRoot { background-color: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
@@ -636,7 +716,11 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     col.columnWidget = new QWidget(this);
     col.columnWidget->setObjectName(QStringLiteral("compareColumnWidget"));
-    col.columnWidget->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
+    // Expanding (not MinimumExpanding): columns grow to share the panel width, but
+    // they must also be allowed to shrink below their preferred width — otherwise
+    // the layout would treat each column's preferred width as a hard minimum and
+    // the panel could not be dragged narrow when several folders are compared.
+    col.columnWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     col.containerLayout = new QVBoxLayout(col.columnWidget);
     col.containerLayout->setContentsMargins(0, 0, 0, 0);
@@ -664,7 +748,11 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     headerLabel->setObjectName(QStringLiteral("compareColumnHeaderLabel"));
     headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     headerLabel->setMinimumWidth(0);
-    headerLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    // Ignored (not Expanding): the elided folder name still fills the header when
+    // there is room, but its text width must NOT impose a per-column minimum —
+    // otherwise comparing several folders locks the panel to a huge minimum width
+    // and the thumbnails can no longer be shrunk by dragging the splitter.
+    headerLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     QFont headerFont = headerLabel->font();
     headerFont.setWeight(QFont::DemiBold);
     headerFont.setPointSize(12);
@@ -676,6 +764,11 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
 
     col.progressLabel = new QLabel(tr("0 个文件"), col.columnWidget);
     col.progressLabel->setObjectName(QStringLiteral("compareColumnProgressLabel"));
+    // The file-count text grows ("1234 / 5678 个文件，扫描中"); without this its
+    // size hint would impose a large per-column minimum width and stop the panel
+    // (and thus the thumbnails) from shrinking when several folders are compared.
+    col.progressLabel->setMinimumWidth(0);
+    col.progressLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     titleStack->addWidget(col.progressLabel);
     headerLayout->addLayout(titleStack, 1);
 
@@ -708,7 +801,9 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     col.view = thumbnailView;
     col.view->setObjectName(QStringLiteral("compareColumnListView"));
     col.view->setModel(col.model);
-    col.view->setItemDelegate(new ThumbnailDelegate(m_columns.size(), col.view));
+    col.view->setItemDelegate(new ThumbnailDelegate(m_columns.size(), &m_metrics, col.view));
+    thumbnailView->setMetrics(&m_metrics);
+    col.model->setThumbnailSize(QSize(m_metrics.decodeExtent, m_metrics.decodeExtent));
     col.view->setMouseTracking(true);
     col.view->setSelectionMode(QAbstractItemView::NoSelection);
     col.view->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -725,14 +820,17 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         QStyle::PM_ScrollBarExtent,
         nullptr,
         col.view);
-    col.view->setMinimumWidth(kThumbnailCardWidth
-                              + kColumnHorizontalMargins
+    // Floor each column at the *minimum* thumbnail size (not the baseline), so up
+    // to six columns can be squeezed; the real per-column width — and thus the
+    // thumbnail size — is whatever the splitter leaves, divided across columns.
+    col.view->setMinimumWidth(kMinImageWidth
+                              + kHorizontalChrome
                               + verticalScrollBarWidth
                               + kScrollAreaSafetyPadding);
     col.containerLayout->addWidget(col.view, 1);
 
-    const int insertPos = m_columnsLayout->count() - 1;
-    m_columnsLayout->insertWidget(insertPos, col.columnWidget, 1);
+    // Append at the end (no trailing stretch to insert before any more).
+    m_columnsLayout->addWidget(col.columnWidget, 1);
 
     m_columns.append(col);
     ImageListModel *modelPtr = col.model;
@@ -858,7 +956,8 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     });
 
     col.model->setFolder(folderPath);
-    updatePanelWidth();
+    // A new column narrows every column → rescale all thumbnails to the new width.
+    recomputeThumbnailMetrics();
     updateGlobalScanStatus();
 }
 
@@ -905,7 +1004,8 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
         updateColumnVisuals(i);
     }
 
-    updatePanelWidth();
+    // Removing a column widens the survivors → rescale their thumbnails.
+    recomputeThumbnailMetrics();
     updateGlobalScanStatus();
     emitSelectionChanged();
 }
@@ -1064,7 +1164,7 @@ void BrowsePanel::alignColumnsToAnchor(int anchorColumn,
     }
     const int anchorYInViewport = anchorRect.isValid()
         ? anchorRect.top()
-        : anchorIndex * rowExtent(anchorCol.view) - anchorCol.view->verticalScrollBar()->value();
+        : anchorIndex * rowExtent(anchorCol.view, m_metrics) - anchorCol.view->verticalScrollBar()->value();
 
     for (int c = 0; c < m_columns.size(); ++c) {
         if (c == anchorColumn || c >= matchedIndices.size()) {
@@ -1080,7 +1180,7 @@ void BrowsePanel::alignColumnsToAnchor(int anchorColumn,
 
         auto *targetScrollBar = targetCol.view->verticalScrollBar();
         const int desiredScroll = qBound(targetScrollBar->minimum(),
-                                         targetIndex * rowExtent(targetCol.view) - anchorYInViewport,
+                                         targetIndex * rowExtent(targetCol.view, m_metrics) - anchorYInViewport,
                                          targetScrollBar->maximum());
         targetScrollBar->setValue(desiredScroll);
         const QModelIndex targetModelIndex = targetCol.model->index(targetIndex);
@@ -1114,33 +1214,84 @@ void BrowsePanel::clearAllColumns()
         m_scanStatusLabel->setText(tr("Idle"));
     }
     emit scanStatusChanged(tr("Idle"));
-    updatePanelWidth();
+    recomputeThumbnailMetrics();
 }
 
-void BrowsePanel::updatePanelWidth()
+void BrowsePanel::recomputeThumbnailMetrics()
 {
-    // Lock the panel to the minimum width that fits the current folder columns,
-    // so it grows/shrinks with the number of added folders and never steals
-    // horizontal space from the compare panel. The width never drops below what
-    // the filter toolbar needs for a single row, so the two inputs always fit on
-    // one line; once enough columns push past that floor we follow the columns.
+    // Thumbnail size is a pure function of the per-column width: the panel width
+    // (set by the splitter) minus margins, divided across the columns, minus the
+    // scrollbar and card chrome. Predictive (not read back from the viewport) so
+    // it is correct even before child layout settles mid-drag.
+    const int columnCount = qMax(1, m_columns.size());
     const QMargins margins = m_rootLayout
         ? m_rootLayout->contentsMargins()
         : QMargins(14, 14, 14, 8);
-    const int scrollBarWidth = style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this);
-    const int perColumnWidth = kThumbnailCardWidth
-                               + kColumnHorizontalMargins
-                               + scrollBarWidth
-                               + kScrollAreaSafetyPadding;
-    const int columnCount = qMax(1, m_columns.size());
     const int spacing = m_columnsLayout ? m_columnsLayout->spacing() : 8;
-    const int columnsContent = columnCount * perColumnWidth + (columnCount - 1) * spacing;
-    // +4 safety: FlowLayout wraps when an item's right edge meets the available
-    // right edge, so the floor needs a couple of spare pixels to keep both
-    // inputs on one row.
-    const int filterRowContent = kFilterEditWidth + kFilterRowSpacing + kFilterComboWidth + 4;
-    const int content = qMax(columnsContent, filterRowContent);
-    setFixedWidth(margins.left() + margins.right() + content);
+    const int scrollBarWidth = style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this);
+
+    const int panelContent = width() - margins.left() - margins.right();
+    const int perColumn = (panelContent - (columnCount - 1) * spacing) / columnCount;
+    const int targetImageWidth = perColumn - scrollBarWidth - kCardBreath - kHorizontalChrome;
+
+    const ThumbMetrics next = metricsForImageWidth(targetImageWidth);
+    const bool displayChanged = next.imageWidth != m_metrics.imageWidth
+        || next.itemHeight != m_metrics.itemHeight;
+    const bool bucketChanged = next.decodeExtent != m_metrics.decodeExtent;
+
+    if (!displayChanged && !bucketChanged) {
+        return;
+    }
+
+    m_metrics = next;
+
+    if (displayChanged) {
+        for (auto &col : m_columns) {
+            applyMetricsToView(col);
+        }
+    }
+
+    if (bucketChanged && m_decodeReloadTimer) {
+        // Defer the re-decode until the size settles; the live relayout above
+        // already rescales the cached pixmaps for instant visual feedback.
+        m_decodeReloadTimer->start();
+    }
+}
+
+void BrowsePanel::applyMetricsToView(ColumnInfo &col)
+{
+    if (!col.view) {
+        return;
+    }
+
+    // Keep the row currently at the top of the viewport anchored across the
+    // relayout so the content does not jump as the item height changes.
+    const QModelIndex topIndex = col.view->indexAt(QPoint(4, 4));
+
+    // QListView caches the uniform item size; a plain doItemsLayout() will not
+    // re-query the delegate. Toggling uniform sizes forces it to re-cache from
+    // the (changed) sizeHint while staying O(1) per relayout.
+    col.view->setUniformItemSizes(false);
+    col.view->setUniformItemSizes(true);
+    col.view->doItemsLayout();
+
+    if (topIndex.isValid()) {
+        col.view->scrollTo(topIndex, QAbstractItemView::PositionAtTop);
+    }
+    col.view->viewport()->update();
+}
+
+void BrowsePanel::onDecodeReloadTimeout()
+{
+    const QSize bucket(m_metrics.decodeExtent, m_metrics.decodeExtent);
+    for (auto &col : m_columns) {
+        if (col.model) {
+            col.model->setThumbnailSize(bucket);
+        }
+    }
+    // Re-request visible thumbnails at the new bucket; this also cancels stale
+    // in-flight work for anything no longer on screen.
+    requestVisibleThumbnailsForAllColumns();
 }
 
 void BrowsePanel::rebuildColumnLayout()
@@ -1159,7 +1310,7 @@ void BrowsePanel::rebuildColumnLayout()
             m_columnsLayout->addWidget(m_columns[i].columnWidget, 1);
         }
     }
-    m_columnsLayout->addStretch();
+    // No trailing stretch: columns fill the panel width (see setupUi).
 }
 
 void BrowsePanel::updateColumnVisuals(int columnIndex)
@@ -1178,7 +1329,7 @@ void BrowsePanel::updateColumnVisuals(int columnIndex)
 
     if (col.view) {
         QAbstractItemDelegate *oldDelegate = col.view->itemDelegate();
-        col.view->setItemDelegate(new ThumbnailDelegate(columnIndex, col.view));
+        col.view->setItemDelegate(new ThumbnailDelegate(columnIndex, &m_metrics, col.view));
         if (oldDelegate && oldDelegate->parent() == col.view) {
             oldDelegate->deleteLater();
         }
@@ -1519,7 +1670,7 @@ QPair<int, int> BrowsePanel::visibleRangeForColumn(const ColumnInfo &column) con
 
     const int scrollY = column.view->verticalScrollBar()->value();
     const int viewportH = column.view->viewport()->height();
-    const int extent = qMax(1, rowExtent(column.view));
+    const int extent = qMax(1, rowExtent(column.view, m_metrics));
     const int firstVisible = qMax(0, scrollY / extent - 2);
     const int lastVisible = qMin(column.model->imageCount() - 1,
                                  (scrollY + viewportH) / extent + 3);
