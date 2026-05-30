@@ -6,7 +6,9 @@
 #include <QImage>
 #include <QHash>
 #include <QDateTime>
+#include <QSize>
 #include <QVector>
+#include <list>
 #include <memory>
 
 #include "utils/FileUtils.h"
@@ -155,6 +157,18 @@ public:
     void setImageLoader(ImageLoader *loader);
 
     /**
+     * @brief Set the size thumbnails are decoded at.
+     *
+     * Driven by BrowsePanel as the user resizes the browse column (zoom). The
+     * value is the (square) decode "bucket"; the delegate paints the result
+     * scaled to the exact on-screen rect. Growing the size lets visible thumbnails
+     * be re-requested at a sharper resolution; shrinking keeps the larger cached
+     * image and downscales it on paint.
+     */
+    void setThumbnailSize(const QSize &size);
+    QSize thumbnailSize() const;
+
+    /**
      * @brief Request thumbnail loading for visible items.
      * @param firstVisible First visible index.
      * @param lastVisible Last visible index.
@@ -209,6 +223,16 @@ private:
     void updateFilteredRowForSourceIndex(int sourceIndex);
     QString markAtSourceIndex(int sourceIndex) const;
 
+    // ---- Thumbnail cache (bounded, access-ordered) ----
+    // m_thumbnails grows linearly with the number of distinct images viewed, and
+    // each entry gets larger as the user zooms in, so it is capped with an LRU.
+    // The visible + prefetch set is "touched" every load cycle, so it is never
+    // the eviction victim; an evicted-then-revisited path is simply re-requested.
+    void touchThumbnail(const QString &path);
+    void storeThumbnail(const QString &path, const QImage &thumbnail);
+    void trimThumbnailCache();
+    void clearThumbnailCache();
+
     QString m_folderPath;
     QString m_normalizedFolderPath;
     QStringList m_imagePaths;
@@ -222,6 +246,16 @@ private:
     QString m_categoryFilter;
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
+    // LRU bookkeeping for m_thumbnails: MRU at the front, LRU at the back.
+    // m_thumbnailLruPos maps a path to its node for O(1) splice-to-front.
+    std::list<QString> m_thumbnailLru;
+    QHash<QString, std::list<QString>::iterator> m_thumbnailLruPos;
+    // Size thumbnails are currently decoded at (the zoom "bucket"). Square.
+    QSize m_thumbnailSize = QSize(180, 180);
+    // path -> largest bucket we have already issued a request at, so a zoom-in
+    // upgrades each visible thumbnail at most once per bucket (and tiny source
+    // images are not re-requested forever trying to reach an unreachable size).
+    QHash<QString, int> m_upgradedExtent;
     // path -> source last-modified time captured during the folder scan, passed
     // to ImageLoader so the decode worker can skip a redundant stat() per thumbnail.
     QHash<QString, QDateTime> m_sourceModifiedUtc;

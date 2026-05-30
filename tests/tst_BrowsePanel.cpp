@@ -3,6 +3,7 @@
 #include <QTemporaryDir>
 #include <QImage>
 #include <QFile>
+#include <QAbstractItemDelegate>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -10,6 +11,7 @@
 #include <QListView>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QStyleOptionViewItem>
 #include <algorithm>
 
 #include "models/CompareSession.h"
@@ -38,7 +40,8 @@ private slots:
     void folderSwap_reordersColumnsAndKeepsSelections();
     void scrollableColumn_keepsHeaderControlsVisible();
     void virtualizedColumn_doesNotCreateThumbnailWidgetsForRows();
-    void panelWidth_locksToMinimumAndTracksFolderCount();
+    void thumbnailSize_scalesWithPanelWidthAndPushesDecodeBucket();
+    void multipleFolders_panelMinimumStaysShrinkable();
 
 private:
     static QList<QListView *> sortedViews(BrowsePanel &panel);
@@ -104,7 +107,10 @@ void tst_BrowsePanel::clickMarkButton(QListView *view,
     const QRect itemRect = view->visualRect(index);
     QVERIFY2(itemRect.isValid(), qPrintable(QString("invalid visual rect for row %1").arg(row)));
 
-    constexpr int cardWidth = 166;
+    // Card width is dynamic (thumbnails scale with the column), so derive it from
+    // the delegate's live sizeHint rather than assuming the baseline 166px.
+    QStyleOptionViewItem opt;
+    const int cardWidth = view->itemDelegateForIndex(index)->sizeHint(opt, index).width() - 16;
     constexpr int buttonSize = 18;
     constexpr int buttonGap = 3;
     constexpr int topMargin = 10;
@@ -709,42 +715,91 @@ void tst_BrowsePanel::virtualizedColumn_doesNotCreateThumbnailWidgetsForRows()
     QCOMPARE(panel.findChildren<ThumbnailWidget *>().size(), 0);
 }
 
-void tst_BrowsePanel::panelWidth_locksToMinimumAndTracksFolderCount()
+void tst_BrowsePanel::thumbnailSize_scalesWithPanelWidthAndPushesDecodeBucket()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
-    QImage(16, 16, QImage::Format_ARGB32).save(dir.filePath("a.png"));
+    for (int i = 0; i < 4; ++i) {
+        QImage image(64, 48, QImage::Format_ARGB32);
+        image.fill(QColor::fromHsv((i * 70) % 360, 200, 220));
+        QVERIFY(image.save(dir.filePath(QString("img_%1.png").arg(i))));
+    }
 
     CompareSession session;
     ImageLoader loader;
     BrowsePanel panel(&session, &loader);
+    // The panel is resizable now (not locked to a fixed width).
+    QVERIFY(panel.maximumWidth() > panel.minimumWidth());
+
+    panel.resize(360, 600);
     panel.show();
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
-
-    // Width is locked: minimum and maximum coincide regardless of folder count.
-    const int emptyWidth = panel.maximumWidth();
-    QCOMPARE(panel.minimumWidth(), emptyWidth);
 
     QVERIFY(session.addFolder(dir.path()));
     QList<QListView *> views;
     QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
-    const int oneFolderWidth = panel.maximumWidth();
-    QCOMPARE(panel.minimumWidth(), oneFolderWidth);
+    waitForRows(views[0], 4);
 
-    QVERIFY(session.addFolder(dir.path()));
-    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
-    const int twoFolderWidth = panel.maximumWidth();
-    QCOMPARE(panel.minimumWidth(), twoFolderWidth);
+    const int narrowImageWidth = panel.thumbnailMetrics().imageWidth;
+    const int narrowItemHeight = panel.thumbnailMetrics().itemHeight;
 
-    // Each added column widens the panel; the empty panel matches a single column.
-    QCOMPARE(oneFolderWidth, emptyWidth);
-    QVERIFY2(twoFolderWidth > oneFolderWidth,
-             qPrintable(QString("one=%1 two=%2").arg(oneFolderWidth).arg(twoFolderWidth)));
+    // Widen the panel: thumbnails grow to fill the wider column.
+    panel.resize(760, 600);
+    QTRY_VERIFY_WITH_TIMEOUT(panel.thumbnailMetrics().imageWidth > narrowImageWidth, 2000);
+    const BrowsePanel::ThumbMetrics wide = panel.thumbnailMetrics();
+    QVERIFY(wide.itemHeight > narrowItemHeight);
 
-    // Removing a folder shrinks it back.
-    session.removeFolderAt(1);
-    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
-    QCOMPARE(panel.maximumWidth(), oneFolderWidth);
+    // The delegate's sizeHint reflects the new size, so the list rows grow too.
+    const QModelIndex idx = views[0]->model()->index(0, 0);
+    QStyleOptionViewItem opt;
+    const QSize hint = views[0]->itemDelegateForIndex(idx)->sizeHint(opt, idx);
+    QCOMPARE(hint.height(), wide.itemHeight);
+    QCOMPARE(hint.width(), wide.cardWidth + 16);
+
+    // After the resize settles, the wider decode bucket is pushed to the model.
+    auto *model = qobject_cast<ImageListModel *>(views[0]->model());
+    QVERIFY(model != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(model->thumbnailSize().width(), wide.decodeExtent, 2000);
+
+    // Narrowing shrinks the thumbnails back.
+    panel.resize(320, 600);
+    QTRY_VERIFY_WITH_TIMEOUT(panel.thumbnailMetrics().imageWidth < wide.imageWidth, 2000);
+}
+
+void tst_BrowsePanel::multipleFolders_panelMinimumStaysShrinkable()
+{
+    // Comparing several folders must NOT lock the browse panel to a large minimum
+    // width. A per-column minimum that grew with the folder count previously made
+    // the splitter un-draggable and forced the folder panel to collapse. Each
+    // added column should add only a small (thumbnail-floor) amount so the panel
+    // stays narrow enough to fit alongside the folder and compare panels.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (int i = 0; i < 8; ++i) {
+        QImage image(48, 48, QImage::Format_ARGB32);
+        image.fill(QColor::fromHsv((i * 40) % 360, 200, 220));
+        QVERIFY(image.save(dir.filePath(QString("img_%1.png").arg(i))));
+    }
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(900, 600);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    for (int n = 1; n <= 4; ++n) {
+        QVERIFY(session.addFolder(dir.path()));
+        QList<QListView *> views;
+        QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == n), 5000);
+        waitForRows(views[n - 1], 8);
+    }
+
+    // Four columns must still fit well under a typical browse-panel width — i.e.
+    // the panel can be dragged narrow (folder 280 + this + compare 650 < window).
+    QVERIFY2(panel.minimumSizeHint().width() < 460,
+             qPrintable(QString("4-folder panel minimum = %1 (expected < 460)")
+                            .arg(panel.minimumSizeHint().width())));
 }
 
 QTEST_MAIN(tst_BrowsePanel)

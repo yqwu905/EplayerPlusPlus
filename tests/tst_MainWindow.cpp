@@ -1,7 +1,9 @@
 #include <QTest>
 #include <QAbstractItemView>
+#include <QAction>
 #include <QImage>
 #include <QListView>
+#include <QSplitter>
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <algorithm>
@@ -20,6 +22,7 @@ private slots:
     void commandBar_removesDeadMenuAndBrowseButtons();
     void commandBar_compareModeButtonsControlComparePanel();
     void directionKeys_navigateBrowseSelection();
+    void browsePanel_notCollapsibleButHidableByToggle();
 
 private:
     static QList<QListView *> sortedViews(BrowsePanel &panel);
@@ -154,6 +157,46 @@ void tst_MainWindow::directionKeys_navigateBrowseSelection()
 
     QTest::keyClick(views[0], Qt::Key_Up);
     QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], 0), 1000);
+}
+
+void tst_MainWindow::browsePanel_notCollapsibleButHidableByToggle()
+{
+    MainWindow window;
+    window.resize(1680, 940);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *splitter = window.findChild<QSplitter *>(QStringLiteral("contentSplitter"));
+    QVERIFY(splitter != nullptr);
+    auto *browse = window.findChild<BrowsePanel *>();
+    QVERIFY(browse != nullptr);
+
+    // Dragging the handle to the edge must NOT collapse the browse panel; it stops
+    // at the panel's minimum (the thumbnails just reach their minimum size).
+    QVERIFY(!splitter->isCollapsible(1));
+    QVERIFY(!browse->isHidden());
+    QVERIFY(splitter->sizes().at(1) > 0);
+
+    QAction *toggle = nullptr;
+    const QList<QAction *> actions = window.findChildren<QAction *>();
+    for (QAction *action : actions) {
+        if (action->text() == QStringLiteral("Browse Panel")) {
+            toggle = action;
+            break;
+        }
+    }
+    QVERIFY(toggle != nullptr);
+
+    // The toggle still fully hides the panel (it hides the widget rather than
+    // collapsing, which a non-collapsible pane would refuse)...
+    toggle->trigger();
+    QTRY_VERIFY(browse->isHidden());
+    QTRY_COMPARE(splitter->sizes().at(1), 0);
+
+    // ...and restores it (visible, non-zero width).
+    toggle->trigger();
+    QTRY_VERIFY(!browse->isHidden());
+    QTRY_VERIFY(splitter->sizes().at(1) > 0);
 }
 
 QTEST_MAIN(tst_MainWindow)

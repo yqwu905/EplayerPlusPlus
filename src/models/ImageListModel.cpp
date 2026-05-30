@@ -14,8 +14,10 @@
 
 namespace
 {
-constexpr int kBrowseThumbnailExtent = 180;
-const QSize kBrowseThumbnailSize(kBrowseThumbnailExtent, kBrowseThumbnailExtent);
+// Upper bound on distinct decoded thumbnails kept in memory per folder column.
+// Far larger than any visible + prefetch window, so on-screen items are never
+// evicted; it only caps the long tail accumulated while scrolling huge folders.
+constexpr int kThumbnailCacheCap = 800;
 const QString kUnmarkedCategoryFilter = QStringLiteral("__unmarked__");
 }
 
@@ -88,7 +90,7 @@ void ImageListModel::setFolder(const QString &folderPath)
     m_fileNameToIndex.clear();
     m_filteredSourceRows.clear();
     m_selectedIndices.clear();
-    m_thumbnails.clear();
+    clearThumbnailCache();
     m_sourceModifiedUtc.clear();
     m_nextLoadIndex = 0;
     endResetModel();
@@ -123,7 +125,7 @@ void ImageListModel::refresh()
     m_fileNameToIndex.clear();
     m_filteredSourceRows.clear();
     m_selectedIndices.clear();
-    m_thumbnails.clear();
+    clearThumbnailCache();
     m_sourceModifiedUtc.clear();
     m_nextLoadIndex = 0;
     endResetModel();
@@ -351,6 +353,22 @@ void ImageListModel::setImageLoader(ImageLoader *loader)
     }
 }
 
+void ImageListModel::setThumbnailSize(const QSize &size)
+{
+    if (!size.isValid() || size == m_thumbnailSize) {
+        return;
+    }
+    // Existing thumbnails stay cached for instant display; growing the bucket lets
+    // loadThumbnailsForRange() upgrade visible items to a sharper decode (gated by
+    // m_upgradedExtent), shrinking simply keeps the larger image and downscales it.
+    m_thumbnailSize = size;
+}
+
+QSize ImageListModel::thumbnailSize() const
+{
+    return m_thumbnailSize;
+}
+
 void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
 {
     if (!m_imageLoader || imageCount() <= 0) {
@@ -363,17 +381,38 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
         return;
     }
 
+    const int bucket = m_thumbnailSize.width();
     QStringList visibleFirst;
     visibleFirst.reserve(lastVisible - firstVisible + 1);
     for (int i = firstVisible; i <= lastVisible; ++i) {
         const QString path = imagePathAt(i);
-        if (!m_thumbnails.contains(path)) {
+        if (path.isEmpty()) {
+            continue;
+        }
+
+        auto it = m_thumbnails.constFind(path);
+        bool needRequest = false;
+        if (it == m_thumbnails.constEnd()) {
+            // Never loaded (or evicted): request unconditionally. Robust to a
+            // prior cancellation — re-requested until it actually arrives.
+            needRequest = true;
+        } else {
+            touchThumbnail(path);
+            // Zoomed in past the cached resolution: upgrade once per bucket.
+            if (qMax(it->width(), it->height()) < bucket &&
+                m_upgradedExtent.value(path, 0) < bucket) {
+                needRequest = true;
+            }
+        }
+
+        if (needRequest) {
+            m_upgradedExtent.insert(path, bucket);
             visibleFirst.append(path);
         }
     }
 
     if (!visibleFirst.isEmpty()) {
-        m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst, kBrowseThumbnailSize,
+        m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst, m_thumbnailSize,
                                                          m_sourceModifiedUtc);
     }
 }
@@ -394,7 +433,10 @@ bool ImageListModel::loadNextThumbnailBatch(int batchSize)
         }
     }
     if (!pathsToLoad.isEmpty()) {
-        m_imageLoader->requestThumbnailBatch(pathsToLoad, kBrowseThumbnailSize,
+        for (const QString &path : pathsToLoad) {
+            m_upgradedExtent.insert(path, m_thumbnailSize.width());
+        }
+        m_imageLoader->requestThumbnailBatch(pathsToLoad, m_thumbnailSize,
                                              m_sourceModifiedUtc);
     }
     m_nextLoadIndex = end;
@@ -408,8 +450,11 @@ bool ImageListModel::hasMoreToLoad() const
 
 void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &thumbnail)
 {
-    if (thumbnail.width() > kBrowseThumbnailSize.width() ||
-        thumbnail.height() > kBrowseThumbnailSize.height()) {
+    // thumbnailReady is a shared signal; ignore anything larger than this column's
+    // current decode bucket (e.g. a stale, sharper request that arrives after the
+    // user has zoomed back out — the already-cached image downscales fine).
+    if (thumbnail.width() > m_thumbnailSize.width() ||
+        thumbnail.height() > m_thumbnailSize.height()) {
         return;
     }
 
@@ -419,7 +464,7 @@ void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &th
     }
     const int sourceIndex = it.value();
 
-    m_thumbnails.insert(imagePath, thumbnail);
+    storeThumbnail(imagePath, thumbnail);
 
     const int row = rowForSourceIndex(sourceIndex);
     if (row < 0) {
@@ -428,6 +473,50 @@ void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &th
 
     QModelIndex mi = this->index(row);
     emit dataChanged(mi, mi, {Qt::DecorationRole, ThumbnailRole});
+}
+
+void ImageListModel::touchThumbnail(const QString &path)
+{
+    auto posIt = m_thumbnailLruPos.find(path);
+    if (posIt == m_thumbnailLruPos.end()) {
+        return;
+    }
+    // Move the node to the front (MRU). splice keeps the iterator valid.
+    m_thumbnailLru.splice(m_thumbnailLru.begin(), m_thumbnailLru, posIt.value());
+}
+
+void ImageListModel::storeThumbnail(const QString &path, const QImage &thumbnail)
+{
+    auto posIt = m_thumbnailLruPos.find(path);
+    if (posIt != m_thumbnailLruPos.end()) {
+        m_thumbnails.insert(path, thumbnail);
+        touchThumbnail(path);
+        return;
+    }
+
+    m_thumbnailLru.push_front(path);
+    m_thumbnailLruPos.insert(path, m_thumbnailLru.begin());
+    m_thumbnails.insert(path, thumbnail);
+    trimThumbnailCache();
+}
+
+void ImageListModel::trimThumbnailCache()
+{
+    while (m_thumbnails.size() > kThumbnailCacheCap && !m_thumbnailLru.empty()) {
+        const QString victim = m_thumbnailLru.back();
+        m_thumbnailLru.pop_back();
+        m_thumbnailLruPos.remove(victim);
+        m_thumbnails.remove(victim);
+        m_upgradedExtent.remove(victim);
+    }
+}
+
+void ImageListModel::clearThumbnailCache()
+{
+    m_thumbnails.clear();
+    m_thumbnailLru.clear();
+    m_thumbnailLruPos.clear();
+    m_upgradedExtent.clear();
 }
 
 void ImageListModel::onMarkChanged(const QString &folderPath,
@@ -581,8 +670,12 @@ void ImageListModel::appendScanBatch(const QVector<FileUtils::ScannedImage> &bat
         }
 
         const int count = qMin(m_initialPrefetchRemaining, candidates.size());
-        m_imageLoader->requestThumbnailBatchVisibleFirst(candidates.mid(0, count),
-                                                         kBrowseThumbnailSize,
+        const QStringList initial = candidates.mid(0, count);
+        for (const QString &path : initial) {
+            m_upgradedExtent.insert(path, m_thumbnailSize.width());
+        }
+        m_imageLoader->requestThumbnailBatchVisibleFirst(initial,
+                                                         m_thumbnailSize,
                                                          m_sourceModifiedUtc);
         m_initialPrefetchRemaining -= count;
     }

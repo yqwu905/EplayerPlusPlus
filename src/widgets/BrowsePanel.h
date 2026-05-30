@@ -13,6 +13,7 @@ class QCheckBox;
 class QComboBox;
 class QLineEdit;
 class QListView;
+class QResizeEvent;
 class CompareSession;
 class ImageListModel;
 class ImageLoader;
@@ -45,6 +46,26 @@ public:
      * matching behaviour without the panel owning the widget.
      */
     void setFuzzyFileNameMatchEnabled(bool enabled);
+
+    /**
+     * @brief Live thumbnail geometry, derived from the current browse-column width.
+     *
+     * Thumbnails scale to fill the column as the splitter is dragged. The delegate
+     * (paint + sizeHint) and the list view (hit-testing) read this so they never
+     * disagree about where the card/image/mark-buttons are; tests read it to assert
+     * that resizing actually rescales. @c decodeExtent is the quantized size images
+     * are decoded at (painted scaled to the exact rect).
+     */
+    struct ThumbMetrics {
+        int imageWidth = 154;
+        int imageHeight = 96;
+        int cardWidth = 166;
+        int itemHeight = 142;
+        int decodeExtent = 180;
+    };
+
+    /** @brief The thumbnail metrics currently in effect. */
+    ThumbMetrics thumbnailMetrics() const { return m_metrics; }
 
 signals:
     /**
@@ -89,6 +110,11 @@ private slots:
     void onSessionCleared();
     void onFolderReady(int columnIndex);
 
+protected:
+    // Splitter drags / window resizes both reach the panel as a resizeEvent, so
+    // it is the single hook that keeps thumbnail size in sync with column width.
+    void resizeEvent(QResizeEvent *event) override;
+
 private:
     enum class SelectionNavigationMode {
         Independent,
@@ -110,7 +136,12 @@ private:
     void setupUi();
     void clearAllColumns();
     void rebuildColumnLayout();
-    void updatePanelWidth();
+    // Recompute thumbnail size from the current panel width / column count.
+    // Display changes relayout the views live (cheap); a decode-bucket change is
+    // deferred to m_decodeReloadTimer so a continuous drag never floods the decoder.
+    void recomputeThumbnailMetrics();
+    void applyMetricsToView(ColumnInfo &col);
+    void onDecodeReloadTimeout();
     void updateColumnVisuals(int columnIndex);
     void clearSelection();
     void navigateSelection(int delta);
@@ -160,6 +191,10 @@ private:
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
     QTimer *m_interleavedLoadTimer = nullptr;
+    // Live thumbnail geometry shared (by pointer) with every delegate and list view.
+    ThumbMetrics m_metrics;
+    // Debounces the higher-resolution re-decode while the splitter is being dragged.
+    QTimer *m_decodeReloadTimer = nullptr;
     SelectionNavigationMode m_selectionNavigationMode = SelectionNavigationMode::Independent;
     int m_navigationAnchorColumn = -1;
 
