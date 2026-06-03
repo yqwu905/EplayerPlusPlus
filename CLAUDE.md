@@ -59,6 +59,15 @@ Tolerance diff math is `ImageComparer::makeToleranceImage` (per-pixel diff → r
 
 Styling is centralized in `FluentStyle::applyGlobalStyle` (called from `main.cpp`) — a custom Fluent 2 stylesheet applied to the `QApplication`. Don't sprinkle stylesheets on individual widgets; extend `FluentStyle` instead.
 
+## Development workflow
+
+Every feature or fix is developed in its own throwaway git worktree, never directly on `main`:
+
+1. Create a temporary worktree (and branch) for the task before making any changes.
+2. Make all edits and run the verification (build + `ctest`, and the GUI app if relevant) **inside that worktree**.
+3. Once verification passes, **wait for the user's explicit confirmation** — do not merge on your own judgment.
+4. After the user confirms, merge the branch back into `main`, then remove the worktree and delete its branch.
+
 ## Conventions
 
 - C++17, no extensions (`-Wall -Wextra -Wpedantic` on GCC/Clang, `/W4 /utf-8` on MSVC). Keep the build warning-clean.

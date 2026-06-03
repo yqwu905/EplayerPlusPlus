@@ -11,6 +11,9 @@ cmake-build-*/
 *.swo
 *~
 
+# Claude Code local state (settings + worktrees)
+.claude/
+
 # OS files
 .DS_Store
 Thumbs.db
