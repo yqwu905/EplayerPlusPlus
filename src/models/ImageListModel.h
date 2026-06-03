@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QSize>
 #include <QVector>
+#include <QFuture>
 #include <list>
 #include <memory>
 
@@ -262,6 +263,10 @@ private:
     ImageLoader *m_imageLoader = nullptr;
     ImageMarkManager *m_markManager = nullptr;
     std::shared_ptr<FileUtils::ScanCancelToken> m_scanCancelToken;
+    // Handle to the background scan started in startScan(). Retained so teardown
+    // (cancelPendingScan) can block until the worker has actually returned; a
+    // discarded future would let the worker outlive this model and dereference it.
+    QFuture<void> m_scanFuture;
     bool m_loading = false;
     int m_nextLoadIndex = 0;
     int m_scanGeneration = 0;

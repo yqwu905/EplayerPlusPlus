@@ -557,7 +557,7 @@ void ImageListModel::startScan(const QString &path)
     emit scanProgressChanged(0, false);
 
     auto cancelToken = m_scanCancelToken;
-    [[maybe_unused]] const auto future = QtConcurrent::run([this, path, generation, cancelToken]() {
+    m_scanFuture = QtConcurrent::run([this, path, generation, cancelToken]() {
         FileUtils::ScanOptions options;
         options.recursive = false;
         options.batchSize = 64;
@@ -790,6 +790,17 @@ void ImageListModel::cancelPendingScan()
     if (m_scanCancelToken) {
         m_scanCancelToken->cancel();
         m_scanCancelToken.reset();
+    }
+
+    // Cancelling the token only asks the background scan to stop; we must also
+    // block until the worker has actually returned. The scan thread captures
+    // `this` and posts batches back via QMetaObject::invokeMethod(this, ...), so a
+    // scan still in flight when the model (or the QApplication) is destroyed
+    // dereferences freed memory — a teardown use-after-free that segfaulted
+    // tst_BrowsePanel on Windows CI. scanForImagesBatched checks the cancel flag
+    // once per directory entry, so this wait returns promptly.
+    if (m_scanFuture.isRunning()) {
+        m_scanFuture.waitForFinished();
     }
 
     if (m_loading) {
