@@ -171,6 +171,12 @@ private:
     void requestThumbnailsForColumn(int columnIndex);
     void requestVisibleThumbnailsForAllColumns();
     QSet<QString> aggregateVisiblePaths() const;
+    // Re-filter the loader's queues to the current visible+prefetch set, but
+    // only when that set actually changed since the last call. Re-issuing an
+    // identical keep-set is a correctness no-op, so this skips the redundant
+    // queue rebuild + generation bump from the many callers that fire on
+    // unchanged geometry.
+    void cancelStaleThumbnailRequests();
     void updateColumnProgressLabel(int columnIndex);
     void updateGlobalScanStatus();
     void preloadNeighborImagesForSelection();
@@ -190,6 +196,9 @@ private:
     QComboBox *m_categoryFilterCombo = nullptr;
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
+    // Last visible+prefetch keep-set handed to the loader, so an unchanged set
+    // skips a redundant cancel/re-filter. See cancelStaleThumbnailRequests.
+    QSet<QString> m_lastCancelKeepSet;
     QTimer *m_interleavedLoadTimer = nullptr;
     // Live thumbnail geometry shared (by pointer) with every delegate and list view.
     ThumbMetrics m_metrics;

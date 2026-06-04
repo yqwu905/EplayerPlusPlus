@@ -8,6 +8,7 @@
 #include <QMetaObject>
 #include <QFileInfo>
 #include <QDir>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QCryptographicHash>
 
@@ -73,6 +74,15 @@ void ImageLoader::requestThumbnailBatchVisibleFirst(const QStringList &imagePath
 {
     for (const QString &path : imagePaths) {
         enqueueThumbnailRequest(path, thumbnailSize, kPriorityVisible, false,
+                                sourceModifiedUtc.value(path));
+    }
+}
+
+void ImageLoader::requestThumbnailBatchPrefetch(const QStringList &imagePaths, const QSize &thumbnailSize,
+                                                const QHash<QString, QDateTime> &sourceModifiedUtc)
+{
+    for (const QString &path : imagePaths) {
+        enqueueThumbnailRequest(path, thumbnailSize, kPriorityPrefetch, false,
                                 sourceModifiedUtc.value(path));
     }
 }
@@ -451,33 +461,46 @@ void ImageLoader::processImageQueue()
                     keep = cancelState->keepPaths.contains(imagePath);
                 }
                 if (!keep) {
-                    return std::make_pair(QImage(), true);
+                    return std::make_tuple(QImage(), true, ignoreColorProfile);
                 }
             }
             QImage image(imagePath);
             if (ignoreColorProfile) {
                 ImageUtils::stripColorProfile(image);
             }
-            return std::make_pair(image, false);
+            // Report which policy this decode used: a toggle that lands after we
+            // pass the abort check above can't stop this worker, so the finish
+            // handler must detect and discard the now-wrong-policy result.
+            return std::make_tuple(image, false, ignoreColorProfile);
         });
 
-        using ImageResult = std::pair<QImage, bool>;
+        using ImageResult = std::tuple<QImage, bool, bool>;
         auto *watcher = new QFutureWatcher<ImageResult>(this);
         connect(watcher, &QFutureWatcher<ImageResult>::finished, this,
                 [this, watcher, imagePath]() {
-                    auto result = watcher->result();
+                    const ImageResult result = watcher->result();
                     watcher->deleteLater();
 
-                    const QImage image = result.first;
-                    const bool workerCancelled = result.second;
+                    const QImage image = std::get<0>(result);
+                    const bool workerCancelled = std::get<1>(result);
+                    const bool usedIgnoreColorProfile = std::get<2>(result);
+
+                    // The full-image cache is keyed by path only, so a result
+                    // produced under a since-changed color-profile policy would
+                    // poison it (and reach the UI) until the next reload. Drop
+                    // it like a cancellation; the reload triggered by the toggle
+                    // re-queues a fresh decode under the current policy.
+                    const bool staleProfile = usedIgnoreColorProfile !=
+                        m_ignoreColorProfile.load(std::memory_order_acquire);
+                    const bool drop = workerCancelled || staleProfile;
 
                     bool cancelledBeforeEmit = false;
                     {
                         QMutexLocker locker(&m_cacheMutex);
-                        if (workerCancelled) {
-                            // Self-aborted; leave m_pendingImageRequests
-                            // alone so a re-issued request can still be
-                            // serviced by a fresh worker.
+                        if (drop) {
+                            // Self-aborted or stale-policy; leave
+                            // m_pendingImageRequests alone so a re-issued request
+                            // can still be serviced by a fresh worker.
                             cancelledBeforeEmit = true;
                         } else if (m_pendingImageRequests.contains(imagePath)) {
                             m_pendingImageRequests.remove(imagePath);
@@ -488,7 +511,7 @@ void ImageLoader::processImageQueue()
                     }
 
                     finishImageRequest(imagePath,
-                                       workerCancelled ? QImage() : image,
+                                       drop ? QImage() : image,
                                        cancelledBeforeEmit);
                     processImageQueue();
                 });
@@ -516,6 +539,12 @@ void ImageLoader::finishImageRequest(const QString &imagePath,
 
 QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
 {
+    // Honour the current color-profile policy: a thumbnail decoded under the
+    // previous policy could linger in the path index (e.g. an in-flight worker
+    // that finished after a toggle cleared the cache), and this size-agnostic
+    // lookup would otherwise hand it back. The two-arg overload is already
+    // policy-safe because it rebuilds the policy-tagged key.
+    const bool ignoreColorProfile = m_ignoreColorProfile.load(std::memory_order_acquire);
     QMutexLocker locker(&m_cacheMutex);
     auto pathIt = m_thumbnailPathIndex.constFind(imagePath);
     if (pathIt == m_thumbnailPathIndex.constEnd()) {
@@ -533,6 +562,9 @@ QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
             continue;
         }
         const CacheEntry &entry = *it.value();
+        if (entry.ignoreColorProfile != ignoreColorProfile) {
+            continue;
+        }
         if (entry.thumbnail.isNull()) {
             continue;
         }
@@ -721,6 +753,16 @@ void ImageLoader::setIgnoreColorProfile(bool enabled)
         m_imageIndex.clear();
         m_currentThumbnailCacheBytes = 0;
         m_currentImageCacheBytes = 0;
+
+        // Drop queued/pending IMAGE requests: any in-flight worker finishes
+        // under the old policy and is discarded by the stale-policy check, and
+        // clearing the pending set lets the post-toggle reload re-queue fresh
+        // decodes for the same paths (the dedup in requestImage would otherwise
+        // suppress them). Thumbnail requests need no such reset — their cache
+        // key already encodes the policy, so a re-request uses a fresh key and
+        // never collides with the stale in-flight entry.
+        m_pendingImageRequests.clear();
+        m_imageQueue.clear();
     }
 
     // Bump cancel generations so any in-flight worker that started under the
@@ -955,7 +997,21 @@ void ImageLoader::persistDiskThumbnail(const QString &imagePath,
     const QString path = cachePathForKey(cacheKey);
     QFileInfo fi(path);
     QDir().mkpath(fi.absolutePath());
-    thumbnail.save(path, "PNG");
+
+    // Write atomically via QSaveFile (temp file + rename on commit) so a reader
+    // — or another decode worker — can never observe a half-written PNG, which
+    // a plain QImage::save(path) leaves behind if the process dies (or a second
+    // writer interleaves) mid-write. A torn file would otherwise decode to null
+    // and force a needless re-decode.
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return;
+    }
+    if (!thumbnail.save(&file, "PNG")) {
+        file.cancelWriting();
+        return;
+    }
+    file.commit();
 }
 
 qint64 ImageLoader::imageByteSize(const QImage &image)

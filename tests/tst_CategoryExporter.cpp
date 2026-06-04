@@ -15,6 +15,7 @@ private slots:
     void csv_escapesSpecialCharacters();
     void txt_spaceSeparated();
     void json_objectShape();
+    void collidingBaseNames_keepAllAcrossFormats();
     void empty_producesEmptyOrBraces();
 };
 
@@ -73,6 +74,36 @@ void tst_CategoryExporter::json_objectShape()
     QCOMPARE(obj.size(), 2);
     QCOMPARE(obj.value(QStringLiteral("x.png")).toString(), QStringLiteral("D"));
     QCOMPARE(obj.value(QStringLiteral("y.png")).toString(), QStringLiteral("A"));
+}
+
+void tst_CategoryExporter::collidingBaseNames_keepAllAcrossFormats()
+{
+    // Two different relative paths share a base name. Every format must keep
+    // both classifications and agree on the record count: JSON must not silently
+    // overwrite a shared key, and CSV/TXT must not emit ambiguous duplicate
+    // filenames. Colliding entries fall back to their full relative path.
+    QHash<QString, QString> marks;
+    marks.insert(QStringLiteral("sub/a.png"), QStringLiteral("B"));
+    marks.insert(QStringLiteral("a.png"), QStringLiteral("X"));
+    marks.insert(QStringLiteral("unique.png"), QStringLiteral("C"));
+
+    const QString json = CategoryExporter::serialize(marks, CategoryExporter::Format::Json);
+    const QJsonObject obj = QJsonDocument::fromJson(json.toUtf8()).object();
+    QCOMPARE(obj.size(), 3);
+    QCOMPARE(obj.value(QStringLiteral("sub/a.png")).toString(), QStringLiteral("B"));
+    QCOMPARE(obj.value(QStringLiteral("a.png")).toString(), QStringLiteral("X"));
+    QCOMPARE(obj.value(QStringLiteral("unique.png")).toString(), QStringLiteral("C"));
+
+    const QString csv = CategoryExporter::serialize(marks, CategoryExporter::Format::Csv);
+    QCOMPARE(csv.count(QLatin1Char('\n')), 3);
+    QVERIFY(csv.contains(QStringLiteral("sub/a.png,B")));
+    QVERIFY(csv.contains(QStringLiteral("a.png,X")));
+    QVERIFY(csv.contains(QStringLiteral("unique.png,C")));
+
+    const QString txt = CategoryExporter::serialize(marks, CategoryExporter::Format::Txt);
+    QCOMPARE(txt.count(QLatin1Char('\n')), 3);
+    QVERIFY(txt.contains(QStringLiteral("sub/a.png B")));
+    QVERIFY(txt.contains(QStringLiteral("a.png X")));
 }
 
 void tst_CategoryExporter::empty_producesEmptyOrBraces()

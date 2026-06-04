@@ -245,7 +245,14 @@ void ZoomableImageWidget::wheelEvent(QWheelEvent *event)
     // emitted signal lets linked cells anchor on the same image-relative point.
     const QPointF normalizedFocal = widgetToNormalized(focalWidget);
 
-    const int steps = event->angleDelta().y() / 120;
+    // angleDelta is in eighths of a degree; a standard mouse-wheel detent is
+    // 15 degrees == 120 units. Using the continuous value (a double) instead of
+    // an integer 120-step count lets high-resolution trackpads and precision
+    // wheels — which report deltas far smaller than 120 — zoom proportionally
+    // instead of being truncated to zero (no zoom at all on a macOS trackpad).
+    // A full detent still yields exactly one kZoomStep, so ordinary mouse-wheel
+    // behaviour is unchanged.
+    const double steps = event->angleDelta().y() / 120.0;
     const double factor = qPow(kZoomStep, steps);
     const double newLevel = m_zoomLevel * factor;
 
@@ -286,11 +293,14 @@ void ZoomableImageWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    // Change cursor when hoverable for pan
-    if (m_zoomLevel > 1.0 && !m_isPanning) {
-        setCursor(Qt::OpenHandCursor);
-    } else {
-        setCursor(Qt::ArrowCursor);
+    // Change cursor when hoverable for pan. Only call setCursor when the shape
+    // actually changes: this slot runs on every mouse move, and reassigning the
+    // cursor each time fights any context-driven cursor and can flicker.
+    const Qt::CursorShape desired = (m_zoomLevel > 1.0)
+        ? Qt::OpenHandCursor
+        : Qt::ArrowCursor;
+    if (cursor().shape() != desired) {
+        setCursor(desired);
     }
 
     QWidget::mouseMoveEvent(event);

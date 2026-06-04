@@ -443,6 +443,35 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
     m_gridLayout->removeWidget(m_cells[removeIndex].container);
     delete m_cells[removeIndex].container;
     m_cells.removeAt(removeIndex);
+
+    // Removing a cell shifts every later cell down by one index. In-flight
+    // tolerance jobs captured their source/target index by value, so those
+    // captures are now stale: a result could be applied to the wrong cell, or
+    // — worse — a surviving cell's toleranceWatcher is left dangling at a
+    // watcher whose finished-lambda checks the *shifted* cell, fails its
+    // identity guard, and deletes the watcher without clearing the real owner's
+    // pointer (later cancel/load => use-after-free). Cancel every surviving
+    // watcher and re-map toleranceSourceIndex, mirroring onFoldersSwapped.
+    QList<int> revertToOriginal;
+    for (int i = 0; i < m_cells.size(); ++i) {
+        ImageCell &cell = m_cells[i];
+        cancelToleranceWatcher(cell);
+        if (cell.toleranceSourceIndex == removeIndex) {
+            // The image this cell was diffing against is gone; drop the diff.
+            cell.showingToleranceMap = false;
+            cell.toleranceSourceIndex = -1;
+            cell.cachedToleranceImage = QImage();
+            cell.cachedToleranceThreshold = -1;
+            if (cell.hasImage) {
+                revertToOriginal.append(i);
+            }
+        } else if (cell.toleranceSourceIndex > removeIndex) {
+            // Source still present, just shifted down one. The cached map was
+            // computed from the same source pixels, so it stays valid.
+            --cell.toleranceSourceIndex;
+        }
+    }
+
     if (m_currentCellIndex == removeIndex) {
         m_currentCellIndex = -1;
         setCurrentCellIndex(qMin(removeIndex, m_cells.size() - 1));
@@ -450,6 +479,10 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
         --m_currentCellIndex;
     }
     rebuildGrid();
+
+    for (int i : revertToOriginal) {
+        showOriginalImage(i);
+    }
 }
 
 void ComparePanel::onFoldersSwapped(int firstIndex, int secondIndex)
@@ -1601,9 +1634,26 @@ QImage ComparePanel::imageForCompare(int cellIndex) const
         return baseImage;
     }
 
-    return baseImage.scaled(referenceSize,
-                            Qt::IgnoreAspectRatio,
-                            Qt::SmoothTransformation);
+    // Reuse the cached resize when the source image and reference size are
+    // unchanged. Without this, dragging the threshold slider re-runs this
+    // full-res SmoothTransformation for the source and target of every cell on
+    // every tick (on the GUI thread). cacheKey() changes whenever the image is
+    // replaced, so the cache self-invalidates on a new decode/preview.
+    const ImageCell &cell = m_cells[cellIndex];
+    const qint64 srcKey = baseImage.cacheKey();
+    if (cell.resizedCompareSrcKey == srcKey
+        && cell.resizedCompareRefSize == referenceSize
+        && !cell.resizedCompareImage.isNull()) {
+        return cell.resizedCompareImage;
+    }
+
+    QImage scaled = baseImage.scaled(referenceSize,
+                                     Qt::IgnoreAspectRatio,
+                                     Qt::SmoothTransformation);
+    cell.resizedCompareImage = scaled;
+    cell.resizedCompareSrcKey = srcKey;
+    cell.resizedCompareRefSize = referenceSize;
+    return scaled;
 }
 
 void ComparePanel::showImageContextMenuForCell(QWidget *cellContainer,
@@ -1785,11 +1835,20 @@ void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
         }
 
         const bool wasMissingOriginalImage = m_cells[i].originalImage.isNull();
+        // If the full-resolution image is merely replacing a low-res preview that
+        // the user has already zoomed into, keep their zoom/pan instead of
+        // snapping back to fit. zoom is a fit-relative factor and pan is a
+        // normalized offset, so they carry across the resolution change without
+        // shifting the visible region. A fresh selection still resets to fit
+        // (its preview, or the "Loading" placeholder, leaves zoom at 1.0).
+        const bool wasShowingZoomedPreview = m_cells[i].showingPreview
+            && m_cells[i].imageWidget
+            && !qFuzzyCompare(m_cells[i].imageWidget->zoomLevel(), 1.0);
         m_cells[i].originalImage = image;
         m_cells[i].hasImage = true;
         m_cells[i].showingPreview = false;
         m_cells[i].cachedToleranceImage = QImage();
-        showOriginalImage(i, true);
+        showOriginalImage(i, /*resetView=*/!wasShowingZoomedPreview);
 
         if (i == 0 && wasMissingOriginalImage) {
             firstReferenceImageBecameAvailable = true;

@@ -170,11 +170,15 @@ public:
     QSize thumbnailSize() const;
 
     /**
-     * @brief Request thumbnail loading for visible items.
-     * @param firstVisible First visible index.
-     * @param lastVisible Last visible index.
+     * @brief Request thumbnail loading for a row range.
+     * @param firstVisible First index in the range.
+     * @param lastVisible Last index in the range.
+     * @param prefetchPriority If true, enqueue at the loader's prefetch priority
+     *        (for off-screen margins) instead of visible priority, so prefetch
+     *        work cannot starve on-screen rows in the decode pool.
      */
-    void loadThumbnailsForRange(int firstVisible, int lastVisible);
+    void loadThumbnailsForRange(int firstVisible, int lastVisible,
+                                bool prefetchPriority = false);
 
     /**
      * @brief Load the next batch of thumbnails (for interleaved loading).

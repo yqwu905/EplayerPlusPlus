@@ -369,7 +369,8 @@ QSize ImageListModel::thumbnailSize() const
     return m_thumbnailSize;
 }
 
-void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
+void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible,
+                                            bool prefetchPriority)
 {
     if (!m_imageLoader || imageCount() <= 0) {
         return;
@@ -412,8 +413,13 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible)
     }
 
     if (!visibleFirst.isEmpty()) {
-        m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst, m_thumbnailSize,
+        if (prefetchPriority) {
+            m_imageLoader->requestThumbnailBatchPrefetch(visibleFirst, m_thumbnailSize,
                                                          m_sourceModifiedUtc);
+        } else {
+            m_imageLoader->requestThumbnailBatchVisibleFirst(visibleFirst, m_thumbnailSize,
+                                                             m_sourceModifiedUtc);
+        }
     }
 }
 
@@ -827,7 +833,17 @@ int ImageListModel::rowForSourceIndex(int sourceIndex) const
         return sourceIndex;
     }
 
-    return m_filteredSourceRows.indexOf(sourceIndex);
+    // m_filteredSourceRows is maintained strictly ascending and unique (see
+    // rebuildFilteredRows / the lower_bound insert in updateFilteredRowForSourceIndex),
+    // so a binary search returns the identical row that the old linear indexOf
+    // did. This matters because onThumbnailReady() calls this once per decoded
+    // thumbnail; with a filter active, the linear scan made thumbnail delivery
+    // O(n^2) over a large filtered folder during scroll.
+    const auto it = std::lower_bound(m_filteredSourceRows.cbegin(),
+                                     m_filteredSourceRows.cend(), sourceIndex);
+    return (it != m_filteredSourceRows.cend() && *it == sourceIndex)
+        ? static_cast<int>(std::distance(m_filteredSourceRows.cbegin(), it))
+        : -1;
 }
 
 bool ImageListModel::sourceImageMatchesFilters(int sourceIndex) const
@@ -888,7 +904,13 @@ void ImageListModel::updateFilteredRowForSourceIndex(int sourceIndex)
         return;
     }
 
-    const int oldRow = m_filteredSourceRows.indexOf(sourceIndex);
+    // Binary search the ascending, unique filtered-row list (same result as the
+    // old linear indexOf).
+    const auto oldIt = std::lower_bound(m_filteredSourceRows.cbegin(),
+                                        m_filteredSourceRows.cend(), sourceIndex);
+    const int oldRow = (oldIt != m_filteredSourceRows.cend() && *oldIt == sourceIndex)
+        ? static_cast<int>(std::distance(m_filteredSourceRows.cbegin(), oldIt))
+        : -1;
     const bool matches = sourceImageMatchesFilters(sourceIndex);
 
     if (oldRow >= 0 && !matches) {

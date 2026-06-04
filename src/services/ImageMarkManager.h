@@ -11,7 +11,7 @@
 #include <QWaitCondition>
 
 /**
- * @brief Persists per-image A/B/C/D marks without requiring image-folder writes.
+ * @brief Persists per-image A–F marks without requiring image-folder writes.
  *
  * Persistence model
  * -----------------
@@ -58,7 +58,7 @@ public:
     QString markForImage(const QString &folderPath, const QString &imagePath) const;
     QString markForImageKey(const QString &folderPath, const QString &imageKey) const;
     // Returns {imageKey (folder-relative path) -> category} for every image that
-    // currently carries an A/B/C/D mark. Unmarked entries are omitted. Returns an
+    // currently carries an A–F mark. Unmarked entries are omitted. Returns an
     // empty hash if the folder has not been loaded.
     QHash<QString, QString> marksForFolder(const QString &folderPath) const;
     bool setMarkForImage(const QString &folderPath,

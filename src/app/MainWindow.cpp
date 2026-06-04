@@ -179,8 +179,11 @@ void MainWindow::setupMenuBar()
 
     auto *aboutAction = new QAction(tr("&About"), this);
     connect(aboutAction, &QAction::triggered, this, [this]() {
+        // Read the version from QApplication (set in main.cpp) instead of
+        // hardcoding it here, where it had drifted to a stale v0.1.0.
         QMessageBox::about(this, tr("关于图像对比"),
-            tr("图像对比 v0.1.0\n\n基于 Qt 6 和 C++17 构建。"));
+            tr("图像对比 v%1\n\n基于 Qt 6 和 C++17 构建。")
+                .arg(QApplication::applicationVersion()));
     });
     addAction(aboutAction);
 }

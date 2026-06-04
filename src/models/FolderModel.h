@@ -138,6 +138,10 @@ private:
 
     void onFetchFinished(FolderNode *node, const QStringList &subdirs);
     void cancelAllWatchers();
+    // Cancel and detach the in-flight fetch watchers for `node` and every
+    // descendant, so deleting that subtree can't leave a watcher whose
+    // finished-slot still references a freed (or address-reused) node.
+    void cancelWatchersForSubtree(FolderNode *node);
 
     // Track active async watchers to prevent leaks and allow cancellation
     QMap<FolderNode *, QFutureWatcher<QStringList> *> m_activeWatchers;
