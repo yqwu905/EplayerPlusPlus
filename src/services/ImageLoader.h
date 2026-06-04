@@ -53,6 +53,13 @@ public:
                                const QHash<QString, QDateTime> &sourceModifiedUtc = {});
     void requestThumbnailBatchVisibleFirst(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200),
                                            const QHash<QString, QDateTime> &sourceModifiedUtc = {});
+    // Like requestThumbnailBatchVisibleFirst but enqueues at prefetch priority
+    // (below visible, above background) with the same fast decode quality, so
+    // off-screen prefetch margins can't starve on-screen rows in the decode
+    // pool. A prefetched item later re-requested at visible priority is bumped
+    // up by the pending-priority logic in enqueueThumbnailRequest.
+    void requestThumbnailBatchPrefetch(const QStringList &imagePaths, const QSize &thumbnailSize = QSize(200, 200),
+                                       const QHash<QString, QDateTime> &sourceModifiedUtc = {});
 
     /**
      * @brief Request asynchronous loading of a full-size image.

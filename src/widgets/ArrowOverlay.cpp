@@ -32,6 +32,15 @@ void ArrowOverlay::setDirections(const QList<Direction> &directions)
         btn.targetIndex = savedTargets.value(dir, -1);
         m_arrows.append(btn);
     }
+
+    // Rebuilding the arrow list invalidates any in-progress press/hover, whose
+    // indices refer to the old list. Reset them so a release after a relayout
+    // can't resolve a stale index to a different arrow (wrong arrowClicked/
+    // arrowReleased target).
+    m_pressedArrowIdx = -1;
+    m_hoveredArrowIdx = -1;
+    m_isHolding = false;
+
     recalculateHitRects();
     update();
 }

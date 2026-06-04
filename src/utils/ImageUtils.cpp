@@ -14,10 +14,15 @@ QImage generateThumbnail(const QString &imagePath,
     QImageReader reader(imagePath);
     reader.setAutoTransform(true);
 
-    // Use scaled reading for efficiency — avoids loading the full image into memory
+    // Use scaled reading for efficiency — avoids loading the full image into memory.
+    // Only ever downscale: a source smaller than the thumbnail box should stay at
+    // native size, not be blurrily enlarged into a bigger buffer. boundedTo caps
+    // the fitted size at the source; KeepAspectRatio scales both dimensions by one
+    // factor, so the clamp is uniform and preserves aspect ratio.
     QSize originalSize = reader.size();
     if (originalSize.isValid()) {
-        QSize scaled = originalSize.scaled(thumbnailSize, Qt::KeepAspectRatio);
+        const QSize scaled = originalSize.scaled(thumbnailSize, Qt::KeepAspectRatio)
+                                 .boundedTo(originalSize);
         reader.setScaledSize(scaled);
     }
 
@@ -26,9 +31,11 @@ QImage generateThumbnail(const QString &imagePath,
         return QImage();
     }
 
-    // If the reader didn't support setScaledSize, scale manually
-    if (image.size() != image.size().scaled(thumbnailSize, Qt::KeepAspectRatio)) {
-        image = image.scaled(thumbnailSize, Qt::KeepAspectRatio, transformMode);
+    // If the reader didn't honor setScaledSize, scale manually — but only down.
+    const QSize fit = image.size().scaled(thumbnailSize, Qt::KeepAspectRatio)
+                          .boundedTo(image.size());
+    if (image.size() != fit) {
+        image = image.scaled(fit, Qt::KeepAspectRatio, transformMode);
     }
 
     if (ignoreColorProfile) {
@@ -45,7 +52,11 @@ QImage generateThumbnail(const QImage &image,
     if (image.isNull()) {
         return QImage();
     }
-    QImage scaled = image.scaled(thumbnailSize, Qt::KeepAspectRatio, transformMode);
+    // Clamp the target box to the source so small images are returned at native
+    // size instead of being upscaled (blurry + wasted memory). KeepAspectRatio
+    // makes this a no-op for the normal downscale path.
+    QImage scaled = image.scaled(thumbnailSize.boundedTo(image.size()),
+                                 Qt::KeepAspectRatio, transformMode);
     if (ignoreColorProfile) {
         stripColorProfile(scaled);
     }

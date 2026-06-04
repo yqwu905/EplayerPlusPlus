@@ -32,6 +32,7 @@ private slots:
     void testScanForImagesBatched_cancel();
     void testScanForImagesBatched_deliversValidMtime();
     void testScanForImagesBatched_deliversAllAcrossBatches();
+    void testScanFindsUppercaseExtensions();
 
     void testGetSubdirectories();
     void testGetSubdirectories_empty();
@@ -351,6 +352,65 @@ void tst_FileUtils::testScanForImagesBatched_deliversAllAcrossBatches()
     QCOMPARE(delivered.size(), fileCount);
     std::sort(delivered.begin(), delivered.end());
     QCOMPARE(delivered, expected);
+}
+
+void tst_FileUtils::testScanFindsUppercaseExtensions()
+{
+    // Regression guard: the scan must match extensions case-insensitively
+    // (like isImageFile), or uppercase/mixed-case files straight from cameras
+    // (IMG.JPG, scan.PNG, photo.Jpeg) are silently skipped on case-sensitive
+    // filesystems (Linux, case-sensitive macOS volumes). The earlier glob-based
+    // name filters were case-sensitive there.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QStringList imageNames = {
+        QStringLiteral("PHOTO.JPG"),
+        QStringLiteral("scan.PNG"),
+        QStringLiteral("Mixed.Jpeg"),
+        QStringLiteral("upper.TIFF"),
+        QStringLiteral("lower.png"),
+    };
+    for (const QString &name : imageNames) {
+        QImage img(4, 4, QImage::Format_ARGB32);
+        img.fill(Qt::green);
+        QVERIFY(img.save(dir.filePath(name)));
+    }
+    // A non-image with an uppercase extension must still be excluded.
+    {
+        QFile f(dir.filePath(QStringLiteral("notes.TXT")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("x");
+        f.close();
+    }
+
+    // scanForImages
+    const QStringList scanned = FileUtils::scanForImages(dir.path(), false);
+    QCOMPARE(scanned.size(), imageNames.size());
+    for (const QString &name : imageNames) {
+        QVERIFY2(scanned.contains(dir.filePath(name)),
+                 qPrintable(QStringLiteral("scanForImages missed %1").arg(name)));
+    }
+    for (const QString &p : scanned) {
+        QVERIFY(!p.endsWith(QStringLiteral("notes.TXT")));
+    }
+
+    // scanForImagesBatched (the production path used by ImageListModel)
+    QStringList batched;
+    FileUtils::ScanOptions options;
+    options.recursive = false;
+    FileUtils::scanForImagesBatched(
+        dir.path(), options,
+        [&batched](const QVector<FileUtils::ScannedImage> &batch, bool /*initial*/) {
+            for (const FileUtils::ScannedImage &item : batch) {
+                batched.append(item.path);
+            }
+        });
+    QCOMPARE(batched.size(), imageNames.size());
+    for (const QString &name : imageNames) {
+        QVERIFY2(batched.contains(dir.filePath(name)),
+                 qPrintable(QStringLiteral("scanForImagesBatched missed %1").arg(name)));
+    }
 }
 
 void tst_FileUtils::testGetSubdirectories()

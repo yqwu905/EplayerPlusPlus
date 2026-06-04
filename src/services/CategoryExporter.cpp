@@ -10,13 +10,28 @@
 
 namespace {
 
-// Sorted (filename, category) rows reduced from the relative-path keyed marks.
+// Sorted (label, category) rows reduced from the relative-path keyed marks.
+// Each key is shown by its base filename for readability — but only when that
+// base name is unique. When two different relative paths share a base name
+// (e.g. "sub/a.png" and "a.png"), the colliding entries fall back to their full
+// relative path. Without this, JSON (which keys an object by the label) would
+// silently drop all but the last colliding entry, while CSV/TXT would emit
+// rows with identical, ambiguous filenames — the same input yielding a
+// different record count per format. Relative-path keys are unique, so the
+// fallback keeps every classification. Collision-free exports are unchanged.
 QList<QPair<QString, QString>> sortedRows(const QHash<QString, QString> &marks)
 {
+    QHash<QString, int> baseNameCounts;
+    for (auto it = marks.constBegin(); it != marks.constEnd(); ++it) {
+        baseNameCounts[QFileInfo(it.key()).fileName()] += 1;
+    }
+
     QList<QPair<QString, QString>> rows;
     rows.reserve(marks.size());
     for (auto it = marks.constBegin(); it != marks.constEnd(); ++it) {
-        rows.append({QFileInfo(it.key()).fileName(), it.value()});
+        const QString baseName = QFileInfo(it.key()).fileName();
+        const QString label = baseNameCounts.value(baseName) > 1 ? it.key() : baseName;
+        rows.append({label, it.value()});
     }
     std::sort(rows.begin(), rows.end(), [](const auto &lhs, const auto &rhs) {
         if (lhs.first != rhs.first) {
@@ -66,7 +81,8 @@ QString serialize(const QHash<QString, QString> &marks, Format format)
     if (format == Format::Json) {
         QJsonObject object;
         for (const auto &row : rows) {
-            // On base-name collision the last (sorted) entry wins.
+            // Labels are unique here (sortedRows disambiguates base-name
+            // collisions to full relative paths), so no entry is overwritten.
             object.insert(row.first, row.second);
         }
         return QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Indented));

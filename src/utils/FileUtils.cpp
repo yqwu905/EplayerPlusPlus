@@ -26,20 +26,21 @@ QStringList scanForImages(const QString &dirPath, bool recursive, const QStringL
         return result;
     }
 
-    // Build name filters from extensions (e.g., "*.png", "*.jpg")
-    QStringList nameFilters;
-    for (const QString &ext : extensions) {
-        nameFilters << QStringLiteral("*.%1").arg(ext);
-    }
-
     QDirIterator::IteratorFlags flags = QDirIterator::NoIteratorFlags;
     if (recursive) {
         flags = QDirIterator::Subdirectories;
     }
 
-    QDirIterator it(dirPath, nameFilters, QDir::Files, flags);
+    // Match by lowercased suffix rather than glob name filters: QDir name
+    // filters are case-sensitive on case-sensitive filesystems (Linux, some
+    // macOS volumes), which would silently skip IMG_0001.JPG / photo.PNG.
+    // This mirrors isImageFile() so the scan accepts exactly what it accepts.
+    QDirIterator it(dirPath, QDir::Files, flags);
     while (it.hasNext()) {
         it.next();
+        if (!extensions.contains(it.fileInfo().suffix().toLower())) {
+            continue;
+        }
         result << it.filePath();
     }
 
@@ -100,18 +101,16 @@ void scanForImagesBatched(
         emitProgress(false);
     };
 
-    QStringList nameFilters;
-    nameFilters.reserve(options.extensions.size());
-    for (const QString &ext : options.extensions) {
-        nameFilters << QStringLiteral("*.%1").arg(ext);
-    }
-
     QDirIterator::IteratorFlags flags = QDirIterator::NoIteratorFlags;
     if (options.recursive) {
         flags = QDirIterator::Subdirectories;
     }
 
-    QDirIterator it(dirPath, nameFilters, QDir::Files | QDir::NoSymLinks, flags);
+    // Match by lowercased suffix rather than glob name filters: QDir name
+    // filters are case-sensitive on case-sensitive filesystems, which would
+    // silently skip uppercase/mixed-case extensions (IMG_0001.JPG, scan.TIFF).
+    // This mirrors isImageFile() exactly.
+    QDirIterator it(dirPath, QDir::Files | QDir::NoSymLinks, flags);
     while (it.hasNext()) {
         if (cancelled()) {
             return;
@@ -119,10 +118,13 @@ void scanForImagesBatched(
 
         it.next();
         // it.fileInfo() reuses the QFileInfo the iterator already materialized to
-        // apply the QDir::Files | NoSymLinks filter, so reading lastModified() here
-        // costs no extra stat. toUTC() matches ImageLoader::sourceLastModifiedUtc so
-        // the disk-cache key is byte-identical whether the mtime comes from the scan
-        // or a fallback stat.
+        // apply the QDir::Files | NoSymLinks filter, so the suffix check and
+        // reading lastModified() here cost no extra stat. toUTC() matches
+        // ImageLoader::sourceLastModifiedUtc so the disk-cache key is
+        // byte-identical whether the mtime comes from the scan or a fallback stat.
+        if (!options.extensions.contains(it.fileInfo().suffix().toLower())) {
+            continue;
+        }
         buffer.push_back({it.filePath(), it.fileInfo().lastModified().toUTC()});
         ++discoveredCount;
         if (!initialBatchSent && buffer.size() >= initialBatchSize) {

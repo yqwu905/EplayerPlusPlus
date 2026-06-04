@@ -105,9 +105,14 @@ bool ImageMarkManager::Worker::appendJournal(const WriteTask &task)
             return true;
         }
     }
-    qCWarning(lcMarkManager).noquote()
-        << "ImageMarkManager: failed to append journal entry to"
-        << task.primaryPath << "(fallback:" << task.fallbackPath << ")";
+    // Pre-format then log via "%s": the streaming qCWarning(category) form takes
+    // no variadic argument, which trips -Wvariadic-macro-arguments-omitted under
+    // -Wpedantic in C++17. "%s" + qPrintable keeps the variadic list non-empty
+    // and is format-clean and portable on every compiler.
+    qCWarning(lcMarkManager, "%s",
+              qPrintable(QStringLiteral(
+                  "ImageMarkManager: failed to append journal entry to %1 (fallback: %2)")
+                  .arg(task.primaryPath, task.fallbackPath)));
     return false;
 }
 
@@ -136,9 +141,9 @@ bool ImageMarkManager::Worker::writeJournalLine(const QString &path,
 bool ImageMarkManager::Worker::writeSnapshot(const WriteTask &task)
 {
     if (!writeSnapshotFile(task.snapshotPath, task.snapshot)) {
-        qCWarning(lcMarkManager).noquote()
-            << "ImageMarkManager: snapshot write failed for"
-            << task.snapshotPath;
+        qCWarning(lcMarkManager, "%s",
+                  qPrintable(QStringLiteral("ImageMarkManager: snapshot write failed for %1")
+                                 .arg(task.snapshotPath)));
         return false;
     }
 
@@ -259,11 +264,12 @@ ImageMarkManager::~ImageMarkManager()
 
     m_worker->requestShutdown();
     if (!m_worker->wait(kShutdownWaitMs)) {
-        qCWarning(lcMarkManager).noquote()
-            << "ImageMarkManager: background writer did not finish within"
-            << kShutdownWaitMs
-            << "ms; abandoning thread. Marks remain in the local fallback"
-               " store and will be picked up on next start.";
+        qCWarning(lcMarkManager, "%s",
+                  qPrintable(QStringLiteral(
+                      "ImageMarkManager: background writer did not finish within %1 ms; "
+                      "abandoning thread. Marks remain in the local fallback store and "
+                      "will be picked up on next start.")
+                      .arg(kShutdownWaitMs)));
         // Leak the thread on purpose: deleting a still-running QThread would
         // qFatal. The worker is self-contained (no back-pointer into us) and
         // it will be torn down by the OS at process exit. The cost is one
@@ -414,6 +420,17 @@ bool ImageMarkManager::loadFolder(const QString &folderPath)
     slot.marks.clear();
     loadSnapshot(normalizedFolder, slot);
     loadJournal(normalizedFolder, slot);
+
+    // Guard last-writer-wins against a system-clock rollback across restarts.
+    // nextJournalTimestamp() keeps timestamps monotonic within a session but
+    // resets to the wall clock on a fresh process; if the clock went backwards
+    // since the previous run, a new mark could be stamped older than one already
+    // persisted and lose on replay. Raise the floor to every timestamp loaded
+    // here so freshly minted ones always win. (m_lastJournalTimestamp is
+    // guarded by m_mutex, held here.)
+    for (auto it = slot.marks.constBegin(); it != slot.marks.constEnd(); ++it) {
+        m_lastJournalTimestamp = qMax(m_lastJournalTimestamp, it->timestamp);
+    }
     return true;
 }
 
@@ -785,7 +802,17 @@ void ImageMarkManager::scheduleJournalWrite(const QString &normalizedFolderPath,
     entry.insert(kPathKey, imageKey);
     entry.insert(kCategoryKey, category);
     entry.insert(kTimestampKey, timestamp);
-    QByteArray line = QJsonDocument(entry).toJson(QJsonDocument::Compact);
+    // Frame each record with a LEADING newline as well as a trailing one. A
+    // torn append (crash / disk-full mid-write) leaves an unterminated fragment
+    // with no trailing '\n'; without a leading newline the *next* record would
+    // be read as a continuation of that fragment by readLine() on replay, so
+    // both the fragment and the following valid record are lost. The leading
+    // newline guarantees every record starts on a fresh line, isolating any
+    // torn fragment onto its own (skipped) line. The empty lines this inserts
+    // between records are ignored by loadJournalFile().
+    QByteArray line;
+    line.append('\n');
+    line.append(QJsonDocument(entry).toJson(QJsonDocument::Compact));
     line.append('\n');
 
     WriteTask task;

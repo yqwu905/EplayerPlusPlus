@@ -17,6 +17,8 @@ private slots:
     void testGenerateThumbnailFromImage();
     void testGenerateThumbnailFromImage_null();
     void testGenerateThumbnailPreservesAspectRatio();
+    void testGenerateThumbnailDoesNotUpscaleFromImage();
+    void testGenerateThumbnailDoesNotUpscaleFromFile();
 
     void testScaleImage();
     void testScaleImage_null();
@@ -101,6 +103,30 @@ void tst_ImageUtils::testGenerateThumbnailPreservesAspectRatio()
     // 200x100 scaled to fit 100x100 should be 100x50
     QCOMPARE(thumb.width(), 100);
     QCOMPARE(thumb.height(), 50);
+}
+
+void tst_ImageUtils::testGenerateThumbnailDoesNotUpscaleFromImage()
+{
+    // A source smaller than the thumbnail box must be returned at its native
+    // size, not blurrily enlarged into a bigger buffer.
+    QImage source(32, 24, QImage::Format_ARGB32);
+    source.fill(Qt::magenta);
+
+    const QImage thumb = ImageUtils::generateThumbnail(source, QSize(200, 200));
+    QVERIFY(!thumb.isNull());
+    QCOMPARE(thumb.size(), QSize(32, 24));
+}
+
+void tst_ImageUtils::testGenerateThumbnailDoesNotUpscaleFromFile()
+{
+    const QString smallPath = m_tempDir.filePath("small_40x20.png");
+    QImage small(40, 20, QImage::Format_ARGB32);
+    small.fill(Qt::cyan);
+    QVERIFY(small.save(smallPath));
+
+    const QImage thumb = ImageUtils::generateThumbnail(smallPath, QSize(200, 200));
+    QVERIFY(!thumb.isNull());
+    QCOMPARE(thumb.size(), QSize(40, 20));
 }
 
 void tst_ImageUtils::testScaleImage()

@@ -227,6 +227,14 @@ bool FolderModel::removeFolder(const QModelIndex &index)
         return false;
     }
 
+    // Cancel any in-flight fetch for this folder or its expanded descendants
+    // before freeing them. onFetchFinished only guards with a pointer-equality
+    // tree search, so a deleted node whose address is later reused by a new
+    // FolderNode (ABA) would otherwise have stale subdir results applied to the
+    // wrong folder — and the stale watcher's m_activeWatchers.remove() would
+    // drop the new node's entry. refreshFolder already does this per node.
+    cancelWatchersForSubtree(node);
+
     beginRemoveRows(QModelIndex(), row, row);
     m_rootNodes.removeAt(row);
     delete node;
@@ -421,6 +429,23 @@ void FolderModel::onFetchFinished(FolderNode *node, const QStringList &subdirs)
 
     QModelIndex idx = indexFromNode(node);
     emit fetchFinished(idx);
+}
+
+void FolderModel::cancelWatchersForSubtree(FolderNode *node)
+{
+    if (!node) {
+        return;
+    }
+    if (auto *watcher = m_activeWatchers.take(node)) {
+        // Detach the finished-slot first so it can't run against the node we are
+        // about to delete, then cancel/destroy the watcher.
+        watcher->disconnect();
+        watcher->cancel();
+        watcher->deleteLater();
+    }
+    for (FolderNode *child : node->children) {
+        cancelWatchersForSubtree(child);
+    }
 }
 
 void FolderModel::cancelAllWatchers()

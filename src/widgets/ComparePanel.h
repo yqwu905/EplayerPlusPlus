@@ -139,6 +139,14 @@ private:
         QImage previewImage;
         QImage cachedToleranceImage;   // Cached tolerance map (full res)
         int cachedToleranceThreshold = -1;     // Threshold used to build the cache
+        // Cache for imageForCompare()'s resize-to-first scaling. A full-res
+        // SmoothTransformation is otherwise recomputed on every threshold tick
+        // and repaint. Keyed by the source image identity + reference size, so
+        // it self-invalidates when either changes (mutable: imageForCompare is
+        // const). See ComparePanel::imageForCompare.
+        mutable QImage resizedCompareImage;
+        mutable qint64 resizedCompareSrcKey = 0;
+        mutable QSize resizedCompareRefSize;
         QFutureWatcher<QImage> *toleranceWatcher = nullptr; // In-flight async job
         quint64 toleranceGeneration = 0;       // Bumped to invalidate in-flight jobs
         bool hasImage = false;

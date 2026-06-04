@@ -512,9 +512,7 @@ public:
         const QVariant thumbVar = index.data(ImageListModel::ThumbnailRole);
         const QImage thumbnail = thumbVar.canConvert<QImage>() ? thumbVar.value<QImage>() : QImage();
         if (!thumbnail.isNull()) {
-            const QImage cover = thumbnail.scaled(thumbArea.size(),
-                                                  Qt::KeepAspectRatioByExpanding,
-                                                  Qt::SmoothTransformation);
+            const QImage cover = coverFor(thumbnail, thumbArea.size());
             const int x = thumbArea.x() + (thumbArea.width() - cover.width()) / 2;
             const int y = thumbArea.y() + (thumbArea.height() - cover.height()) / 2;
             painter->drawImage(QPoint(x, y), cover);
@@ -564,8 +562,45 @@ private:
         return m_metrics ? *m_metrics : ThumbMetrics{};
     }
 
+    // A smooth (bilinear) full rescale of every visible thumbnail ran on every
+    // paint event — and ScrollPerPixel + hover repaint each card many times per
+    // gesture across up to six columns. Cache the scaled cover keyed by the
+    // source thumbnail's identity (QImage::cacheKey() changes when the model
+    // swaps in an upgraded decode) so repeated paints at the same geometry reuse
+    // it. The painted pixels are identical; only the redundant resamples go away.
+    QImage coverFor(const QImage &src, const QSize &target) const
+    {
+        if (target != m_coverTargetSize) {
+            // Every visible item shares one target size; a column resize changes
+            // it for all of them, so the whole cache is stale at once.
+            m_coverCache.clear();
+            m_coverLru.clear();
+            m_coverTargetSize = target;
+        }
+        const qint64 key = src.cacheKey();
+        auto it = m_coverCache.find(key);
+        if (it != m_coverCache.end()) {
+            m_coverLru.removeOne(key);
+            m_coverLru.prepend(key);
+            return it.value();
+        }
+        QImage cover = src.scaled(target, Qt::KeepAspectRatioByExpanding,
+                                  Qt::SmoothTransformation);
+        m_coverCache.insert(key, cover);
+        m_coverLru.prepend(key);
+        while (m_coverLru.size() > kCoverCacheCap) {
+            m_coverCache.remove(m_coverLru.takeLast());
+        }
+        return cover;
+    }
+
+    static constexpr int kCoverCacheCap = 96;
+
     QColor m_accentColor;
     const ThumbMetrics *m_metrics = nullptr;
+    mutable QHash<qint64, QImage> m_coverCache;
+    mutable QList<qint64> m_coverLru; // front = most-recently used
+    mutable QSize m_coverTargetSize;
 };
 
 int rowExtent(const QListView *view, const ThumbMetrics &m)
@@ -1070,7 +1105,13 @@ void BrowsePanel::onThumbnailActivated(int clickedCol,
         QList<int> matchedIndices(m_columns.size(), -1);
 
         for (int c = 0; c < m_columns.size(); ++c) {
-            const int matchIdx = findFileNameMatchIndex(c, fileName);
+            // The clicked column must select exactly the row the user clicked.
+            // Resolving it by filename would pick the *first* row with that name,
+            // selecting the wrong thumbnail when the column has duplicate
+            // filenames (and, under fuzzy matching, possibly a different file).
+            const int matchIdx = (c == clickedCol)
+                ? clickedIdx
+                : findFileNameMatchIndex(c, fileName);
             if (matchIdx >= 0) {
                 matchedIndices[c] = matchIdx;
                 m_columns[c].model->setSelected(matchIdx, true);
@@ -1461,11 +1502,24 @@ int BrowsePanel::findFileNameMatchIndex(int column, const QString &targetFileNam
 
     int bestIndex = -1;
     int bestDistance = std::numeric_limits<int>::max();
+    const int targetLen = targetFileName.size();
     for (int i = 0; i < model->imageCount(); ++i) {
-        const int distance = levenshteinDistance(targetFileName, model->fileNameAt(i));
+        const QString candidate = model->fileNameAt(i);
+        // |len(a) - len(b)| is a lower bound on the edit distance, so a candidate
+        // whose length already differs by >= the best distance found so far can
+        // never win — skip its O(n*m) computation entirely. This keeps the
+        // per-click cost low when an exact (or near) match exists, which is the
+        // common case (same filenames across folders).
+        if (qAbs(targetLen - candidate.size()) >= bestDistance) {
+            continue;
+        }
+        const int distance = levenshteinDistance(targetFileName, candidate);
         if (distance < bestDistance) {
             bestDistance = distance;
             bestIndex = i;
+            if (bestDistance == 0) {
+                break; // exact match — cannot do better
+            }
         }
     }
 
@@ -1703,9 +1757,24 @@ void BrowsePanel::requestVisibleThumbnailsForAllColumns()
         requestThumbnailsForColumn(i);
     }
 
-    if (m_imageLoader) {
-        m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
+    cancelStaleThumbnailRequests();
+}
+
+void BrowsePanel::cancelStaleThumbnailRequests()
+{
+    if (!m_imageLoader) {
+        return;
     }
+    QSet<QString> keep = aggregateVisiblePaths();
+    if (keep == m_lastCancelKeepSet) {
+        // Same visible+prefetch set as last time: re-filtering the loader's
+        // queues would keep exactly the same entries and only churn the
+        // cancellation generation (forcing in-flight workers to re-check the
+        // identical keep-set under a mutex). Skip it.
+        return;
+    }
+    m_lastCancelKeepSet = keep;
+    m_imageLoader->cancelThumbnailRequestsExcept(keep);
 }
 
 void BrowsePanel::scheduleThumbnailRequest(int columnIndex, int delayMs)
@@ -1728,9 +1797,7 @@ void BrowsePanel::scheduleThumbnailRequest(int columnIndex, int delayMs)
         }
         m_columns[currentIndex].thumbnailRequestScheduled = false;
         requestThumbnailsForColumn(currentIndex);
-        if (m_imageLoader) {
-            m_imageLoader->cancelThumbnailRequestsExcept(aggregateVisiblePaths());
-        }
+        cancelStaleThumbnailRequests();
     });
 }
 
@@ -1745,9 +1812,24 @@ void BrowsePanel::requestThumbnailsForColumn(int columnIndex)
         return;
     }
 
-    auto [firstVisible, lastVisible] = prefetchRangeForColumn(col);
-    if (lastVisible >= firstVisible) {
-        col.model->loadThumbnailsForRange(firstVisible, lastVisible);
+    auto [firstVisible, lastVisible] = visibleRangeForColumn(col);
+    if (lastVisible < firstVisible) {
+        return;
+    }
+    auto [firstPrefetch, lastPrefetch] = prefetchRangeForColumn(col);
+
+    // On-screen rows at visible priority so they win the bounded decode pool;
+    // the off-screen prefetch margins at prefetch priority so a large margin
+    // (or a fast scroll) can't starve what the user is actually looking at.
+    // The same set of thumbnails is still requested — only their priority
+    // differs — and an item bumped from prefetch into view is re-requested at
+    // visible priority (ImageLoader upgrades the pending entry).
+    col.model->loadThumbnailsForRange(firstVisible, lastVisible, /*prefetchPriority=*/false);
+    if (firstPrefetch < firstVisible) {
+        col.model->loadThumbnailsForRange(firstPrefetch, firstVisible - 1, /*prefetchPriority=*/true);
+    }
+    if (lastPrefetch > lastVisible) {
+        col.model->loadThumbnailsForRange(lastVisible + 1, lastPrefetch, /*prefetchPriority=*/true);
     }
 }
 
