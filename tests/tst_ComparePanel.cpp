@@ -32,6 +32,8 @@ private slots:
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
     void folderSwap_reordersGridCellsAndImages();
     void layout_shrinksFromManyFoldersToTwo_cellsExpand();
+    void numberShortcut_swapModePreviewsTargetUntilRelease();
+    void numberShortcut_toleranceModeTogglesTargetImage();
     void toleranceMode_compareButtonTogglesTargetImage();
     void toleranceMode_usesPreviewWhenFullImageIsNotLoaded();
     void resizeToFirstImage_toggleResizesOtherCells();
@@ -487,6 +489,90 @@ void tst_ComparePanel::layout_shrinksFromManyFoldersToTwo_cellsExpand()
     // row count, so each remaining cell gains height. We only assert on height.
     int heightAfter = cells.first()->height();
     QVERIFY(heightAfter > heightBefore);
+}
+
+void tst_ComparePanel::numberShortcut_swapModePreviewsTargetUntilRelease()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr, nullptr);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    const QList<QColor> colors = {Qt::red, Qt::green, Qt::blue};
+    for (int i = 0; i < colors.size(); ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            QString("image_%1.png").arg(i),
+            colors.at(i));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    panel.setFocus();
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 3);
+    auto *targetWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(targetWidget != nullptr);
+    QCOMPARE(targetWidget->image().pixelColor(0, 0), QColor(Qt::green));
+
+    QTest::keyPress(&panel, Qt::Key_2);
+    QTRY_COMPARE(targetWidget->image().pixelColor(0, 0), QColor(Qt::red));
+
+    QTest::keyRelease(&panel, Qt::Key_2);
+    QTRY_COMPARE(targetWidget->image().pixelColor(0, 0), QColor(Qt::green));
+}
+
+void tst_ComparePanel::numberShortcut_toleranceModeTogglesTargetImage()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr, nullptr);
+    panel.resize(900, 600);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    const QString folderA = root.filePath(QStringLiteral("folder_a"));
+    const QString folderB = root.filePath(QStringLiteral("folder_b"));
+    QVERIFY(QDir().mkpath(folderA));
+    QVERIFY(QDir().mkpath(folderB));
+    const QString imageA = createImageInFolder(folderA, QStringLiteral("img.png"), Qt::red);
+    const QString imageB = createImageInFolder(folderB, QStringLiteral("img.png"), Qt::blue);
+    QVERIFY(!imageA.isEmpty());
+    QVERIFY(!imageB.isEmpty());
+    QVERIFY(session.addFolder(folderA));
+    QVERIFY(session.addFolder(folderB));
+    selected.append({folderA, imageA});
+    selected.append({folderB, imageB});
+    panel.setSelectedImages(selected);
+    panel.setCompareMode(ComparePanel::ToleranceMode);
+    panel.setFocus();
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+
+    auto *targetImageWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(targetImageWidget != nullptr);
+    QCOMPARE(targetImageWidget->image().pixelColor(0, 0), QColor(Qt::blue));
+
+    QTest::keyClick(&panel, Qt::Key_2);
+    QTRY_VERIFY(targetImageWidget->image().pixelColor(0, 0) != QColor(Qt::blue));
+
+    QTest::keyClick(&panel, Qt::Key_2);
+    QTRY_COMPARE(targetImageWidget->image().pixelColor(0, 0), QColor(Qt::blue));
 }
 
 void tst_ComparePanel::toleranceMode_compareButtonTogglesTargetImage()

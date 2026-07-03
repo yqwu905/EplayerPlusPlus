@@ -95,6 +95,7 @@ signals:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
 
 private slots:
     void onFolderAdded(const QString &folderPath, int index);
@@ -184,6 +185,11 @@ private:
     void refreshCellsUsingFirstImage();
     void resizeImageCell(int cellIndex);
     void rebuildCompareButtons();
+    int compareTargetIndexForNumberKey(int key) const;
+    bool canHandleNumberCompareShortcut(const QKeyEvent *event) const;
+    bool handleNumberCompareKeyPress(QKeyEvent *event);
+    bool handleNumberCompareKeyRelease(QKeyEvent *event);
+    void finishKeyboardComparePreview();
     void renameCell(int cellIndex);
     void updateCellHeader(int cellIndex);
     QString cellDisplayName(int cellIndex) const;
@@ -226,6 +232,8 @@ private:
     QObject *m_cellDragSourceObject = nullptr;
     int m_cellDragSourceIndex = -1;
     int m_currentCellIndex = -1;
+    int m_keyboardCompareTargetIndex = -1;
+    int m_keyboardCompareKey = 0;
 };
 
 #endif // COMPAREPANEL_H

@@ -605,6 +605,7 @@ bool ComparePanel::eventFilter(QObject *watched, QEvent *event)
     const int dragTargetIndex = findCellByDragObject(watched);
     if (dragTargetIndex >= 0 && event->type() == QEvent::MouseButtonPress) {
         setCurrentCellIndex(dragTargetIndex);
+        setFocus(Qt::MouseFocusReason);
     }
     if (dragTargetIndex >= 0) {
         if (event->type() == QEvent::DragEnter) {
@@ -666,6 +667,10 @@ bool ComparePanel::eventFilter(QObject *watched, QEvent *event)
 
 void ComparePanel::keyPressEvent(QKeyEvent *event)
 {
+    if (handleNumberCompareKeyPress(event)) {
+        return;
+    }
+
     if (event->key() == Qt::Key_Up) {
         emit navigatePreviousRequested();
         event->accept();
@@ -691,6 +696,15 @@ void ComparePanel::keyPressEvent(QKeyEvent *event)
         }
     }
     QWidget::keyPressEvent(event);
+}
+
+void ComparePanel::keyReleaseEvent(QKeyEvent *event)
+{
+    if (handleNumberCompareKeyRelease(event)) {
+        return;
+    }
+
+    QWidget::keyReleaseEvent(event);
 }
 
 // ---- Cell management ----
@@ -860,6 +874,9 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
 void ComparePanel::clearCells()
 {
+    m_keyboardCompareTargetIndex = -1;
+    m_keyboardCompareKey = 0;
+
     for (auto &cell : m_cells) {
         cancelToleranceWatcher(cell);
         if (cell.container) {
@@ -944,6 +961,99 @@ void ComparePanel::rebuildCompareButtons()
     for (int i = 0; i < m_cells.size(); ++i) {
         setupCompareButtonsForCell(i);
     }
+}
+
+int ComparePanel::compareTargetIndexForNumberKey(int key) const
+{
+    if (key >= Qt::Key_1 && key <= Qt::Key_9) {
+        return key - Qt::Key_1;
+    }
+    if (key == Qt::Key_0) {
+        return 9;
+    }
+    return -1;
+}
+
+bool ComparePanel::canHandleNumberCompareShortcut(const QKeyEvent *event) const
+{
+    if (!event) {
+        return false;
+    }
+
+    const int targetIndex = compareTargetIndexForNumberKey(event->key());
+    if (targetIndex < 0) {
+        return false;
+    }
+
+    const Qt::KeyboardModifiers modifiers =
+        event->modifiers() & ~Qt::KeypadModifier;
+    return modifiers == Qt::NoModifier;
+}
+
+bool ComparePanel::handleNumberCompareKeyPress(QKeyEvent *event)
+{
+    if (!canHandleNumberCompareShortcut(event)) {
+        return false;
+    }
+
+    if (event->isAutoRepeat()) {
+        event->accept();
+        return true;
+    }
+
+    const int targetIndex = compareTargetIndexForNumberKey(event->key());
+    if (targetIndex < 0 || targetIndex >= m_cells.size()) {
+        event->accept();
+        return true;
+    }
+
+    const int sourceIndex = currentCellIndex();
+    if (sourceIndex < 0 || sourceIndex == targetIndex) {
+        event->accept();
+        return true;
+    }
+
+    if (m_compareMode == SwapMode) {
+        finishKeyboardComparePreview();
+        m_keyboardCompareTargetIndex = targetIndex;
+        m_keyboardCompareKey = event->key();
+        onComparePressed(sourceIndex, targetIndex);
+    } else {
+        onCompareClicked(sourceIndex, targetIndex);
+    }
+
+    event->accept();
+    return true;
+}
+
+bool ComparePanel::handleNumberCompareKeyRelease(QKeyEvent *event)
+{
+    if (!canHandleNumberCompareShortcut(event)) {
+        return false;
+    }
+
+    if (event->isAutoRepeat()) {
+        event->accept();
+        return true;
+    }
+
+    if (m_keyboardCompareKey == event->key()) {
+        finishKeyboardComparePreview();
+    }
+
+    event->accept();
+    return true;
+}
+
+void ComparePanel::finishKeyboardComparePreview()
+{
+    if (m_keyboardCompareTargetIndex >= 0 &&
+        m_keyboardCompareTargetIndex < m_cells.size()) {
+        showOriginalImage(m_keyboardCompareTargetIndex);
+    }
+
+    m_keyboardCompareTargetIndex = -1;
+    m_keyboardCompareKey = 0;
 }
 
 void ComparePanel::setupCompareButtonsForCell(int cellIndex)
