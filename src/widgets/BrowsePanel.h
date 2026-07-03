@@ -14,6 +14,7 @@ class QComboBox;
 class QLineEdit;
 class QListView;
 class QResizeEvent;
+class QScrollArea;
 class CompareSession;
 class ImageListModel;
 class ImageLoader;
@@ -194,6 +195,8 @@ private:
     bool m_fuzzyFileNameMatch = false;
     QLineEdit *m_fileNameFilterEdit = nullptr;
     QComboBox *m_categoryFilterCombo = nullptr;
+    QScrollArea *m_columnsScrollArea = nullptr;
+    QWidget *m_columnsContainer = nullptr;
     QHBoxLayout *m_columnsLayout = nullptr;
     QList<ColumnInfo> m_columns;
     // Last visible+prefetch keep-set handed to the loader, so an unchanged set

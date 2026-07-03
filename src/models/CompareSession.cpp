@@ -9,10 +9,6 @@ CompareSession::~CompareSession() = default;
 
 bool CompareSession::addFolder(const QString &folderPath)
 {
-    if (m_folders.size() >= MaxFolders) {
-        return false;
-    }
-
     int index = m_folders.size();
     m_folders.append(folderPath);
 
@@ -93,7 +89,7 @@ bool CompareSession::containsFolder(const QString &folderPath) const
 
 bool CompareSession::isFull() const
 {
-    return m_folders.size() >= MaxFolders;
+    return false;
 }
 
 int CompareSession::indexOf(const QString &folderPath) const

@@ -10,7 +10,7 @@
 
 ## 功能
 
-- **最多 6 个文件夹并排浏览** —— 每个文件夹显示为一列可上下滚动的缩略图，跨列对齐方便对比。
+- **任意多个文件夹并排浏览** —— 每个文件夹显示为一列可上下滚动的缩略图，跨列对齐方便对比；超过可视宽度后横向滚动，不再限制为 6 个。
 - **三种选图方式**：
   - **单击** —— 仅选中当前列的一张图。
   - **Ctrl + 单击** —— 选中当前图，以及其他列中相同**索引**位置的图。
@@ -57,7 +57,7 @@ ctest --test-dir build --output-on-failure --timeout 120
 
 代码分层 `utils → services/models → widgets → app`。四个跨组件服务（`SettingsManager`、`CompareSession`、`ImageLoader`、`ImageMarkManager`）由 `MainWindow` 持有，通过构造函数/setter 注入到各面板——没有全局变量，没有单例。详细架构见面向贡献者的 [CLAUDE.md](CLAUDE.md)。
 
-UI 自左向右三栏：`FolderPanel`（文件夹树） → `BrowsePanel`（每个对比文件夹一列缩略图，最多 6 列） → `ComparePanel`（选中图片的网格视图 + 用于交换/容差对比的箭头覆盖层）。
+UI 自左向右三栏：`FolderPanel`（文件夹树） → `BrowsePanel`（每个对比文件夹一列缩略图，必要时横向滚动） → `ComparePanel`（选中图片的网格视图 + 用于交换/容差对比的箭头覆盖层）。
 
 ## 贡献
 

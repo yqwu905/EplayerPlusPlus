@@ -11,7 +11,7 @@ private slots:
     void testInitialState();
     void testAddFolder();
     void testAddFolder_duplicate();
-    void testAddFolder_maxReached();
+    void testAddFolder_unbounded();
     void testRemoveFolder();
     void testRemoveFolder_notFound();
     void testRemoveFolderAt();
@@ -58,15 +58,16 @@ void tst_CompareSession::testAddFolder_duplicate()
     QCOMPARE(session.folders(), QStringList({"/path/a", "/path/a"}));
 }
 
-void tst_CompareSession::testAddFolder_maxReached()
+void tst_CompareSession::testAddFolder_unbounded()
 {
     CompareSession session;
-    for (int i = 0; i < CompareSession::MaxFolders; ++i) {
+    constexpr int folderCount = 20;
+    for (int i = 0; i < folderCount; ++i) {
         QVERIFY(session.addFolder(QString("/path/%1").arg(i)));
     }
-    QVERIFY(session.isFull());
-    QVERIFY(!session.addFolder("/path/extra"));
-    QCOMPARE(session.folderCount(), CompareSession::MaxFolders);
+    QVERIFY(!session.isFull());
+    QVERIFY(session.addFolder("/path/extra"));
+    QCOMPARE(session.folderCount(), folderCount + 1);
 }
 
 void tst_CompareSession::testRemoveFolder()
@@ -170,10 +171,11 @@ void tst_CompareSession::testIsFull()
     CompareSession session;
     QVERIFY(!session.isFull());
 
-    for (int i = 0; i < CompareSession::MaxFolders; ++i) {
+    constexpr int folderCount = 20;
+    for (int i = 0; i < folderCount; ++i) {
         session.addFolder(QString("/path/%1").arg(i));
     }
-    QVERIFY(session.isFull());
+    QVERIFY(!session.isFull());
 
     session.removeFolderAt(0);
     QVERIFY(!session.isFull());

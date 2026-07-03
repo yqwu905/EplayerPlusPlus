@@ -7,7 +7,7 @@
 /**
  * @brief Manages the current comparison session — a set of folders being compared.
  *
- * Supports up to 6 folders simultaneously. Provides add/remove/clear operations
+ * Supports any number of folders simultaneously. Provides add/remove/clear operations
  * and emits signals when the folder set changes.
  */
 class CompareSession : public QObject
@@ -15,15 +15,13 @@ class CompareSession : public QObject
     Q_OBJECT
 
 public:
-    static constexpr int MaxFolders = 6;
-
     explicit CompareSession(QObject *parent = nullptr);
     ~CompareSession() override;
 
     /**
      * @brief Add a folder to the comparison session.
      * @param folderPath Absolute path of the folder.
-     * @return true if added, false if max reached. Duplicates are allowed.
+     * @return true if added. Duplicates are allowed.
      */
     bool addFolder(const QString &folderPath);
 
@@ -70,7 +68,10 @@ public:
     bool containsFolder(const QString &folderPath) const;
 
     /**
-     * @brief Check if the session is full (MaxFolders reached).
+     * @brief Check if the session is full.
+     *
+     * Kept for existing callers. The session is unbounded, so this always
+     * returns false.
      */
     bool isFull() const;
 

@@ -30,6 +30,7 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QScrollArea>
 #include <QSizePolicy>
 #include <QStyledItemDelegate>
 #include <QStyle>
@@ -79,6 +80,7 @@ constexpr int kMarkButtonSize = 18;
 constexpr int kMarkButtonGap = 3;
 constexpr int kMarkButtonTopMargin = 10;
 constexpr int kMarkButtonRightMargin = 10;
+constexpr int kMaxAutoFitColumns = 6;
 const char kFolderOrderMimeType[] = "application/x-eplayer-folder-index";
 const QString kUnmarkedCategoryFilter = QStringLiteral("__unmarked__");
 
@@ -564,7 +566,7 @@ private:
 
     // A smooth (bilinear) full rescale of every visible thumbnail ran on every
     // paint event — and ScrollPerPixel + hover repaint each card many times per
-    // gesture across up to six columns. Cache the scaled cover keyed by the
+    // gesture across multiple columns. Cache the scaled cover keyed by the
     // source thumbnail's identity (QImage::cacheKey() changes when the model
     // swaps in an upgraded decode) so repeated paints at the same geometry reuse
     // it. The painted pixels are identical; only the redundant resamples go away.
@@ -708,17 +710,29 @@ void BrowsePanel::setupUi()
     m_scanStatusLabel->setStyleSheet(
         "QLabel { color: #6E7785; padding-left: 2px; font-size: 11px; background: transparent; border: none; }");
 
-    m_columnsLayout = new QHBoxLayout();
+    m_columnsScrollArea = new QScrollArea(this);
+    m_columnsScrollArea->setObjectName(QStringLiteral("compareColumnsScrollArea"));
+    m_columnsScrollArea->setWidgetResizable(true);
+    m_columnsScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_columnsScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    m_columnsContainer = new QWidget(m_columnsScrollArea);
+    m_columnsContainer->setObjectName(QStringLiteral("compareColumnsContainer"));
+
+    m_columnsLayout = new QHBoxLayout(m_columnsContainer);
     m_columnsLayout->setContentsMargins(0, 0, 0, 0);
     m_columnsLayout->setSpacing(8);
     // No trailing stretch: the columns themselves (stretch 1, MinimumExpanding)
     // fill the panel width so each thumbnail card grows/shrinks with the column.
+    m_columnsScrollArea->setWidget(m_columnsContainer);
     m_rootLayout->addLayout(optionsRow);
-    m_rootLayout->addLayout(m_columnsLayout, 1);
+    m_rootLayout->addWidget(m_columnsScrollArea, 1);
     m_rootLayout->addWidget(m_scanStatusLabel);
 
     setStyleSheet(
         "QWidget#browsePanelRoot { background-color: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
+        "QScrollArea#compareColumnsScrollArea { background-color: #FFFFFF; border: none; }"
+        "QWidget#compareColumnsContainer { background-color: #FFFFFF; }"
         "QWidget#compareColumnWidget { background-color: #FFFFFF; }"
         "QWidget#compareColumnHeader { background-color: #FFFFFF; border: none; border-bottom: 1px solid #EEF1F5; }"
         "QLabel#compareColumnHeaderLabel { color: #243041; background: transparent; border: none; }"
@@ -855,9 +869,10 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         QStyle::PM_ScrollBarExtent,
         nullptr,
         col.view);
-    // Floor each column at the *minimum* thumbnail size (not the baseline), so up
-    // to six columns can be squeezed; the real per-column width — and thus the
-    // thumbnail size — is whatever the splitter leaves, divided across columns.
+    // Floor each column at the *minimum* thumbnail size (not the baseline), so
+    // the splitter remains draggable; once more than kMaxAutoFitColumns are
+    // compared, BrowsePanel provides a horizontal scrollbar instead of squeezing
+    // every thumbnail down indefinitely.
     col.view->setMinimumWidth(kMinImageWidth
                               + kHorizontalChrome
                               + verticalScrollBarWidth
@@ -1260,27 +1275,47 @@ void BrowsePanel::clearAllColumns()
 
 void BrowsePanel::recomputeThumbnailMetrics()
 {
-    // Thumbnail size is a pure function of the per-column width: the panel width
-    // (set by the splitter) minus margins, divided across the columns, minus the
-    // scrollbar and card chrome. Predictive (not read back from the viewport) so
-    // it is correct even before child layout settles mid-drag.
+    // Thumbnail size is a pure function of the per-column width. The first
+    // kMaxAutoFitColumns columns fit the available viewport; additional columns
+    // keep that usable width and scroll horizontally.
     const int columnCount = qMax(1, m_columns.size());
-    const QMargins margins = m_rootLayout
-        ? m_rootLayout->contentsMargins()
-        : QMargins(14, 14, 14, 8);
+    const int sizingColumnCount = qMin(columnCount, kMaxAutoFitColumns);
     const int spacing = m_columnsLayout ? m_columnsLayout->spacing() : 8;
     const int scrollBarWidth = style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this);
 
-    const int panelContent = width() - margins.left() - margins.right();
-    const int perColumn = (panelContent - (columnCount - 1) * spacing) / columnCount;
+    const int panelContent = (m_columnsScrollArea && m_columnsScrollArea->viewport())
+        ? m_columnsScrollArea->viewport()->width()
+        : width();
+    const int perColumn = (panelContent - (sizingColumnCount - 1) * spacing) / sizingColumnCount;
     const int targetImageWidth = perColumn - scrollBarWidth - kCardBreath - kHorizontalChrome;
 
     const ThumbMetrics next = metricsForImageWidth(targetImageWidth);
     const bool displayChanged = next.imageWidth != m_metrics.imageWidth
         || next.itemHeight != m_metrics.itemHeight;
     const bool bucketChanged = next.decodeExtent != m_metrics.decodeExtent;
+    const int targetColumnWidth = qMax(kMinImageWidth
+                                           + kHorizontalChrome
+                                           + scrollBarWidth
+                                           + kScrollAreaSafetyPadding,
+                                       next.cardWidth + scrollBarWidth + kCardBreath);
+    const bool fixedScrolledColumns = m_columns.size() > kMaxAutoFitColumns;
+    bool columnWidthChanged = false;
+    for (auto &col : m_columns) {
+        if (!col.columnWidget) {
+            continue;
+        }
+        if (col.columnWidget->minimumWidth() != targetColumnWidth) {
+            col.columnWidget->setMinimumWidth(targetColumnWidth);
+            columnWidthChanged = true;
+        }
+        const int targetMaximumWidth = fixedScrolledColumns ? targetColumnWidth : QWIDGETSIZE_MAX;
+        if (col.columnWidget->maximumWidth() != targetMaximumWidth) {
+            col.columnWidget->setMaximumWidth(targetMaximumWidth);
+            columnWidthChanged = true;
+        }
+    }
 
-    if (!displayChanged && !bucketChanged) {
+    if (!displayChanged && !bucketChanged && !columnWidthChanged) {
         return;
     }
 

@@ -53,7 +53,7 @@ struct RowContext {
 
 // Dedicated pool for the per-row fan-out below. generateToleranceMapAsync hands
 // the whole computation to QtConcurrent::run on the GLOBAL pool, and ComparePanel
-// can launch up to six of those at once (one per cell). If the inner blockingMap
+// can launch several of those at once (one per cell). If the inner blockingMap
 // also used the global pool, those outer tasks would occupy every global thread
 // and starve their own row work down to serial. A separate pool keeps the row
 // parallelism available. Intentionally leaked (never destroyed) to sidestep

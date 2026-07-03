@@ -1,4 +1,5 @@
 #include "ComparePanel.h"
+#include "FlowLayout.h"
 #include "ImageContextMenu.h"
 #include "ZoomableImageWidget.h"
 #include "services/ImageComparer.h"
@@ -37,6 +38,7 @@
 #include <QSignalBlocker>
 #include <QFutureWatcher>
 #include <QPointer>
+#include <cmath>
 
 namespace
 {
@@ -712,7 +714,7 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     // ---- Header — image identity, compare buttons, and mark buttons ----
     cell.headerWidget = new QWidget(cell.container);
     auto *headerWidget = cell.headerWidget;
-    headerWidget->setFixedHeight(72);
+    headerWidget->setMinimumHeight(72);
     headerWidget->setStyleSheet(
         "QWidget { background-color: #FFFFFF; border: none; }");
     headerWidget->setAcceptDrops(true);
@@ -794,13 +796,12 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
     cell.compareButtonsContainer = new QWidget(headerWidget);
     cell.compareButtonsContainer->setObjectName(QStringLiteral("compareCellButtons"));
-    cell.compareButtonsLayout = new QHBoxLayout(cell.compareButtonsContainer);
+    cell.compareButtonsLayout = new FlowLayout(cell.compareButtonsContainer, 0, 3, 3);
     cell.compareButtonsLayout->setContentsMargins(0, 0, 0, 0);
-    cell.compareButtonsLayout->setSpacing(3);
+    cell.compareButtonsContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     cell.compareButtonsContainer->setStyleSheet(
         "QWidget { background-color: #FFFFFF; border: none; }");
-    controlsRow->addWidget(cell.compareButtonsContainer, 0, Qt::AlignLeft | Qt::AlignVCenter);
-    controlsRow->addStretch();
+    controlsRow->addWidget(cell.compareButtonsContainer, 1);
 
     cell.markButtonsContainer = new QWidget(headerWidget);
     cell.markButtonsContainer->setObjectName(QStringLiteral("imageMarkButtons"));
@@ -889,6 +890,9 @@ void ComparePanel::clearCells()
 
 void ComparePanel::rebuildGrid()
 {
+    const int previousRows = m_gridLayout->rowCount();
+    const int previousColumns = m_gridLayout->columnCount();
+
     while (m_gridLayout->count() > 0) {
         m_gridLayout->takeAt(0);
     }
@@ -896,15 +900,17 @@ void ComparePanel::rebuildGrid()
     int count = m_cells.size();
     if (count == 0) return;
 
-    int cols = (count <= 3) ? count : ((count + 1) / 2);
+    int cols = (count <= 3)
+        ? count
+        : static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count))));
     int rows = (count + cols - 1) / cols;
 
-    // Reset historical stretch factors, otherwise a previous 2x3 layout can
+    // Reset historical stretch factors, otherwise a previous wider layout can
     // keep occupying space after switching to 1x2 / 2x2.
-    for (int r = 0; r < CompareSession::MaxFolders; ++r) {
+    for (int r = 0; r < previousRows; ++r) {
         m_gridLayout->setRowStretch(r, 0);
     }
-    for (int c = 0; c < CompareSession::MaxFolders; ++c) {
+    for (int c = 0; c < previousColumns; ++c) {
         m_gridLayout->setColumnStretch(c, 0);
     }
 
@@ -945,13 +951,12 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
-    qDeleteAll(cell.compareButtons);
-    cell.compareButtons.clear();
-
-    while (cell.compareButtonsLayout->count() > 0) {
+    while (cell.compareButtonsLayout && cell.compareButtonsLayout->count() > 0) {
         QLayoutItem *item = cell.compareButtonsLayout->takeAt(0);
+        delete item->widget();
         delete item;
     }
+    cell.compareButtons.clear();
 
     const int count = m_cells.size();
     for (int targetIndex = 0; targetIndex < count; ++targetIndex) {
@@ -1001,8 +1006,6 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
         cell.compareButtonsLayout->addWidget(button);
         cell.compareButtons.append(button);
     }
-
-    cell.compareButtonsLayout->addStretch();
 }
 
 void ComparePanel::setupMarkButtonsForCell(int cellIndex)

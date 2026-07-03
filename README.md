@@ -10,7 +10,7 @@ Cross-platform desktop application for browsing and **visually diffing image fol
 
 ## Features
 
-- **Side-by-side browse of up to 6 folders** — each folder becomes a scrollable column of thumbnails, all aligned for visual comparison.
+- **Side-by-side browse of any number of folders** — each folder becomes a scrollable column of thumbnails, all aligned for visual comparison. Additional folders scroll horizontally instead of being capped.
 - **Three selection modes** for picking what to compare:
   - **Click** — select a single image in one column.
   - **Ctrl + click** — select the image and the same-index image in every other column.
@@ -57,7 +57,7 @@ ctest --test-dir build --output-on-failure --timeout 120
 
 The codebase is layered as `utils → services/models → widgets → app`. Cross-cutting services (`SettingsManager`, `CompareSession`, `ImageLoader`, `ImageMarkManager`) are owned by `MainWindow` and injected into panels — no globals, no singletons. See [CLAUDE.md](CLAUDE.md) for a fuller architectural tour intended for contributors.
 
-The UI is three panels (left to right): `FolderPanel` (tree of added folders) → `BrowsePanel` (one scrollable column of thumbnails per folder, up to 6) → `ComparePanel` (grid of selected images with arrow overlays for swap / tolerance diff).
+The UI is three panels (left to right): `FolderPanel` (tree of added folders) → `BrowsePanel` (one scrollable column of thumbnails per folder, horizontally scrollable when needed) → `ComparePanel` (grid of selected images with arrow overlays for swap / tolerance diff).
 
 ## Contributing
 

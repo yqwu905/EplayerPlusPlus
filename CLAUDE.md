@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Cross-platform image comparison tool (`ImageCompare`) — a Qt 6 / C++17 desktop app for browsing up to six folders side-by-side and inspecting per-pixel diffs between selected images. See [README.md](README.md) (or [README.zh-CN.md](README.zh-CN.md) for Chinese) for the user-facing overview; user-facing strings in the app are in Chinese.
+Cross-platform image comparison tool (`ImageCompare`) — a Qt 6 / C++17 desktop app for browsing any number of folders side-by-side and inspecting per-pixel diffs between selected images. See [README.md](README.md) (or [README.zh-CN.md](README.zh-CN.md) for Chinese) for the user-facing overview; user-facing strings in the app are in Chinese.
 
 ## Build & test commands
 
@@ -49,11 +49,11 @@ The codebase is layered (`utils → services/models → widgets → app`) and Qt
 **Shared service ownership lives in `MainWindow`.** `MainWindow` owns the four cross-cutting services and injects them into panels via constructors / setters — no globals, no singletons:
 
 - `SettingsManager` — `QSettings` wrapper, persists folder list and UI state.
-- `CompareSession` — holds the ≤6 folders currently being compared, emits add/remove signals that both `BrowsePanel` and `ComparePanel` listen to.
+- `CompareSession` — holds the folders currently being compared, emits add/remove signals that both `BrowsePanel` and `ComparePanel` listen to.
 - `ImageLoader` — async thumbnail/full-image loader on `QtConcurrent` with a cache; shared between panels so cached thumbnails are reused in the compare view.
 - `ImageMarkManager` — persists per-image A/B/C/D/E/F marks **outside** the image folders (so read-only folders work). It writes a journal + snapshot via background `QFuture`s; on load it replays the journal on top of the snapshot.
 
-Three-panel split (left to right): `FolderPanel` (tree of added folders) → `BrowsePanel` (one scrollable column of thumbnails per folder in the compare session, up to 6) → `ComparePanel` (grid of selected images with arrow overlays for swap/tolerance diff). Selection logic lives in `BrowsePanel`: plain click is single-image, Ctrl+click matches by index across folders, Alt+click matches by filename.
+Three-panel split (left to right): `FolderPanel` (tree of added folders) → `BrowsePanel` (one scrollable column of thumbnails per folder in the compare session, horizontally scrollable when needed) → `ComparePanel` (grid of selected images with arrow overlays for swap/tolerance diff). Selection logic lives in `BrowsePanel`: plain click is single-image, Ctrl+click matches by index across folders, Alt+click matches by filename.
 
 Tolerance diff math is `ImageComparer::makeToleranceImage` (per-pixel diff → red if above threshold, blue if below, grayscale if zero). The threshold slider in the `MainWindow` command bar feeds into it.
 

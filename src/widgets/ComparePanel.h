@@ -17,6 +17,7 @@ class QAction;
 class QHBoxLayout;
 class QPushButton;
 class QCheckBox;
+class FlowLayout;
 class SettingsManager;
 class CompareSession;
 class ZoomableImageWidget;
@@ -129,7 +130,7 @@ private:
         QList<QPushButton *> markButtons;
         QPushButton *renameButton = nullptr;
         QWidget *compareButtonsContainer = nullptr;
-        QHBoxLayout *compareButtonsLayout = nullptr;
+        FlowLayout *compareButtonsLayout = nullptr;
         QList<QPushButton *> compareButtons;
         ZoomableImageWidget *imageWidget = nullptr;
         QString folderPath;

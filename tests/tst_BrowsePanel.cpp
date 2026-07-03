@@ -11,6 +11,7 @@
 #include <QListView>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QScrollArea>
 #include <QStyleOptionViewItem>
 #include <algorithm>
 
@@ -42,6 +43,7 @@ private slots:
     void virtualizedColumn_doesNotCreateThumbnailWidgetsForRows();
     void thumbnailSize_scalesWithPanelWidthAndPushesDecodeBucket();
     void multipleFolders_panelMinimumStaysShrinkable();
+    void moreThanSixFolders_addsAllColumnsWithHorizontalScroll();
 
 private:
     static QList<QListView *> sortedViews(BrowsePanel &panel);
@@ -807,6 +809,37 @@ void tst_BrowsePanel::multipleFolders_panelMinimumStaysShrinkable()
     QVERIFY2(fourFolderMin < 760,
              qPrintable(QString("4-folder panel minimum = %1 (expected < 760; "
                                 "pre-fix regression was ~1076)").arg(fourFolderMin)));
+}
+
+void tst_BrowsePanel::moreThanSixFolders_addsAllColumnsWithHorizontalScroll()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (int i = 0; i < 4; ++i) {
+        QImage image(48, 48, QImage::Format_ARGB32);
+        image.fill(QColor::fromHsv((i * 40) % 360, 200, 220));
+        QVERIFY(image.save(dir.filePath(QString("img_%1.png").arg(i))));
+    }
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(720, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    constexpr int folderCount = 8;
+    for (int n = 1; n <= folderCount; ++n) {
+        QVERIFY(session.addFolder(dir.path()));
+    }
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == folderCount), 5000);
+    waitForRows(views.last(), 4);
+
+    auto *scrollArea = panel.findChild<QScrollArea *>(QStringLiteral("compareColumnsScrollArea"));
+    QVERIFY(scrollArea != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(scrollArea->horizontalScrollBar()->maximum() > 0, 2000);
 }
 
 QTEST_MAIN(tst_BrowsePanel)
