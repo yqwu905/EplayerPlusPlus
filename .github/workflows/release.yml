@@ -204,7 +204,9 @@ jobs:
   # Build for macOS
   # ============================================================
   build-macos:
-    runs-on: macos-latest
+    # Qt 6.7.2's macOS desktop package still links AGL; macos-latest currently
+    # resolves to macos-26-arm64 where AGL.framework is no longer present.
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
