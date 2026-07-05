@@ -2,6 +2,8 @@
 #include "widgets/FolderPanel.h"
 #include "widgets/BrowsePanel.h"
 #include "widgets/ComparePanel.h"
+#include "widgets/VlmAnnotationDialog.h"
+#include "widgets/SettingsDialog.h"
 #include "services/SettingsManager.h"
 #include "services/ImageLoader.h"
 #include "services/ImageMarkManager.h"
@@ -315,6 +317,18 @@ QWidget *MainWindow::createCommandBar()
             m_browsePanel, &BrowsePanel::setFuzzyFileNameMatchEnabled);
     addButton(fuzzyMatchAction);
 
+    m_settingsAction = new QAction(QStringLiteral("设置"), bar);
+    m_settingsAction->setToolTip(tr("打开全局设置"));
+    connect(m_settingsAction, &QAction::triggered,
+            this, &MainWindow::showSettingsDialog);
+    addButton(m_settingsAction);
+
+    m_vlmAnnotationAction = new QAction(QStringLiteral("AI 标注"), bar);
+    m_vlmAnnotationAction->setToolTip(tr("使用 OpenAI 兼容 VLM API 批量标注当前过滤结果"));
+    connect(m_vlmAnnotationAction, &QAction::triggered,
+            this, &MainWindow::showVlmAnnotationDialog);
+    addButton(m_vlmAnnotationAction);
+
     layout->addStretch();
 
     return bar;
@@ -428,6 +442,28 @@ void MainWindow::exportCategoriesForFolder(const QString &folderPath)
     }
 
     statusBar()->showMessage(tr("已导出 %1 条分类到 %2").arg(marks.size()).arg(filePath), 5000);
+}
+
+void MainWindow::showVlmAnnotationDialog()
+{
+    if (!m_browsePanel || !m_imageMarkManager || !m_settingsManager) {
+        return;
+    }
+
+    const auto snapshots = m_browsePanel->currentColumnSnapshots();
+    VlmAnnotationDialog dialog(snapshots, m_settingsManager, m_imageMarkManager, this);
+    dialog.exec();
+}
+
+void MainWindow::showSettingsDialog()
+{
+    if (!m_settingsManager) {
+        return;
+    }
+
+    SettingsDialog dialog(m_settingsManager, this);
+    dialog.setCurrentTab(SettingsDialog::Tab::Vlm);
+    dialog.exec();
 }
 
 void MainWindow::togglePanel(int panelIndex)

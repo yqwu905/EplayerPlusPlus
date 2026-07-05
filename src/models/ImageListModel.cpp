@@ -66,6 +66,20 @@ QVariant ImageListModel::data(const QModelIndex &index, int role) const
         return m_selectedIndices.contains(sourceIndex);
     case MarkRole:
         return markAtSourceIndex(sourceIndex);
+    case MarkSourceRole:
+        return markSourceAtSourceIndex(sourceIndex);
+    case MarkReasonRole:
+        return markReasonAtSourceIndex(sourceIndex);
+    case Qt::ToolTipRole: {
+        const ImageMarkManager::MarkMetadata metadata =
+            m_markManager ? m_markManager->markMetadataForImageKey(m_normalizedFolderPath,
+                                                                   m_markKeys.at(sourceIndex))
+                          : ImageMarkManager::MarkMetadata{};
+        if (metadata.source == ImageMarkManager::vlmSource() && !metadata.reason.isEmpty()) {
+            return metadata.reason;
+        }
+        return QVariant();
+    }
     default:
         return QVariant();
     }
@@ -318,7 +332,9 @@ void ImageListModel::setImageMarkManager(ImageMarkManager *manager)
     }
 
     if (imageCount() > 0) {
-        emit dataChanged(index(0), index(imageCount() - 1), {MarkRole});
+        emit dataChanged(index(0),
+                         index(imageCount() - 1),
+                         {MarkRole, MarkSourceRole, MarkReasonRole, Qt::ToolTipRole});
     }
 }
 
@@ -900,7 +916,7 @@ void ImageListModel::updateFilteredRowForSourceIndex(int sourceIndex)
 
     if (!hasActiveFilters()) {
         const QModelIndex mi = index(sourceIndex);
-        emit dataChanged(mi, mi, {MarkRole});
+        emit dataChanged(mi, mi, {MarkRole, MarkSourceRole, MarkReasonRole, Qt::ToolTipRole});
         return;
     }
 
@@ -936,7 +952,7 @@ void ImageListModel::updateFilteredRowForSourceIndex(int sourceIndex)
 
     if (oldRow >= 0) {
         const QModelIndex mi = index(oldRow);
-        emit dataChanged(mi, mi, {MarkRole});
+        emit dataChanged(mi, mi, {MarkRole, MarkSourceRole, MarkReasonRole, Qt::ToolTipRole});
     }
 }
 
@@ -947,4 +963,26 @@ QString ImageListModel::markAtSourceIndex(int sourceIndex) const
     }
 
     return m_markManager->markForImageKey(m_normalizedFolderPath, m_markKeys.at(sourceIndex));
+}
+
+QString ImageListModel::markSourceAtSourceIndex(int sourceIndex) const
+{
+    if (!m_markManager || sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+        return QString();
+    }
+
+    return m_markManager
+        ->markMetadataForImageKey(m_normalizedFolderPath, m_markKeys.at(sourceIndex))
+        .source;
+}
+
+QString ImageListModel::markReasonAtSourceIndex(int sourceIndex) const
+{
+    if (!m_markManager || sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+        return QString();
+    }
+
+    return m_markManager
+        ->markMetadataForImageKey(m_normalizedFolderPath, m_markKeys.at(sourceIndex))
+        .reason;
 }

@@ -31,6 +31,9 @@ const QString kMarksKey = QStringLiteral("marks");
 const QString kPathKey = QStringLiteral("path");
 const QString kCategoryKey = QStringLiteral("category");
 const QString kTimestampKey = QStringLiteral("timestamp");
+const QString kSourceKey = QStringLiteral("source");
+const QString kReasonKey = QStringLiteral("reason");
+const QString kVlmSource = QStringLiteral("vlm");
 constexpr qint64 kUntimedJournalEntryTimestamp = 0;
 
 // Threshold at which an append triggers snapshot compaction. 64 KiB keeps
@@ -180,6 +183,12 @@ bool ImageMarkManager::Worker::writeSnapshotFile(
         QJsonObject entry;
         entry.insert(kCategoryKey, it->category);
         entry.insert(kTimestampKey, it->timestamp);
+        if (!it->source.isEmpty()) {
+            entry.insert(kSourceKey, it->source);
+        }
+        if (!it->reason.isEmpty()) {
+            entry.insert(kReasonKey, it->reason);
+        }
         marksObject.insert(it.key(), entry);
     }
     QJsonObject root;
@@ -302,6 +311,11 @@ bool ImageMarkManager::isValidCategory(const QString &category)
     return categories().contains(category);
 }
 
+QString ImageMarkManager::vlmSource()
+{
+    return kVlmSource;
+}
+
 QString ImageMarkManager::markFilePath(const QString &folderPath) const
 {
     return QDir(normalizeFolderPath(folderPath)).filePath(kMarkFileName);
@@ -374,7 +388,9 @@ QString ImageMarkManager::imageKeyFromNormalizedPath(const QString &normalizedFo
 void ImageMarkManager::applyStoredMark(FolderMarks &folderMarks,
                                        const QString &imageKey,
                                        const QString &category,
-                                       qint64 timestamp)
+                                       qint64 timestamp,
+                                       const QString &source,
+                                       const QString &reason)
 {
     const QString key = normalizeStoredKey(imageKey);
     if (key.isEmpty()) {
@@ -388,9 +404,14 @@ void ImageMarkManager::applyStoredMark(FolderMarks &folderMarks,
     }
 
     if (category.isEmpty()) {
-        folderMarks.marks.insert(key, MarkEntry{QString(), timestamp});
+        folderMarks.marks.insert(key, MarkEntry{QString(), timestamp, QString(), QString()});
     } else if (isValidCategory(category)) {
-        folderMarks.marks.insert(key, MarkEntry{category, timestamp});
+        const QString storedSource = source.trimmed();
+        folderMarks.marks.insert(key,
+                                 MarkEntry{category,
+                                           timestamp,
+                                           storedSource,
+                                           storedSource.isEmpty() ? QString() : reason});
     }
 }
 
@@ -472,7 +493,9 @@ bool ImageMarkManager::loadSnapshot(const QString &normalizedFolderPath,
                 applyStoredMark(folderMarks,
                                 it.key(),
                                 entry.value(kCategoryKey).toString(),
-                                entry.value(kTimestampKey).toVariant().toLongLong());
+                                entry.value(kTimestampKey).toVariant().toLongLong(),
+                                entry.value(kSourceKey).toString(),
+                                entry.value(kReasonKey).toString());
             } else {
                 applyStoredMark(folderMarks,
                                 it.key(),
@@ -523,7 +546,9 @@ bool ImageMarkManager::loadJournalFile(const QString &journalPath,
         applyStoredMark(folderMarks,
                         entry.value(kPathKey).toString(),
                         entry.value(kCategoryKey).toString(),
-                        entry.value(kTimestampKey).toVariant().toLongLong());
+                        entry.value(kTimestampKey).toVariant().toLongLong(),
+                        entry.value(kSourceKey).toString(),
+                        entry.value(kReasonKey).toString());
     }
 
     return true;
@@ -568,6 +593,43 @@ QString ImageMarkManager::markForImageKey(const QString &folderPath,
     return markIt->category;
 }
 
+ImageMarkManager::MarkMetadata ImageMarkManager::markMetadataForImage(
+    const QString &folderPath,
+    const QString &imagePath) const
+{
+    const QString normalizedFolder = normalizeFolderPath(folderPath);
+    const QString key = imageKeyForPath(normalizedFolder, imagePath);
+    if (normalizedFolder.isEmpty() || key.isEmpty()) {
+        return {};
+    }
+
+    return markMetadataForImageKey(normalizedFolder, key);
+}
+
+ImageMarkManager::MarkMetadata ImageMarkManager::markMetadataForImageKey(
+    const QString &folderPath,
+    const QString &imageKey) const
+{
+    const QString normalizedFolder = normalizeFolderPath(folderPath);
+    const QString key = normalizeStoredKey(imageKey);
+    if (normalizedFolder.isEmpty() || key.isEmpty()) {
+        return {};
+    }
+
+    QMutexLocker locker(&m_mutex);
+    auto folderIt = m_folderMarks.constFind(normalizedFolder);
+    if (folderIt == m_folderMarks.constEnd() || !folderIt->loaded) {
+        return {};
+    }
+
+    const auto markIt = folderIt->marks.constFind(key);
+    if (markIt == folderIt->marks.constEnd()) {
+        return {};
+    }
+
+    return MarkMetadata{markIt->category, markIt->source, markIt->reason};
+}
+
 QHash<QString, QString> ImageMarkManager::marksForFolder(const QString &folderPath) const
 {
     const QString normalizedFolder = normalizeFolderPath(folderPath);
@@ -607,6 +669,37 @@ bool ImageMarkManager::setMarkForImageKey(const QString &folderPath,
                                           const QString &imageKey,
                                           const QString &category)
 {
+    return setMarkForImageKeyWithMetadata(folderPath, imageKey, category, QString(), QString());
+}
+
+bool ImageMarkManager::setVlmMarkForImage(const QString &folderPath,
+                                          const QString &imagePath,
+                                          const QString &category,
+                                          const QString &reason)
+{
+    const QString normalizedFolder = normalizeFolderPath(folderPath);
+    const QString key = imageKeyForPath(normalizedFolder, imagePath);
+    return setVlmMarkForImageKey(normalizedFolder, key, category, reason);
+}
+
+bool ImageMarkManager::setVlmMarkForImageKey(const QString &folderPath,
+                                             const QString &imageKey,
+                                             const QString &category,
+                                             const QString &reason)
+{
+    return setMarkForImageKeyWithMetadata(folderPath,
+                                          imageKey,
+                                          category,
+                                          kVlmSource,
+                                          reason);
+}
+
+bool ImageMarkManager::setMarkForImageKeyWithMetadata(const QString &folderPath,
+                                                      const QString &imageKey,
+                                                      const QString &category,
+                                                      const QString &source,
+                                                      const QString &reason)
+{
     if (!category.isEmpty() && !isValidCategory(category)) {
         return false;
     }
@@ -616,6 +709,9 @@ bool ImageMarkManager::setMarkForImageKey(const QString &folderPath,
     if (normalizedFolder.isEmpty() || key.isEmpty()) {
         return false;
     }
+
+    const QString storedSource = category.isEmpty() ? QString() : source.trimmed();
+    const QString storedReason = storedSource.isEmpty() ? QString() : reason;
 
     loadFolder(normalizedFolder);
 
@@ -629,20 +725,29 @@ bool ImageMarkManager::setMarkForImageKey(const QString &folderPath,
         const QString previous = previousIt == folderMarks.marks.constEnd()
             ? QString()
             : previousIt->category;
+        const QString previousSource = previousIt == folderMarks.marks.constEnd()
+            ? QString()
+            : previousIt->source;
+        const QString previousReason = previousIt == folderMarks.marks.constEnd()
+            ? QString()
+            : previousIt->reason;
 
         if (category.isEmpty()) {
             if (previousIt == folderMarks.marks.constEnd() || previous.isEmpty()) {
                 return false;
             }
-        } else if (previous == category) {
+        } else if (previous == category &&
+                   previousSource == storedSource &&
+                   previousReason == storedReason) {
             return false;
         }
 
         timestamp = nextJournalTimestamp();
         if (category.isEmpty()) {
-            folderMarks.marks.insert(key, MarkEntry{QString(), timestamp});
+            folderMarks.marks.insert(key, MarkEntry{QString(), timestamp, QString(), QString()});
         } else {
-            folderMarks.marks.insert(key, MarkEntry{category, timestamp});
+            folderMarks.marks.insert(key,
+                                     MarkEntry{category, timestamp, storedSource, storedReason});
         }
 
         // Cheap upper-bound estimate of how much we are about to write. The
@@ -650,6 +755,8 @@ bool ImageMarkManager::setMarkForImageKey(const QString &folderPath,
         // compaction triggering.
         estimatedBytes = static_cast<qint64>(key.size())
                          + static_cast<qint64>(category.size())
+                         + static_cast<qint64>(storedSource.size())
+                         + static_cast<qint64>(storedReason.size())
                          + 64; // JSON overhead + timestamp + newline.
         qint64 &accum = m_journalBytesSinceCompaction[normalizedFolder];
         accum += estimatedBytes;
@@ -659,7 +766,7 @@ bool ImageMarkManager::setMarkForImageKey(const QString &folderPath,
         }
     }
 
-    scheduleJournalWrite(normalizedFolder, key, category, timestamp);
+    scheduleJournalWrite(normalizedFolder, key, category, timestamp, storedSource, storedReason);
     if (shouldCompact) {
         scheduleCompaction(normalizedFolder);
     }
@@ -789,7 +896,9 @@ QString ImageMarkManager::snapshotPathForStore(const QString &normalizedFolderPa
 void ImageMarkManager::scheduleJournalWrite(const QString &normalizedFolderPath,
                                             const QString &imageKey,
                                             const QString &category,
-                                            qint64 timestamp)
+                                            qint64 timestamp,
+                                            const QString &source,
+                                            const QString &reason)
 {
     if (!m_worker) {
         return;
@@ -802,6 +911,12 @@ void ImageMarkManager::scheduleJournalWrite(const QString &normalizedFolderPath,
     entry.insert(kPathKey, imageKey);
     entry.insert(kCategoryKey, category);
     entry.insert(kTimestampKey, timestamp);
+    if (!source.isEmpty()) {
+        entry.insert(kSourceKey, source);
+    }
+    if (!reason.isEmpty()) {
+        entry.insert(kReasonKey, reason);
+    }
     // Frame each record with a LEADING newline as well as a trailing one. A
     // torn append (crash / disk-full mid-write) leaves an unterminated fragment
     // with no trailing '\n'; without a leading newline the *next* record would

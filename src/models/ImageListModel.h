@@ -33,7 +33,9 @@ public:
         FileNameRole,
         ThumbnailRole,
         IsSelectedRole,
-        MarkRole
+        MarkRole,
+        MarkSourceRole,
+        MarkReasonRole
     };
 
     explicit ImageListModel(QObject *parent = nullptr);
@@ -227,6 +229,8 @@ private:
     void applyFilters();
     void updateFilteredRowForSourceIndex(int sourceIndex);
     QString markAtSourceIndex(int sourceIndex) const;
+    QString markSourceAtSourceIndex(int sourceIndex) const;
+    QString markReasonAtSourceIndex(int sourceIndex) const;
 
     // ---- Thumbnail cache (bounded, access-ordered) ----
     // m_thumbnails grows linearly with the number of distinct images viewed, and

@@ -197,6 +197,7 @@ QString markCategoryAtPosition(const QRect &itemRect, const QPoint &pos, const T
 void paintMarkButtons(QPainter *painter,
                       const QRect &itemRect,
                       const QString &currentMark,
+                      bool currentMarkByVlm,
                       bool hovered,
                       const ThumbMetrics &m)
 {
@@ -214,12 +215,20 @@ void paintMarkButtons(QPainter *painter,
         const QString category = categories.at(i);
         const QRect rect = markButtonRect(itemRect, i, m);
         const bool active = (category == currentMark);
+        const bool aiActive = active && currentMarkByVlm;
 
-        painter->setPen(QPen(active ? QColor(0x00, 0x78, 0xD4) : QColor(0xC8, 0xC8, 0xC8), 1));
-        painter->setBrush(active ? QColor(0x00, 0x78, 0xD4) : QColor(255, 255, 255, 230));
+        painter->setPen(QPen(aiActive ? QColor(0x0F, 0x7B, 0x93)
+                                      : (active ? QColor(0x00, 0x78, 0xD4)
+                                                : QColor(0xC8, 0xC8, 0xC8)),
+                             aiActive ? 2 : 1));
+        painter->setBrush(aiActive ? QColor(0xE6, 0xF6, 0xFA)
+                                   : (active ? QColor(0x00, 0x78, 0xD4)
+                                             : QColor(255, 255, 255, 230)));
         painter->drawRoundedRect(rect, 4, 4);
-        painter->setPen(active ? Qt::white : QColor(0x42, 0x42, 0x42));
-        painter->drawText(rect, Qt::AlignCenter, category);
+        painter->setPen(aiActive ? QColor(0x0B, 0x5E, 0x70)
+                                 : (active ? Qt::white : QColor(0x42, 0x42, 0x42)));
+        painter->drawText(rect, Qt::AlignCenter, aiActive ? category + QStringLiteral("*")
+                                                          : category);
     }
 }
 
@@ -484,6 +493,8 @@ public:
         const ThumbMetrics m = metrics();
         const bool selected = index.data(ImageListModel::IsSelectedRole).toBool();
         const QString currentMark = index.data(ImageListModel::MarkRole).toString();
+        const bool currentMarkByVlm =
+            index.data(ImageListModel::MarkSourceRole).toString() == ImageMarkManager::vlmSource();
         const bool hovered = option.state & QStyle::State_MouseOver;
         const QRect cardRect = thumbnailCardRect(option.rect, m);
 
@@ -553,7 +564,7 @@ public:
                           Qt::AlignCenter,
                           fm.elidedText(fileName, Qt::ElideMiddle, textArea.width()));
 
-        paintMarkButtons(painter, option.rect, currentMark, hovered, m);
+        paintMarkButtons(painter, option.rect, currentMark, currentMarkByVlm, hovered, m);
 
         painter->restore();
     }
@@ -656,6 +667,42 @@ void BrowsePanel::setImageMarkManager(ImageMarkManager *manager)
 void BrowsePanel::setFuzzyFileNameMatchEnabled(bool enabled)
 {
     m_fuzzyFileNameMatch = enabled;
+}
+
+QList<VlmAnnotationService::ColumnSnapshot> BrowsePanel::currentColumnSnapshots() const
+{
+    QList<VlmAnnotationService::ColumnSnapshot> snapshots;
+    snapshots.reserve(m_columns.size());
+
+    for (int columnIndex = 0; columnIndex < m_columns.size(); ++columnIndex) {
+        const ColumnInfo &column = m_columns.at(columnIndex);
+        if (!column.model) {
+            continue;
+        }
+
+        VlmAnnotationService::ColumnSnapshot snapshot;
+        snapshot.columnIndex = columnIndex;
+        snapshot.folderPath = column.model->folderPath();
+        snapshot.columnName = column.model->folderName();
+
+        const int count = column.model->imageCount();
+        snapshot.images.reserve(count);
+        for (int row = 0; row < count; ++row) {
+            VlmAnnotationService::ImageItem item;
+            item.columnIndex = columnIndex;
+            item.row = row;
+            item.folderPath = snapshot.folderPath;
+            item.columnName = snapshot.columnName;
+            item.imagePath = column.model->imagePathAt(row);
+            item.fileName = column.model->fileNameAt(row);
+            item.mark = column.model->markAt(row);
+            snapshot.images.append(item);
+        }
+
+        snapshots.append(snapshot);
+    }
+
+    return snapshots;
 }
 
 void BrowsePanel::resizeEvent(QResizeEvent *event)

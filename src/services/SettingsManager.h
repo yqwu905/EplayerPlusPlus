@@ -16,6 +16,14 @@ class SettingsManager : public QObject
     Q_OBJECT
 
 public:
+    struct VlmProvider {
+        QString id;
+        QString name;
+        QString baseUrl;
+        QString model;
+        QString apiKey;
+    };
+
     explicit SettingsManager(QObject *parent = nullptr);
     ~SettingsManager() override;
 
@@ -102,12 +110,56 @@ public:
      */
     void setSplitterSizes(const QList<int> &sizes);
 
+    QString vlmBaseUrl() const;
+    void setVlmBaseUrl(const QString &baseUrl);
+
+    QString vlmModel() const;
+    void setVlmModel(const QString &model);
+
+    QString vlmUserPrompt() const;
+    void setVlmUserPrompt(const QString &prompt);
+
+    int vlmMatchRule() const;
+    void setVlmMatchRule(int rule);
+
+    int vlmMaxItems() const;
+    void setVlmMaxItems(int maxItems);
+
+    int vlmConcurrency() const;
+    void setVlmConcurrency(int concurrency);
+
+    bool vlmSkipMarked() const;
+    void setVlmSkipMarked(bool enabled);
+
+    bool vlmRememberApiKey() const;
+    void setVlmRememberApiKey(bool enabled);
+
+    QString vlmApiKey() const;
+    void setVlmApiKey(const QString &apiKey);
+
+    QList<VlmProvider> vlmProviders() const;
+    void setVlmProviders(const QList<VlmProvider> &providers);
+    QString activeVlmProviderId() const;
+    void setActiveVlmProviderId(const QString &providerId);
+    VlmProvider activeVlmProvider() const;
+
 private:
     static const QString kFolderListKey;
     static const QString kComparisonThresholdKey;
     static const QString kResizeToFirstImageKey;
     static const QString kIgnoreImageColorProfileKey;
     static const QString kSplitterSizesKey;
+    static const QString kVlmBaseUrlKey;
+    static const QString kVlmModelKey;
+    static const QString kVlmUserPromptKey;
+    static const QString kVlmMatchRuleKey;
+    static const QString kVlmMaxItemsKey;
+    static const QString kVlmConcurrencyKey;
+    static const QString kVlmSkipMarkedKey;
+    static const QString kVlmRememberApiKeyKey;
+    static const QString kVlmApiKeyKey;
+    static const QString kVlmProvidersKey;
+    static const QString kVlmActiveProviderIdKey;
 };
 
 #endif // SETTINGSMANAGER_H

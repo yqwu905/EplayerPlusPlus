@@ -21,6 +21,7 @@ private slots:
     void categories_areLimitedToABCDEF();
     void setMark_savesJsonAndReloads();
     void setMark_updatesAndClears();
+    void setVlmMark_savesMetadataAndManualMarkClearsIt();
     void setMark_rejectsInvalidCategory();
     void marksForFolder_returnsOnlyClassifiedEntries();
     void setMark_usesRelativePathKeys();
@@ -63,6 +64,16 @@ QString reloadedMark(const QString &folderPath, const QString &imagePath)
         return QString();
     }
     return reloaded.markForImage(folderPath, imagePath);
+}
+
+ImageMarkManager::MarkMetadata reloadedMetadata(const QString &folderPath,
+                                                const QString &imagePath)
+{
+    ImageMarkManager reloaded;
+    if (!reloaded.loadFolder(folderPath)) {
+        return {};
+    }
+    return reloaded.markMetadataForImage(folderPath, imagePath);
 }
 }
 
@@ -125,6 +136,50 @@ void tst_ImageMarkManager::setMark_updatesAndClears()
     QVERIFY(manager.markForImage(dir.path(), imagePath).isEmpty());
 
     QTRY_VERIFY(reloadedMark(dir.path(), imagePath).isEmpty());
+}
+
+void tst_ImageMarkManager::setVlmMark_savesMetadataAndManualMarkClearsIt()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString imagePath = dir.filePath("image.png");
+    QImage image(8, 8, QImage::Format_ARGB32);
+    image.fill(Qt::blue);
+    QVERIFY(image.save(imagePath));
+
+    const QString reason = QStringLiteral("VLM saw the target matches class C.");
+
+    ImageMarkManager manager;
+    QVERIFY(manager.setVlmMarkForImage(dir.path(), imagePath, "C", reason));
+
+    ImageMarkManager::MarkMetadata metadata =
+        manager.markMetadataForImage(dir.path(), imagePath);
+    QCOMPARE(metadata.category, QStringLiteral("C"));
+    QCOMPARE(metadata.source, ImageMarkManager::vlmSource());
+    QCOMPARE(metadata.reason, reason);
+
+    QJsonObject entry;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(entry = lastJournalEntry(manager, dir.path())).value("reason").toString().isEmpty(),
+        5000);
+    QCOMPARE(entry.value("category").toString(), QStringLiteral("C"));
+    QCOMPARE(entry.value("source").toString(), ImageMarkManager::vlmSource());
+    QCOMPARE(entry.value("reason").toString(), reason);
+
+    ImageMarkManager::MarkMetadata reloaded;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(reloaded = reloadedMetadata(dir.path(), imagePath)).reason.isEmpty(),
+        5000);
+    QCOMPARE(reloaded.category, QStringLiteral("C"));
+    QCOMPARE(reloaded.source, ImageMarkManager::vlmSource());
+    QCOMPARE(reloaded.reason, reason);
+
+    QVERIFY(manager.setMarkForImage(dir.path(), imagePath, "C"));
+    metadata = manager.markMetadataForImage(dir.path(), imagePath);
+    QCOMPARE(metadata.category, QStringLiteral("C"));
+    QVERIFY(metadata.source.isEmpty());
+    QVERIFY(metadata.reason.isEmpty());
 }
 
 void tst_ImageMarkManager::setMark_rejectsInvalidCategory()

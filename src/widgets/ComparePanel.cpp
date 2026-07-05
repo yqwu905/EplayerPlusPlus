@@ -1144,6 +1144,7 @@ void ComparePanel::setupMarkButtonsForCell(int cellIndex)
     for (const QString &category : ImageMarkManager::categories()) {
         auto *button = new QPushButton(category, cell.markButtonsContainer);
         button->setObjectName(QStringLiteral("imageMarkButton_%1").arg(category));
+        button->setProperty("markCategory", category);
         button->setToolTip(tr("Mark as %1. Ctrl+click marks all compared images.").arg(category));
         button->setFixedSize(24, 22);
         button->setCursor(Qt::PointingHandCursor);
@@ -1210,20 +1211,40 @@ void ComparePanel::updateMarkButtonsForCell(int cellIndex)
 
     ImageCell &cell = m_cells[cellIndex];
     const QString currentMark = markForCell(cellIndex);
+    ImageMarkManager::MarkMetadata metadata;
+    if (m_markManager && !cell.folderPath.isEmpty() && !cell.imagePath.isEmpty()) {
+        metadata = m_markManager->markMetadataForImage(cell.folderPath, cell.imagePath);
+    }
+    const bool currentMarkByVlm = metadata.category == currentMark &&
+                                  metadata.source == ImageMarkManager::vlmSource();
     for (QPushButton *button : cell.markButtons) {
-        const bool active = (button->text() == currentMark);
-        button->setStyleSheet(active
+        const QString category = button->property("markCategory").toString().isEmpty()
+            ? button->text()
+            : button->property("markCategory").toString();
+        const bool active = (category == currentMark);
+        const bool aiActive = active && currentMarkByVlm;
+        button->setText(aiActive ? category + QStringLiteral("*") : category);
+        button->setToolTip(aiActive && !metadata.reason.isEmpty()
+            ? metadata.reason
+            : tr("Mark as %1. Ctrl+click marks all compared images.").arg(category));
+        button->setStyleSheet(aiActive
             ? QStringLiteral(
+                  "QPushButton { border: 2px solid #0F7B93; border-radius: 4px; "
+                  "background-color: #E6F6FA; color: #0B5E70; font-weight: 800; "
+                  "font-size: 11px; padding: 0px; }"
+                  "QPushButton:hover { background-color: #D1EFF5; }")
+            : (active
+                ? QStringLiteral(
                   "QPushButton { border: 1px solid #0078D4; border-radius: 4px; "
                   "background-color: #E5F1FB; color: #0078D4; font-weight: 700; "
                   "font-size: 11px; padding: 0px; }"
                   "QPushButton:hover { background-color: #CCE4F7; }")
-            : QStringLiteral(
+                : QStringLiteral(
                   "QPushButton { border: 1px solid #E0E5ED; border-radius: 4px; "
                   "background-color: #FFFFFF; color: #344054; font-weight: 600; "
                   "font-size: 11px; padding: 0px; }"
                   "QPushButton:hover { background-color: #F7FAFD; border-color: #B9C4D3; }"
-                  "QPushButton:pressed { background-color: #E5F1FB; border-color: #0078D4; }"));
+                  "QPushButton:pressed { background-color: #E5F1FB; border-color: #0078D4; }")));
     }
 }
 

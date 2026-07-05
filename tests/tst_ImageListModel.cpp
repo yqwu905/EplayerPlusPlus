@@ -35,6 +35,7 @@ private slots:
     void testDataFileNameRole();
     void testDataIsSelectedRole();
     void testDataMarkRole_loadsExistingJson();
+    void testDataVlmMetadataRolesAndTooltip();
     void testFilters_fileNameAndCategory();
     void testCategoryFilter_updatesIncrementallyOnMarkChange();
 
@@ -317,6 +318,33 @@ void tst_ImageListModel::testDataMarkRole_loadsExistingJson()
     QCOMPARE(model.markAt(0), QStringLiteral("C"));
     QCOMPARE(model.data(model.index(0), ImageListModel::MarkRole).toString(),
              QStringLiteral("C"));
+}
+
+void tst_ImageListModel::testDataVlmMetadataRolesAndTooltip()
+{
+    ImageMarkManager manager;
+    const QString imagePath = QDir(m_testDir).filePath(QStringLiteral("apple.png"));
+    const QString reason = QStringLiteral("VLM reason for class E.");
+    QVERIFY(manager.setVlmMarkForImage(m_testDir, imagePath, "E", reason));
+
+    ImageListModel model;
+    model.setImageMarkManager(&manager);
+    setFolderAndWait(model, m_testDir);
+
+    const int row = model.indexOfFileName(QStringLiteral("apple.png"));
+    QVERIFY(row >= 0);
+    const QModelIndex idx = model.index(row);
+    QCOMPARE(model.data(idx, ImageListModel::MarkRole).toString(), QStringLiteral("E"));
+    QCOMPARE(model.data(idx, ImageListModel::MarkSourceRole).toString(),
+             ImageMarkManager::vlmSource());
+    QCOMPARE(model.data(idx, ImageListModel::MarkReasonRole).toString(), reason);
+    QCOMPARE(model.data(idx, Qt::ToolTipRole).toString(), reason);
+
+    QVERIFY(model.setMarkAt(row, QStringLiteral("E")));
+    QCOMPARE(model.data(idx, ImageListModel::MarkRole).toString(), QStringLiteral("E"));
+    QVERIFY(model.data(idx, ImageListModel::MarkSourceRole).toString().isEmpty());
+    QVERIFY(model.data(idx, ImageListModel::MarkReasonRole).toString().isEmpty());
+    QVERIFY(model.data(idx, Qt::ToolTipRole).toString().isEmpty());
 }
 
 void tst_ImageListModel::testFilters_fileNameAndCategory()

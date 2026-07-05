@@ -20,6 +20,7 @@ class tst_MainWindow : public QObject
 
 private slots:
     void commandBar_removesDeadMenuAndBrowseButtons();
+    void commandBar_includesAiAnnotationButton();
     void commandBar_compareModeButtonsControlComparePanel();
     void directionKeys_navigateBrowseSelection();
     void browsePanel_notCollapsibleButHidableByToggle();
@@ -90,6 +91,24 @@ void tst_MainWindow::commandBar_removesDeadMenuAndBrowseButtons()
     QVERIFY(!commandTexts.contains(QStringLiteral("⋮")));
     QVERIFY(commandTexts.contains(QStringLiteral("↑  上一张")));
     QVERIFY(commandTexts.contains(QStringLiteral("↓  下一张")));
+}
+
+void tst_MainWindow::commandBar_includesAiAnnotationButton()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    QStringList commandTexts;
+    const auto buttons = window.findChildren<QToolButton *>(
+        QStringLiteral("commandButton"));
+    for (QToolButton *button : buttons) {
+        commandTexts.append(button->text());
+    }
+
+    QVERIFY(commandTexts.contains(QStringLiteral("AI 标注")));
+    QVERIFY(commandTexts.contains(QStringLiteral("设置")));
+    QVERIFY(!commandTexts.contains(QStringLiteral("VLM 设置")));
 }
 
 void tst_MainWindow::commandBar_compareModeButtonsControlComparePanel()

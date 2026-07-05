@@ -42,6 +42,8 @@ private:
                               const char *member);
     void setupConnections();
     void exportCategoriesForFolder(const QString &folderPath);
+    void showVlmAnnotationDialog();
+    void showSettingsDialog();
     void togglePanel(int panelIndex);
     void saveSplitterSizes();
     void updateCompareModeActions();
@@ -65,6 +67,8 @@ private:
     QAction *m_toleranceModeAction = nullptr;
     QAction *m_resizeToFirstAction = nullptr;
     QAction *m_ignoreColorProfileAction = nullptr;
+    QAction *m_settingsAction = nullptr;
+    QAction *m_vlmAnnotationAction = nullptr;
     QLabel *m_thresholdValueLabel = nullptr;
     QSlider *m_thresholdSlider = nullptr;
 

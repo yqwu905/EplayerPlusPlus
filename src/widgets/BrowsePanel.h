@@ -6,6 +6,8 @@
 #include <QTimer>
 #include <QSet>
 
+#include "services/VlmAnnotationService.h"
+
 class QHBoxLayout;
 class QLabel;
 class QVBoxLayout;
@@ -67,6 +69,8 @@ public:
 
     /** @brief The thumbnail metrics currently in effect. */
     ThumbMetrics thumbnailMetrics() const { return m_metrics; }
+
+    QList<VlmAnnotationService::ColumnSnapshot> currentColumnSnapshots() const;
 
 signals:
     /**

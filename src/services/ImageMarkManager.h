@@ -48,15 +48,24 @@ public:
 
     static QStringList categories();
     static bool isValidCategory(const QString &category);
+    static QString vlmSource();
     static QString normalizeFolderPath(const QString &folderPath);
     static QString normalizeImagePath(const QString &imagePath);
     static QString imageKeyForPath(const QString &folderPath, const QString &imagePath);
+
+    struct MarkMetadata {
+        QString category;
+        QString source;
+        QString reason;
+    };
 
     QString markFilePath(const QString &folderPath) const;
     QString markJournalPath(const QString &folderPath) const;
     bool loadFolder(const QString &folderPath);
     QString markForImage(const QString &folderPath, const QString &imagePath) const;
     QString markForImageKey(const QString &folderPath, const QString &imageKey) const;
+    MarkMetadata markMetadataForImage(const QString &folderPath, const QString &imagePath) const;
+    MarkMetadata markMetadataForImageKey(const QString &folderPath, const QString &imageKey) const;
     // Returns {imageKey (folder-relative path) -> category} for every image that
     // currently carries an A–F mark. Unmarked entries are omitted. Returns an
     // empty hash if the folder has not been loaded.
@@ -67,6 +76,14 @@ public:
     bool setMarkForImageKey(const QString &folderPath,
                             const QString &imageKey,
                             const QString &category);
+    bool setVlmMarkForImage(const QString &folderPath,
+                            const QString &imagePath,
+                            const QString &category,
+                            const QString &reason);
+    bool setVlmMarkForImageKey(const QString &folderPath,
+                               const QString &imageKey,
+                               const QString &category,
+                               const QString &reason);
     bool clearMarkForImage(const QString &folderPath, const QString &imagePath);
 
 signals:
@@ -78,6 +95,8 @@ private:
     struct MarkEntry {
         QString category;
         qint64 timestamp = 0;
+        QString source;
+        QString reason;
     };
 
     struct FolderMarks {
@@ -141,7 +160,9 @@ private:
     static void applyStoredMark(FolderMarks &folderMarks,
                                 const QString &imageKey,
                                 const QString &category,
-                                qint64 timestamp);
+                                qint64 timestamp,
+                                const QString &source = QString(),
+                                const QString &reason = QString());
 
     bool loadSnapshot(const QString &normalizedFolderPath, FolderMarks &folderMarks) const;
     bool loadJournal(const QString &normalizedFolderPath, FolderMarks &folderMarks) const;
@@ -162,12 +183,19 @@ private:
     void scheduleJournalWrite(const QString &normalizedFolderPath,
                               const QString &imageKey,
                               const QString &category,
-                              qint64 timestamp);
+                              qint64 timestamp,
+                              const QString &source = QString(),
+                              const QString &reason = QString());
     // Caller must NOT hold m_mutex. Captures the current in-memory marks
     // under the mutex and enqueues a compaction task for the writer.
     void scheduleCompaction(const QString &normalizedFolderPath);
 
     qint64 nextJournalTimestamp();
+    bool setMarkForImageKeyWithMetadata(const QString &folderPath,
+                                        const QString &imageKey,
+                                        const QString &category,
+                                        const QString &source,
+                                        const QString &reason);
 
     mutable QMutex m_mutex;
     QHash<QString, FolderMarks> m_folderMarks;

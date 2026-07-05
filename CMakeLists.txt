@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ImageCompare
-    VERSION 1.7.6
+    VERSION 1.7.7
     LANGUAGES CXX
     DESCRIPTION "Cross-platform image comparison tool"
 )
@@ -20,6 +20,7 @@ find_package(Qt6 REQUIRED COMPONENTS
     Widgets
     Gui
     Concurrent
+    Network
     Test
 )
 

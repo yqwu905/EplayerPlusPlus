@@ -18,6 +18,12 @@ set(SOURCES
     widgets/ComparePanel.h
     widgets/ImageContextMenu.cpp
     widgets/ImageContextMenu.h
+    widgets/VlmAnnotationDialog.cpp
+    widgets/VlmAnnotationDialog.h
+    widgets/SettingsDialog.cpp
+    widgets/SettingsDialog.h
+    widgets/VlmProviderSettingsDialog.cpp
+    widgets/VlmProviderSettingsDialog.h
     widgets/ThumbnailWidget.cpp
     widgets/ThumbnailWidget.h
     widgets/ArrowOverlay.cpp
@@ -38,6 +44,8 @@ set(SOURCES
     services/ImageLoader.h
     services/ImageComparer.cpp
     services/ImageComparer.h
+    services/VlmAnnotationService.cpp
+    services/VlmAnnotationService.h
     styles/FluentStyle.cpp
     styles/FluentStyle.h
 )
@@ -62,6 +70,12 @@ set(LIB_SOURCES
     widgets/ComparePanel.h
     widgets/ImageContextMenu.cpp
     widgets/ImageContextMenu.h
+    widgets/VlmAnnotationDialog.cpp
+    widgets/VlmAnnotationDialog.h
+    widgets/SettingsDialog.cpp
+    widgets/SettingsDialog.h
+    widgets/VlmProviderSettingsDialog.cpp
+    widgets/VlmProviderSettingsDialog.h
     widgets/ThumbnailWidget.cpp
     widgets/ThumbnailWidget.h
     widgets/ArrowOverlay.cpp
@@ -82,6 +96,8 @@ set(LIB_SOURCES
     services/ImageLoader.h
     services/ImageComparer.cpp
     services/ImageComparer.h
+    services/VlmAnnotationService.cpp
+    services/VlmAnnotationService.h
     styles/FluentStyle.cpp
     styles/FluentStyle.h
 )
@@ -96,6 +112,7 @@ target_link_libraries(ImageCompareLib PUBLIC
     Qt6::Widgets
     Qt6::Gui
     Qt6::Concurrent
+    Qt6::Network
 )
 
 # ---- Executable target ----
