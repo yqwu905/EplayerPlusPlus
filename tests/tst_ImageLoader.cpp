@@ -268,7 +268,9 @@ void tst_ImageLoader::cacheEviction_bounded_lruPreservesRecent()
     }
 
     ImageLoader loader;
-    loader.setMaxConcurrentLoads(2);
+    // This test verifies the LRU eviction policy, so keep completion order
+    // deterministic instead of depending on platform thread scheduling.
+    loader.setMaxConcurrentLoads(1);
     loader.setMaxCacheSize(kCap);
 
     QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
