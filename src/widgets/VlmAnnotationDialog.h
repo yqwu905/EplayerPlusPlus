@@ -45,6 +45,7 @@ private slots:
                          const QString &id,
                          const QString &category,
                          const QString &reason);
+    void onItemStatusChanged(int taskIndex, const QString &id, const QString &statusText);
     void onItemFailed(int taskIndex, const QString &id, const QString &error);
     void onServiceFinished(bool cancelled);
 

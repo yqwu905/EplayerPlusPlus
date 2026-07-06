@@ -3,6 +3,8 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -50,6 +52,43 @@ QJsonObject messageObject(const QString &role, const QJsonValue &content)
     object.insert(QStringLiteral("role"), role);
     object.insert(QStringLiteral("content"), content);
     return object;
+}
+
+QString payloadFormatName(VlmAnnotationService::PayloadFormat format)
+{
+    return format == VlmAnnotationService::PayloadFormat::DashScopeContentParts
+        ? QObject::tr("DashScope 兼容格式")
+        : QObject::tr("OpenAI 标准格式");
+}
+
+QString byteCountText(qint64 bytes)
+{
+    if (bytes < 0) {
+        return QObject::tr("未知大小");
+    }
+    if (bytes >= 1024LL * 1024LL) {
+        return QStringLiteral("%1 MB").arg(bytes / 1024.0 / 1024.0, 0, 'f', 1);
+    }
+    if (bytes >= 1024LL) {
+        return QStringLiteral("%1 KB").arg(bytes / 1024.0, 0, 'f', 1);
+    }
+    return QStringLiteral("%1 B").arg(bytes);
+}
+
+int imageCountForBatch(const QList<VlmAnnotationService::Task> &batch)
+{
+    int imageCount = 0;
+    for (const auto &task : batch) {
+        imageCount += 1 + task.references.size();
+    }
+    return imageCount;
+}
+
+void flushStatusEvents()
+{
+    if (QCoreApplication::instance()) {
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    }
 }
 
 }
@@ -512,6 +551,29 @@ bool VlmAnnotationService::sendBatch(int batchStart,
                                      int retryCount,
                                      PayloadFormat format)
 {
+    const QString batchLabel = batch.size() == 1
+        ? batch.first().id
+        : tr("%1-%2").arg(batch.first().id, batch.last().id);
+    const int batchImageCount = imageCountForBatch(batch);
+    QStringList batchIds;
+    batchIds.reserve(batch.size());
+    for (const Task &task : batch) {
+        batchIds.append(task.id);
+    }
+    const auto emitBatchStatus = [this, batchStart, batchIds](const QString &statusText) {
+        for (int i = 0; i < batchIds.size(); ++i) {
+            emit itemStatusChanged(batchStart + i, batchIds.at(i), statusText);
+        }
+    };
+
+    emitBatchStatus(tr("构建请求：批次 %1，目标 %2 张，图片输入 %3 张，格式=%4，重试=%5；正在读取/压缩图片并生成 base64 payload")
+                        .arg(batchLabel)
+                        .arg(batch.size())
+                        .arg(batchImageCount)
+                        .arg(payloadFormatName(format))
+                        .arg(retryCount));
+    flushStatusEvents();
+
     QString payloadError;
     const QJsonObject payload = buildChatCompletionsPayload(m_config, batch, &payloadError, format);
     if (!payloadError.isEmpty()) {
@@ -528,8 +590,15 @@ bool VlmAnnotationService::sendBatch(int batchStart,
         expectedIds.append(task.id);
     }
 
-    QNetworkReply *reply = m_network.post(buildNetworkRequest(m_config),
-                                          QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    const QUrl endpoint = endpointUrl(m_config.baseUrl);
+    emitBatchStatus(tr("发送请求：批次 %1，endpoint=%2，payload=%3，图片输入 %4 张；等待上传开始")
+                        .arg(batchLabel,
+                             endpoint.toString(),
+                             byteCountText(requestBody.size()))
+                        .arg(batchImageCount));
+
+    QNetworkReply *reply = m_network.post(buildNetworkRequest(m_config), requestBody);
     m_currentReplies.insert(reply);
     emit progressChanged(m_completed,
                          m_tasks.size(),
@@ -538,6 +607,20 @@ bool VlmAnnotationService::sendBatch(int batchStart,
                                   batch.last().id)
                              .arg(m_currentReplies.size())
                              .arg(m_config.concurrency));
+    emitBatchStatus(tr("等待响应：批次 %1 已发起，payload=%2；若长时间停在这里，通常卡在网络连接、请求上传或服务端排队/推理")
+                        .arg(batchLabel, byteCountText(requestBody.size())));
+    connect(reply, &QNetworkReply::uploadProgress, this,
+            [emitBatchStatus, batchLabel](qint64 bytesSent, qint64 bytesTotal) {
+        const QString total = bytesTotal >= 0 ? byteCountText(bytesTotal) : QObject::tr("未知大小");
+        emitBatchStatus(QObject::tr("上传中：批次 %1，已上传 %2 / %3")
+                            .arg(batchLabel, byteCountText(bytesSent), total));
+    });
+    connect(reply, &QNetworkReply::downloadProgress, this,
+            [emitBatchStatus, batchLabel](qint64 bytesReceived, qint64 bytesTotal) {
+        const QString total = bytesTotal >= 0 ? byteCountText(bytesTotal) : QObject::tr("未知大小");
+        emitBatchStatus(QObject::tr("接收响应：批次 %1，已接收 %2 / %3")
+                            .arg(batchLabel, byteCountText(bytesReceived), total));
+    });
     connect(reply, &QNetworkReply::finished, this,
             [this, reply, batchStart, batch, expectedIds, retryCount, format]() {
         reply->deleteLater();
@@ -550,6 +633,18 @@ bool VlmAnnotationService::sendBatch(int batchStart,
 
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QByteArray body = reply->readAll();
+        const QString batchLabel = batch.size() == 1
+            ? batch.first().id
+            : tr("%1-%2").arg(batch.first().id, batch.last().id);
+        for (int i = 0; i < batch.size(); ++i) {
+            emit itemStatusChanged(batchStart + i,
+                                   batch.at(i).id,
+                                   tr("解析响应：批次 %1，HTTP %2，响应体 %3")
+                                       .arg(batchLabel)
+                                       .arg(statusCode)
+                                       .arg(byteCountText(body.size())));
+        }
+
         ParsedResponse parsed;
         if (reply->error() != QNetworkReply::NoError && statusCode == 0) {
             parsed.error = reply->errorString();
@@ -559,12 +654,24 @@ bool VlmAnnotationService::sendBatch(int batchStart,
         if (!parsed.ok
             && format == PayloadFormat::OpenAiContentParts
             && shouldRetryWithDashScopePayload(statusCode, parsed.error)) {
+            for (int i = 0; i < batch.size(); ++i) {
+                emit itemStatusChanged(batchStart + i,
+                                       batch.at(i).id,
+                                       tr("准备重试：OpenAI 标准格式被拒绝，切换 DashScope 兼容格式；原因：%1")
+                                           .arg(parsed.error.left(300)));
+            }
             if (!sendBatch(batchStart, batch, retryCount + 1, PayloadFormat::DashScopeContentParts)) {
                 startNextBatch();
             }
             return;
         }
         if (!parsed.ok && statusCode >= 200 && statusCode < 300 && retryCount == 0) {
+            for (int i = 0; i < batch.size(); ++i) {
+                emit itemStatusChanged(batchStart + i,
+                                       batch.at(i).id,
+                                       tr("准备重试：HTTP 成功但响应 JSON 不符合预期；原因：%1")
+                                           .arg(parsed.error.left(300)));
+            }
             if (!sendBatch(batchStart, batch, retryCount + 1, format)) {
                 startNextBatch();
             }

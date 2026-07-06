@@ -58,6 +58,8 @@ VlmAnnotationDialog::VlmAnnotationDialog(
             this, &VlmAnnotationDialog::onServiceProgress);
     connect(m_service, &VlmAnnotationService::itemSucceeded,
             this, &VlmAnnotationDialog::onItemSucceeded);
+    connect(m_service, &VlmAnnotationService::itemStatusChanged,
+            this, &VlmAnnotationDialog::onItemStatusChanged);
     connect(m_service, &VlmAnnotationService::itemFailed,
             this, &VlmAnnotationDialog::onItemFailed);
     connect(m_service, &VlmAnnotationService::finished,
@@ -398,9 +400,15 @@ void VlmAnnotationDialog::setupResultsTable(const QList<VlmAnnotationService::Ta
         auto *idItem = new QTableWidgetItem(task.id);
         auto *fileItem = new QTableWidgetItem(task.target.fileName);
         fileItem->setToolTip(task.target.imagePath);
-        auto *categoryItem = new QTableWidgetItem(tr("待处理"));
-        auto *reasonItem = new QTableWidgetItem(QString());
-        reasonItem->setToolTip(QString());
+        const QString queuedStatus = tr("排队中");
+        const QString queuedDetail = tr("等待调度；目标列=%1，参考图=%2 张，文件=%3")
+                                         .arg(task.target.columnName)
+                                         .arg(task.references.size())
+                                         .arg(task.target.imagePath);
+        auto *categoryItem = new QTableWidgetItem(queuedStatus);
+        auto *reasonItem = new QTableWidgetItem(queuedDetail);
+        categoryItem->setToolTip(queuedDetail);
+        reasonItem->setToolTip(queuedDetail);
         auto *referenceItem = new QTableWidgetItem(QString::number(task.references.size()));
         m_resultTable->setItem(row, 0, idItem);
         m_resultTable->setItem(row, 1, fileItem);
@@ -411,7 +419,8 @@ void VlmAnnotationDialog::setupResultsTable(const QList<VlmAnnotationService::Ta
         ResultRow result;
         result.id = task.id;
         result.fileName = task.target.fileName;
-        result.status = tr("待处理");
+        result.status = queuedStatus;
+        result.reason = queuedDetail;
         m_results[row] = result;
     }
 }
@@ -422,11 +431,12 @@ void VlmAnnotationDialog::updateResultRow(int taskIndex, const ResultRow &result
         return;
     }
     m_results[taskIndex] = result;
-    m_resultTable->item(taskIndex, 2)->setText(result.category.isEmpty()
-                                                   ? result.status
-                                                   : result.category);
-    m_resultTable->item(taskIndex, 2)->setToolTip(result.category);
+    const QString categoryText = result.category.isEmpty()
+        ? result.status
+        : result.category;
     const QString detail = result.reason.isEmpty() ? result.status : result.reason;
+    m_resultTable->item(taskIndex, 2)->setText(categoryText);
+    m_resultTable->item(taskIndex, 2)->setToolTip(detail);
     m_resultTable->item(taskIndex, 3)->setText(detail);
     m_resultTable->item(taskIndex, 3)->setToolTip(detail);
     m_resultTable->resizeRowToContents(taskIndex);
@@ -602,6 +612,28 @@ void VlmAnnotationDialog::onItemSucceeded(int taskIndex,
     if (!result.applied) {
         result.status = tr("写入失败");
         result.reason = result.reason.isEmpty() ? result.status : result.reason;
+    }
+    updateResultRow(taskIndex, result);
+}
+
+void VlmAnnotationDialog::onItemStatusChanged(int taskIndex,
+                                              const QString &id,
+                                              const QString &statusText)
+{
+    if (taskIndex < 0 || taskIndex >= m_results.size()) {
+        return;
+    }
+
+    ResultRow result = m_results.at(taskIndex);
+    if (!result.category.isEmpty()) {
+        return;
+    }
+
+    result.id = id;
+    result.status = statusText;
+    result.reason = statusText;
+    if (result.fileName.isEmpty() && taskIndex < m_tasks.size()) {
+        result.fileName = m_tasks.at(taskIndex).target.fileName;
     }
     updateResultRow(taskIndex, result);
 }

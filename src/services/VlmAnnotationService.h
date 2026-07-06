@@ -126,6 +126,7 @@ signals:
                        const QString &id,
                        const QString &category,
                        const QString &reason);
+    void itemStatusChanged(int taskIndex, const QString &id, const QString &statusText);
     void itemFailed(int taskIndex, const QString &id, const QString &error);
     void finished(bool cancelled);
 
