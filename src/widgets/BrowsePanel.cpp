@@ -992,6 +992,28 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         updateColumnProgressLabel(currentIndex);
         updateGlobalScanStatus();
         scheduleThumbnailRequest(currentIndex, 0);
+        if (hasActiveCategoryFilterAnchor() &&
+            currentIndex == m_categoryFilterAnchorColumn) {
+            applyCurrentFilters();
+        }
+    });
+
+    connect(col.model, &QAbstractItemModel::rowsRemoved,
+            this, [this, modelPtr](const QModelIndex &parent, int /*first*/, int /*last*/) {
+        if (parent.isValid()) {
+            return;
+        }
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex < 0) {
+            return;
+        }
+
+        updateColumnProgressLabel(currentIndex);
+        updateGlobalScanStatus();
+        if (hasActiveCategoryFilterAnchor() &&
+            currentIndex == m_categoryFilterAnchorColumn) {
+            applyCurrentFilters();
+        }
     });
 
     connect(col.model, &QAbstractItemModel::modelReset,
@@ -1070,6 +1092,10 @@ void BrowsePanel::onFolderReady(int columnIndex)
 
     updateColumnProgressLabel(columnIndex);
     updateGlobalScanStatus();
+    if (hasActiveCategoryFilterAnchor()) {
+        applyCurrentFilters();
+        return;
+    }
     scheduleThumbnailRequest(columnIndex, 0);
 }
 
@@ -1091,10 +1117,16 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
     if (m_columns.isEmpty()) {
         stopInterleavedLoading();
         resetSelectionNavigationMode();
+        resetCategoryFilterAnchor();
     } else if (m_navigationAnchorColumn == index) {
         resetSelectionNavigationMode();
     } else if (m_navigationAnchorColumn > index) {
         --m_navigationAnchorColumn;
+    }
+    if (m_categoryFilterAnchorColumn == index) {
+        resetCategoryFilterAnchor();
+    } else if (m_categoryFilterAnchorColumn > index) {
+        --m_categoryFilterAnchorColumn;
     }
 
     for (int i = index; i < m_columns.size(); ++i) {
@@ -1103,6 +1135,10 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
 
     // Removing a column widens the survivors → rescale their thumbnails.
     recomputeThumbnailMetrics();
+    if (!m_columns.isEmpty() && !currentCategoryFilter().isEmpty()) {
+        applyCurrentFilters();
+        return;
+    }
     updateGlobalScanStatus();
     emitSelectionChanged();
 }
@@ -1121,7 +1157,16 @@ void BrowsePanel::onFoldersSwapped(int firstIndex, int secondIndex)
     } else if (m_navigationAnchorColumn == secondIndex) {
         m_navigationAnchorColumn = firstIndex;
     }
+    if (m_categoryFilterAnchorColumn == firstIndex) {
+        m_categoryFilterAnchorColumn = secondIndex;
+    } else if (m_categoryFilterAnchorColumn == secondIndex) {
+        m_categoryFilterAnchorColumn = firstIndex;
+    }
     rebuildColumnLayout();
+    if (hasActiveCategoryFilterAnchor()) {
+        applyCurrentFilters();
+        return;
+    }
     requestVisibleThumbnailsForAllColumns();
     updateGlobalScanStatus();
     emitSelectionChanged();
@@ -1132,6 +1177,7 @@ void BrowsePanel::onSessionCleared()
     stopInterleavedLoading();
     clearAllColumns();
     resetSelectionNavigationMode();
+    resetCategoryFilterAnchor();
     updateGlobalScanStatus();
     emitSelectionChanged();
 }
@@ -1149,7 +1195,24 @@ void BrowsePanel::onThumbnailActivated(int clickedCol,
         return;
     }
 
-    if (modifiers & Qt::ControlModifier) {
+    const bool ctrlHeld = (modifiers & Qt::ControlModifier) != 0;
+    const bool altHeld = (modifiers & Qt::AltModifier) != 0;
+    if (ctrlHeld || altHeld) {
+        const QString clickedPath = m_columns[clickedCol].model->imagePathAt(clickedIdx);
+        setCategoryFilterAnchor(clickedCol,
+                                altHeld ? FilterMatchMode::FileName
+                                        : FilterMatchMode::SameIndex);
+        if (!currentCategoryFilter().isEmpty()) {
+            applyCurrentFilters();
+            ImageListModel *clickedModel = m_columns[clickedCol].model;
+            clickedIdx = clickedModel ? clickedModel->indexOfImagePath(clickedPath) : -1;
+            if (clickedIdx < 0) {
+                return;
+            }
+        }
+    }
+
+    if (ctrlHeld) {
         setSelectionNavigationMode(SelectionNavigationMode::Independent, clickedCol);
         clearSelection();
         QList<int> matchedIndices(m_columns.size(), -1);
@@ -1160,7 +1223,7 @@ void BrowsePanel::onThumbnailActivated(int clickedCol,
             }
         }
         alignColumnsToAnchor(clickedCol, clickedIdx, matchedIndices);
-    } else if (modifiers & Qt::AltModifier) {
+    } else if (altHeld) {
         setSelectionNavigationMode(SelectionNavigationMode::FileNameMatch, clickedCol);
         clearSelection();
         const QString fileName = m_columns[clickedCol].model->fileNameAt(clickedIdx);
@@ -1207,6 +1270,10 @@ void BrowsePanel::onThumbnailMarkRequested(int column,
         ? QString()
         : category;
     auto refreshAfterMarkChange = [this]() {
+        if (hasActiveCategoryFilterAnchor()) {
+            applyCurrentFilters();
+            return;
+        }
         updateAllColumnProgressLabels();
         updateGlobalScanStatus();
         requestVisibleThumbnailsForAllColumns();
@@ -1540,13 +1607,40 @@ void BrowsePanel::applyCurrentFilters()
         ? m_fileNameFilterEdit->text()
         : QString();
     const QString categoryFilter = currentCategoryFilter();
+    const bool useAnchor = !categoryFilter.isEmpty() &&
+        m_categoryFilterAnchorColumn >= 0 &&
+        m_categoryFilterAnchorColumn < m_columns.size() &&
+        m_columns[m_categoryFilterAnchorColumn].model;
 
-    for (auto &col : m_columns) {
-        if (!col.model) {
-            continue;
+    if (useAnchor) {
+        ImageListModel *anchorModel = m_columns[m_categoryFilterAnchorColumn].model;
+        anchorModel->clearImagePathFilter();
+        anchorModel->setFileNameFilter(fileNameFilter);
+        anchorModel->setCategoryFilter(categoryFilter);
+
+        for (int column = 0; column < m_columns.size(); ++column) {
+            ImageListModel *model = m_columns[column].model;
+            if (!model || column == m_categoryFilterAnchorColumn) {
+                continue;
+            }
+
+            const QSet<QString> matchedPaths =
+                matchedImagePathsForColumn(column,
+                                           m_categoryFilterAnchorColumn,
+                                           m_categoryFilterMatchMode);
+            model->setFileNameFilter(QString());
+            model->setCategoryFilter(QString());
+            model->setImagePathFilter(matchedPaths, true);
         }
-        col.model->setFileNameFilter(fileNameFilter);
-        col.model->setCategoryFilter(categoryFilter);
+    } else {
+        for (auto &col : m_columns) {
+            if (!col.model) {
+                continue;
+            }
+            col.model->clearImagePathFilter();
+            col.model->setFileNameFilter(fileNameFilter);
+            col.model->setCategoryFilter(categoryFilter);
+        }
     }
 
     updateAllColumnProgressLabels();
@@ -1569,6 +1663,102 @@ void BrowsePanel::updateAllColumnProgressLabels()
     for (int i = 0; i < m_columns.size(); ++i) {
         updateColumnProgressLabel(i);
     }
+}
+
+void BrowsePanel::setCategoryFilterAnchor(int column, FilterMatchMode mode)
+{
+    if (column < 0 || column >= m_columns.size()) {
+        return;
+    }
+
+    m_categoryFilterAnchorColumn = column;
+    m_categoryFilterMatchMode = mode;
+}
+
+void BrowsePanel::resetCategoryFilterAnchor()
+{
+    m_categoryFilterAnchorColumn = -1;
+    m_categoryFilterMatchMode = FilterMatchMode::SameIndex;
+}
+
+bool BrowsePanel::hasActiveCategoryFilterAnchor() const
+{
+    return !currentCategoryFilter().isEmpty() &&
+        m_categoryFilterAnchorColumn >= 0 &&
+        m_categoryFilterAnchorColumn < m_columns.size() &&
+        m_columns[m_categoryFilterAnchorColumn].model;
+}
+
+QSet<QString> BrowsePanel::matchedImagePathsForColumn(int column,
+                                                      int anchorColumn,
+                                                      FilterMatchMode mode) const
+{
+    QSet<QString> paths;
+    if (column < 0 || column >= m_columns.size() ||
+        anchorColumn < 0 || anchorColumn >= m_columns.size()) {
+        return paths;
+    }
+
+    const ImageListModel *anchorModel = m_columns[anchorColumn].model;
+    const ImageListModel *targetModel = m_columns[column].model;
+    if (!anchorModel || !targetModel) {
+        return paths;
+    }
+
+    paths.reserve(anchorModel->imageCount());
+    for (int row = 0; row < anchorModel->imageCount(); ++row) {
+        int targetSourceRow = -1;
+        if (mode == FilterMatchMode::SameIndex) {
+            targetSourceRow = anchorModel->sourceRowForRow(row);
+        } else {
+            targetSourceRow = findFileNameMatchSourceRow(column,
+                                                         anchorModel->fileNameAt(row));
+        }
+
+        const QString path = targetModel->imagePathAtSourceRow(targetSourceRow);
+        if (!path.isEmpty()) {
+            paths.insert(path);
+        }
+    }
+
+    return paths;
+}
+
+int BrowsePanel::findFileNameMatchSourceRow(int column, const QString &targetFileName) const
+{
+    if (column < 0 || column >= m_columns.size() || !m_columns[column].model) {
+        return -1;
+    }
+
+    const auto *model = m_columns[column].model;
+    if (!m_fuzzyFileNameMatch) {
+        for (int i = 0; i < model->unfilteredImageCount(); ++i) {
+            if (model->fileNameAtSourceRow(i) == targetFileName) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    int bestIndex = -1;
+    int bestDistance = std::numeric_limits<int>::max();
+    const int targetLen = targetFileName.size();
+    for (int i = 0; i < model->unfilteredImageCount(); ++i) {
+        const QString candidate = model->fileNameAtSourceRow(i);
+        if (qAbs(targetLen - candidate.size()) >= bestDistance) {
+            continue;
+        }
+        const int distance = levenshteinDistance(targetFileName, candidate);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = i;
+            if (bestDistance == 0) {
+                break;
+            }
+        }
+    }
+
+    return bestIndex;
 }
 
 int BrowsePanel::findFileNameMatchIndex(int column, const QString &targetFileName) const

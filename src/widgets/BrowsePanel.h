@@ -126,6 +126,11 @@ private:
         FileNameMatch
     };
 
+    enum class FilterMatchMode {
+        SameIndex,
+        FileName
+    };
+
     struct ColumnInfo {
         QWidget *columnWidget = nullptr;
         QVBoxLayout *containerLayout = nullptr;
@@ -188,6 +193,14 @@ private:
     void applyCurrentFilters();
     QString currentCategoryFilter() const;
     void updateAllColumnProgressLabels();
+    void setCategoryFilterAnchor(int column, FilterMatchMode mode);
+    void resetCategoryFilterAnchor();
+    bool hasActiveCategoryFilterAnchor() const;
+    QSet<QString> matchedImagePathsForColumn(int column,
+                                             int anchorColumn,
+                                             FilterMatchMode mode) const;
+    int findFileNameMatchSourceRow(int column,
+                                   const QString &targetFileName) const;
 
     int columnIndexForModel(const ImageListModel *model) const;
 
@@ -213,6 +226,8 @@ private:
     QTimer *m_decodeReloadTimer = nullptr;
     SelectionNavigationMode m_selectionNavigationMode = SelectionNavigationMode::Independent;
     int m_navigationAnchorColumn = -1;
+    int m_categoryFilterAnchorColumn = -1;
+    FilterMatchMode m_categoryFilterMatchMode = FilterMatchMode::SameIndex;
 
     static constexpr int kThumbnailBatchPerTick = 16;
 };

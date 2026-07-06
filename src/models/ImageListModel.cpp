@@ -222,9 +222,33 @@ QString ImageListModel::categoryFilter() const
     return m_categoryFilter;
 }
 
+void ImageListModel::setImagePathFilter(const QSet<QString> &imagePaths, bool enabled)
+{
+    const QSet<QString> normalized = enabled ? imagePaths : QSet<QString>{};
+    if (m_imagePathFilterEnabled == enabled && m_imagePathFilter == normalized) {
+        return;
+    }
+
+    m_imagePathFilterEnabled = enabled;
+    m_imagePathFilter = normalized;
+    applyFilters();
+}
+
+void ImageListModel::clearImagePathFilter()
+{
+    setImagePathFilter({}, false);
+}
+
+bool ImageListModel::hasImagePathFilter() const
+{
+    return m_imagePathFilterEnabled;
+}
+
 bool ImageListModel::hasActiveFilters() const
 {
-    return !m_fileNameFilter.isEmpty() || !m_categoryFilter.isEmpty();
+    return !m_fileNameFilter.isEmpty() ||
+        !m_categoryFilter.isEmpty() ||
+        m_imagePathFilterEnabled;
 }
 
 int ImageListModel::indexOfFileName(const QString &fileName) const
@@ -242,6 +266,33 @@ int ImageListModel::indexOfFileName(const QString &fileName) const
     }
 
     return m_fileNameToIndex.value(fileName, -1);
+}
+
+int ImageListModel::indexOfImagePath(const QString &imagePath) const
+{
+    const int sourceIndex = m_pathToIndex.value(imagePath, -1);
+    return rowForSourceIndex(sourceIndex);
+}
+
+int ImageListModel::sourceRowForRow(int row) const
+{
+    return sourceIndexForRow(row);
+}
+
+QString ImageListModel::imagePathAtSourceRow(int sourceRow) const
+{
+    if (sourceRow < 0 || sourceRow >= m_imagePaths.size()) {
+        return QString();
+    }
+    return m_imagePaths.at(sourceRow);
+}
+
+QString ImageListModel::fileNameAtSourceRow(int sourceRow) const
+{
+    if (sourceRow < 0 || sourceRow >= m_fileNames.size()) {
+        return QString();
+    }
+    return m_fileNames.at(sourceRow);
 }
 
 void ImageListModel::setSelected(int index, bool selected)
@@ -865,6 +916,10 @@ int ImageListModel::rowForSourceIndex(int sourceIndex) const
 bool ImageListModel::sourceImageMatchesFilters(int sourceIndex) const
 {
     if (sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+        return false;
+    }
+
+    if (m_imagePathFilterEnabled && !m_imagePathFilter.contains(m_imagePaths.at(sourceIndex))) {
         return false;
     }
 

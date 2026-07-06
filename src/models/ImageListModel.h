@@ -7,6 +7,7 @@
 #include <QHash>
 #include <QDateTime>
 #include <QSize>
+#include <QSet>
 #include <QVector>
 #include <QFuture>
 #include <list>
@@ -104,6 +105,9 @@ public:
      */
     void setCategoryFilter(const QString &category);
     QString categoryFilter() const;
+    void setImagePathFilter(const QSet<QString> &imagePaths, bool enabled = true);
+    void clearImagePathFilter();
+    bool hasImagePathFilter() const;
     bool hasActiveFilters() const;
 
     /**
@@ -112,6 +116,10 @@ public:
      * @return Index, or -1 if not found.
      */
     int indexOfFileName(const QString &fileName) const;
+    int indexOfImagePath(const QString &imagePath) const;
+    int sourceRowForRow(int row) const;
+    QString imagePathAtSourceRow(int sourceRow) const;
+    QString fileNameAtSourceRow(int sourceRow) const;
 
     // ---- Selection management ----
 
@@ -253,6 +261,8 @@ private:
     QList<int> m_filteredSourceRows;
     QString m_fileNameFilter;
     QString m_categoryFilter;
+    QSet<QString> m_imagePathFilter;
+    bool m_imagePathFilterEnabled = false;
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
     // LRU bookkeeping for m_thumbnails: MRU at the front, LRU at the back.
