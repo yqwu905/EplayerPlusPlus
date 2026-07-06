@@ -99,6 +99,9 @@ public:
     static ParsedResponse parseHttpResponse(int statusCode,
                                             const QByteArray &body,
                                             const QStringList &expectedIds);
+    static ParsedResponse parseStreamingHttpResponse(int statusCode,
+                                                     const QByteArray &body,
+                                                     const QStringList &expectedIds);
     static QUrl endpointUrl(const QString &baseUrl);
     static QNetworkRequest buildNetworkRequest(const ApiConfig &config);
     static QJsonObject buildChatCompletionsPayload(const ApiConfig &config,

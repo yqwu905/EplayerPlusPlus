@@ -4,7 +4,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHostAddress>
+#include <QSignalSpy>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
+
+#include <memory>
 
 #include "services/ImageMarkManager.h"
 #include "services/VlmAnnotationService.h"
@@ -19,6 +25,8 @@ private slots:
     void parseAnnotationJson_acceptsIdMappingsAndMarkdown();
     void parseAnnotationJson_rejectsSchemaProblems();
     void parseHttpResponse_handlesOpenAiAndHttpErrors();
+    void parseStreamingHttpResponse_handlesSseDeltasAndFallback();
+    void start_parsesStreamingNetworkResponse();
     void requestHelpers_buildOpenAiCompatiblePayload();
     void applyAcceptedResult_writesOnlyTarget();
 };
@@ -72,6 +80,52 @@ QString createImage(QTemporaryDir &dir, const QString &name, const QColor &color
         return QString();
     }
     return path;
+}
+
+QByteArray streamChunk(const QString &content)
+{
+    QJsonObject delta;
+    delta.insert(QStringLiteral("content"), content);
+    QJsonObject choice;
+    choice.insert(QStringLiteral("delta"), delta);
+    QJsonObject root;
+    root.insert(QStringLiteral("choices"), QJsonArray{choice});
+    return "data: " + QJsonDocument(root).toJson(QJsonDocument::Compact) + "\n\n";
+}
+
+int requestContentLength(const QByteArray &request)
+{
+    const QList<QByteArray> lines = request.left(request.indexOf("\r\n\r\n")).split('\n');
+    for (QByteArray line : lines) {
+        line = line.trimmed();
+        if (!line.toLower().startsWith("content-length:")) {
+            continue;
+        }
+        return line.mid(line.indexOf(':') + 1).trimmed().toInt();
+    }
+    return 0;
+}
+
+void writeHttpChunk(QTcpSocket *socket, const QByteArray &chunk)
+{
+    socket->write(QByteArray::number(chunk.size(), 16));
+    socket->write("\r\n");
+    socket->write(chunk);
+    socket->write("\r\n");
+}
+
+void writeStreamingResponse(QTcpSocket *socket, const QString &content)
+{
+    socket->write("HTTP/1.1 200 OK\r\n"
+                  "Content-Type: text/event-stream; charset=utf-8\r\n"
+                  "Transfer-Encoding: chunked\r\n"
+                  "Connection: close\r\n"
+                  "\r\n");
+    writeHttpChunk(socket, streamChunk(content.left(20)));
+    writeHttpChunk(socket, streamChunk(content.mid(20)));
+    writeHttpChunk(socket, "data: [DONE]\n\n");
+    socket->write("0\r\n\r\n");
+    socket->disconnectFromHost();
 }
 }
 
@@ -189,6 +243,114 @@ void tst_VlmAnnotationService::parseHttpResponse_handlesOpenAiAndHttpErrors()
         Service::parseHttpResponse(500, QByteArrayLiteral("{\"error\":\"boom\"}"), {"T0001"});
     QVERIFY(!failed.ok);
     QVERIFY(failed.error.contains(QStringLiteral("HTTP 500")));
+}
+
+void tst_VlmAnnotationService::parseStreamingHttpResponse_handlesSseDeltasAndFallback()
+{
+    const QString content =
+        QStringLiteral("{\"result\":{\"T0001\":\"B\"},\"reason\":{\"T0001\":\"stream ok\"}}");
+    QByteArray body;
+    body += "event: message\n";
+    body += streamChunk(content.left(18));
+    body += streamChunk(content.mid(18));
+    body += "data: [DONE]\n\n";
+
+    const Service::ParsedResponse streamed =
+        Service::parseStreamingHttpResponse(200, body, {"T0001"});
+    QVERIFY2(streamed.ok, qPrintable(streamed.error));
+    QCOMPARE(streamed.categories.value(QStringLiteral("T0001")), QStringLiteral("B"));
+    QCOMPARE(streamed.reasons.value(QStringLiteral("T0001")), QStringLiteral("stream ok"));
+
+    QJsonObject message;
+    message.insert(QStringLiteral("content"),
+                   QStringLiteral("{\"result\":{\"T0001\":\"E\"},\"reason\":{\"T0001\":\"full json\"}}"));
+    QJsonObject choice;
+    choice.insert(QStringLiteral("message"), message);
+    QJsonObject response;
+    response.insert(QStringLiteral("choices"), QJsonArray{choice});
+
+    const Service::ParsedResponse fallback =
+        Service::parseStreamingHttpResponse(200,
+                                            QJsonDocument(response).toJson(QJsonDocument::Compact),
+                                            {"T0001"});
+    QVERIFY2(fallback.ok, qPrintable(fallback.error));
+    QCOMPARE(fallback.categories.value(QStringLiteral("T0001")), QStringLiteral("E"));
+}
+
+void tst_VlmAnnotationService::start_parsesStreamingNetworkResponse()
+{
+    QTemporaryDir targetDir;
+    QVERIFY(targetDir.isValid());
+    QVERIFY(!createImage(targetDir, QStringLiteral("target.png"), Qt::red).isEmpty());
+
+    QTcpServer server;
+    if (!server.listen(QHostAddress::LocalHost, 0)) {
+        QSKIP(qPrintable(QStringLiteral("Local TCP listen unavailable: %1")
+                             .arg(server.errorString())),
+              SkipSingle);
+    }
+
+    const QString streamedContent =
+        QStringLiteral("{\"result\":{\"T0001\":\"D\"},\"reason\":{\"T0001\":\"network stream\"}}");
+    connect(&server, &QTcpServer::newConnection, this, [&server, streamedContent]() {
+        QTcpSocket *socket = server.nextPendingConnection();
+        QVERIFY(socket);
+
+        auto request = std::make_shared<QByteArray>();
+        auto responded = std::make_shared<bool>(false);
+        connect(socket, &QTcpSocket::readyRead, socket, [socket, request, responded, streamedContent]() {
+            request->append(socket->readAll());
+            if (*responded) {
+                return;
+            }
+
+            const int headerEnd = request->indexOf("\r\n\r\n");
+            if (headerEnd < 0) {
+                return;
+            }
+            const int contentLength = requestContentLength(*request);
+            if (request->size() < headerEnd + 4 + contentLength) {
+                return;
+            }
+
+            *responded = true;
+            writeStreamingResponse(socket, streamedContent);
+        });
+    });
+
+    Service::Task task;
+    task.id = QStringLiteral("T0001");
+    task.target = item(0, 0, targetDir.path(), QStringLiteral("target.png"));
+
+    Service::ApiConfig config;
+    config.baseUrl = QStringLiteral("http://127.0.0.1:%1/v1").arg(server.serverPort());
+    config.model = QStringLiteral("streaming-model");
+    config.userPrompt = QStringLiteral("Classify.");
+
+    Service service;
+    QSignalSpy succeededSpy(&service, &Service::itemSucceeded);
+    QSignalSpy failedSpy(&service, &Service::itemFailed);
+    QSignalSpy finishedSpy(&service, &Service::finished);
+    QSignalSpy statusSpy(&service, &Service::itemStatusChanged);
+
+    service.start(config, {task});
+
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(succeededSpy.count(), 1);
+    QCOMPARE(succeededSpy.first().at(0).toInt(), 0);
+    QCOMPARE(succeededSpy.first().at(1).toString(), QStringLiteral("T0001"));
+    QCOMPARE(succeededSpy.first().at(2).toString(), QStringLiteral("D"));
+    QCOMPARE(succeededSpy.first().at(3).toString(), QStringLiteral("network stream"));
+
+    bool sawStreamingStatus = false;
+    for (const auto &call : statusSpy) {
+        if (call.at(2).toString().contains(QStringLiteral("流式响应"))) {
+            sawStreamingStatus = true;
+            break;
+        }
+    }
+    QVERIFY(sawStreamingStatus);
 }
 
 void tst_VlmAnnotationService::requestHelpers_buildOpenAiCompatiblePayload()

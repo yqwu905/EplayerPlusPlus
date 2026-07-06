@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace
@@ -89,6 +90,137 @@ void flushStatusEvents()
     if (QCoreApplication::instance()) {
         QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     }
+}
+
+struct StreamingReplyState {
+    QByteArray rawBody;
+    QByteArray pendingLine;
+    QString content;
+    QString error;
+    bool sawStreamData = false;
+    bool sawDone = false;
+};
+
+QString contentFromChoice(const QJsonObject &choice)
+{
+    const QJsonObject delta = choice.value(QStringLiteral("delta")).toObject();
+    const QJsonValue deltaContent = delta.value(QStringLiteral("content"));
+    if (deltaContent.isString()) {
+        return deltaContent.toString();
+    }
+
+    const QJsonObject message = choice.value(QStringLiteral("message")).toObject();
+    const QJsonValue messageContent = message.value(QStringLiteral("content"));
+    if (messageContent.isString()) {
+        return messageContent.toString();
+    }
+
+    const QJsonValue text = choice.value(QStringLiteral("text"));
+    return text.isString() ? text.toString() : QString();
+}
+
+bool appendStreamingJsonPayload(StreamingReplyState *state, const QByteArray &payload)
+{
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (state && state->error.isEmpty()) {
+            state->error = QObject::tr("流式 JSON 解析失败：%1").arg(parseError.errorString());
+        }
+        return false;
+    }
+
+    if (!state) {
+        return false;
+    }
+
+    const QJsonObject root = document.object();
+    const QJsonValue errorValue = root.value(QStringLiteral("error"));
+    if (errorValue.isObject() && state->error.isEmpty()) {
+        state->error = errorValue.toObject().value(QStringLiteral("message")).toString(
+            QString::fromUtf8(payload).trimmed());
+    } else if (errorValue.isString() && state->error.isEmpty()) {
+        state->error = errorValue.toString();
+    }
+
+    const QJsonArray choices = root.value(QStringLiteral("choices")).toArray();
+    if (!choices.isEmpty()) {
+        state->sawStreamData = true;
+        for (const QJsonValue &choiceValue : choices) {
+            state->content += contentFromChoice(choiceValue.toObject());
+        }
+        return true;
+    }
+
+    if (root.value(QStringLiteral("result")).isObject() &&
+        root.value(QStringLiteral("reason")).isObject()) {
+        state->sawStreamData = true;
+        state->content += QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+        return true;
+    }
+
+    return false;
+}
+
+void processStreamingLine(StreamingReplyState *state, QByteArray line)
+{
+    if (!state) {
+        return;
+    }
+    if (line.endsWith('\r')) {
+        line.chop(1);
+    }
+
+    const QByteArray trimmed = line.trimmed();
+    if (trimmed.isEmpty() || trimmed.startsWith(':')) {
+        return;
+    }
+
+    QByteArray payload;
+    if (trimmed.startsWith("data:")) {
+        payload = trimmed.mid(5).trimmed();
+    } else if (trimmed.startsWith('{')) {
+        payload = trimmed;
+    } else {
+        return;
+    }
+
+    if (payload == "[DONE]") {
+        state->sawStreamData = true;
+        state->sawDone = true;
+        return;
+    }
+
+    appendStreamingJsonPayload(state, payload);
+}
+
+void processStreamingChunk(StreamingReplyState *state, const QByteArray &chunk)
+{
+    if (!state || chunk.isEmpty()) {
+        return;
+    }
+
+    state->rawBody += chunk;
+    state->pendingLine += chunk;
+    while (true) {
+        const int newline = state->pendingLine.indexOf('\n');
+        if (newline < 0) {
+            break;
+        }
+        const QByteArray line = state->pendingLine.left(newline);
+        state->pendingLine.remove(0, newline + 1);
+        processStreamingLine(state, line);
+    }
+}
+
+void finalizeStreamingState(StreamingReplyState *state)
+{
+    if (!state || state->pendingLine.isEmpty()) {
+        return;
+    }
+    const QByteArray line = state->pendingLine;
+    state->pendingLine.clear();
+    processStreamingLine(state, line);
 }
 
 }
@@ -311,6 +443,40 @@ VlmAnnotationService::ParsedResponse VlmAnnotationService::parseHttpResponse(
     }
 
     return parseAnnotationJson(body, expectedIds);
+}
+
+VlmAnnotationService::ParsedResponse VlmAnnotationService::parseStreamingHttpResponse(
+    int statusCode,
+    const QByteArray &body,
+    const QStringList &expectedIds)
+{
+    ParsedResponse parsed;
+    if (statusCode < 200 || statusCode >= 300) {
+        const QString summary = QString::fromUtf8(body).trimmed().left(500);
+        parsed.error = QObject::tr("HTTP %1：%2").arg(statusCode).arg(summary);
+        return parsed;
+    }
+
+    StreamingReplyState state;
+    processStreamingChunk(&state, body);
+    finalizeStreamingState(&state);
+
+    if (!state.sawStreamData) {
+        return parseHttpResponse(statusCode, body, expectedIds);
+    }
+
+    if (state.content.trimmed().isEmpty()) {
+        parsed.error = state.error.isEmpty()
+            ? QObject::tr("流式响应没有输出 message.content")
+            : state.error;
+        return parsed;
+    }
+
+    parsed = parseAnnotationJson(state.content.toUtf8(), expectedIds);
+    if (!parsed.ok && !state.error.isEmpty()) {
+        parsed.error = QObject::tr("%1；流式错误：%2").arg(parsed.error, state.error);
+    }
+    return parsed;
 }
 
 QUrl VlmAnnotationService::endpointUrl(const QString &baseUrl)
@@ -599,6 +765,7 @@ bool VlmAnnotationService::sendBatch(int batchStart,
                         .arg(batchImageCount));
 
     QNetworkReply *reply = m_network.post(buildNetworkRequest(m_config), requestBody);
+    auto streamState = std::make_shared<StreamingReplyState>();
     m_currentReplies.insert(reply);
     emit progressChanged(m_completed,
                          m_tasks.size(),
@@ -621,8 +788,21 @@ bool VlmAnnotationService::sendBatch(int batchStart,
         emitBatchStatus(QObject::tr("接收响应：批次 %1，已接收 %2 / %3")
                             .arg(batchLabel, byteCountText(bytesReceived), total));
     });
+    connect(reply, &QNetworkReply::readyRead, this,
+            [reply, streamState, emitBatchStatus, batchLabel]() {
+        const QByteArray chunk = reply->readAll();
+        processStreamingChunk(streamState.get(), chunk);
+        if (streamState->sawStreamData) {
+            emitBatchStatus(QObject::tr("接收流式响应：批次 %1，原始数据 %2，已聚合 content %3 字符")
+                                .arg(batchLabel)
+                                .arg(byteCountText(streamState->rawBody.size()))
+                                .arg(streamState->content.size()));
+        }
+    });
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, batchStart, batch, expectedIds, retryCount, format]() {
+            [this, reply, streamState, batchStart, batch, expectedIds, retryCount, format]() {
+        processStreamingChunk(streamState.get(), reply->readAll());
+        finalizeStreamingState(streamState.get());
         reply->deleteLater();
         m_currentReplies.remove(reply);
 
@@ -632,22 +812,31 @@ bool VlmAnnotationService::sendBatch(int batchStart,
         }
 
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QByteArray body = reply->readAll();
+        const QByteArray body = streamState->rawBody;
         const QString batchLabel = batch.size() == 1
             ? batch.first().id
             : tr("%1-%2").arg(batch.first().id, batch.last().id);
+        const QString parseStatus = streamState->sawStreamData
+            ? tr("解析流式响应：批次 %1，HTTP %2，原始响应 %3，聚合 content %4 字符")
+                  .arg(batchLabel)
+                  .arg(statusCode)
+                  .arg(byteCountText(body.size()))
+                  .arg(streamState->content.size())
+            : tr("解析响应：批次 %1，HTTP %2，响应体 %3")
+                  .arg(batchLabel)
+                  .arg(statusCode)
+                  .arg(byteCountText(body.size()));
         for (int i = 0; i < batch.size(); ++i) {
             emit itemStatusChanged(batchStart + i,
                                    batch.at(i).id,
-                                   tr("解析响应：批次 %1，HTTP %2，响应体 %3")
-                                       .arg(batchLabel)
-                                       .arg(statusCode)
-                                       .arg(byteCountText(body.size())));
+                                   parseStatus);
         }
 
         ParsedResponse parsed;
         if (reply->error() != QNetworkReply::NoError && statusCode == 0) {
             parsed.error = reply->errorString();
+        } else if (streamState->sawStreamData) {
+            parsed = parseStreamingHttpResponse(statusCode, body, expectedIds);
         } else {
             parsed = parseHttpResponse(statusCode, body, expectedIds);
         }
