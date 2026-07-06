@@ -4,6 +4,7 @@
 #include "SettingsDialog.h"
 
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -73,11 +74,34 @@ VlmAnnotationDialog::~VlmAnnotationDialog()
     }
 }
 
+void VlmAnnotationDialog::closeEvent(QCloseEvent *event)
+{
+    if (m_service && m_service->isRunning()) {
+        event->ignore();
+        showMinimized();
+        return;
+    }
+
+    QDialog::closeEvent(event);
+}
+
+void VlmAnnotationDialog::reject()
+{
+    if (m_service && m_service->isRunning()) {
+        showMinimized();
+        return;
+    }
+
+    QDialog::reject();
+}
+
 void VlmAnnotationDialog::setupUi()
 {
     setWindowTitle(tr("AI 标注"));
+    setWindowModality(Qt::NonModal);
+    setWindowFlag(Qt::WindowMinimizeButtonHint, true);
     resize(920, 720);
-    setModal(true);
+    setModal(false);
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(16, 16, 16, 16);
@@ -188,11 +212,14 @@ void VlmAnnotationDialog::setupUi()
     m_cancelButton->setObjectName(QStringLiteral("vlmCancelButton"));
     m_exportButton = new QPushButton(tr("导出报告"), this);
     m_exportButton->setObjectName(QStringLiteral("vlmExportButton"));
+    m_minimizeButton = new QPushButton(tr("最小化"), this);
+    m_minimizeButton->setObjectName(QStringLiteral("vlmMinimizeButton"));
     m_closeButton = new QPushButton(tr("关闭"), this);
     m_closeButton->setObjectName(QStringLiteral("vlmCloseButton"));
     buttons->addWidget(m_runButton);
     buttons->addWidget(m_cancelButton);
     buttons->addWidget(m_exportButton);
+    buttons->addWidget(m_minimizeButton);
     buttons->addWidget(m_closeButton);
     root->addLayout(buttons);
 
@@ -213,6 +240,8 @@ void VlmAnnotationDialog::setupUi()
             this, &VlmAnnotationDialog::onCancelClicked);
     connect(m_exportButton, &QPushButton::clicked,
             this, &VlmAnnotationDialog::onExportClicked);
+    connect(m_minimizeButton, &QPushButton::clicked,
+            this, &QWidget::showMinimized);
     connect(m_resultTable, &QTableWidget::itemDoubleClicked,
             this, &VlmAnnotationDialog::onResultItemDoubleClicked);
     connect(m_closeButton, &QPushButton::clicked,

@@ -3,6 +3,7 @@
 #include <QAction>
 #include <QImage>
 #include <QListView>
+#include <QPushButton>
 #include <QSplitter>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -13,6 +14,7 @@
 #include "models/ImageListModel.h"
 #include "widgets/BrowsePanel.h"
 #include "widgets/ComparePanel.h"
+#include "widgets/VlmAnnotationDialog.h"
 
 class tst_MainWindow : public QObject
 {
@@ -21,6 +23,7 @@ class tst_MainWindow : public QObject
 private slots:
     void commandBar_removesDeadMenuAndBrowseButtons();
     void commandBar_includesAiAnnotationButton();
+    void vlmAnnotationDialog_opensModelessAndReusesWindow();
     void commandBar_compareModeButtonsControlComparePanel();
     void directionKeys_navigateBrowseSelection();
     void browsePanel_notCollapsibleButHidableByToggle();
@@ -109,6 +112,42 @@ void tst_MainWindow::commandBar_includesAiAnnotationButton()
     QVERIFY(commandTexts.contains(QStringLiteral("AI 标注")));
     QVERIFY(commandTexts.contains(QStringLiteral("设置")));
     QVERIFY(!commandTexts.contains(QStringLiteral("VLM 设置")));
+}
+
+void tst_MainWindow::vlmAnnotationDialog_opensModelessAndReusesWindow()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    QToolButton *annotationButton = nullptr;
+    const auto buttons = window.findChildren<QToolButton *>(
+        QStringLiteral("commandButton"));
+    for (QToolButton *button : buttons) {
+        if (button->text() == QStringLiteral("AI 标注")) {
+            annotationButton = button;
+            break;
+        }
+    }
+    QVERIFY(annotationButton != nullptr);
+
+    QTest::mouseClick(annotationButton, Qt::LeftButton);
+
+    VlmAnnotationDialog *dialog = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((dialog = window.findChild<VlmAnnotationDialog *>()) != nullptr, 1000);
+    QVERIFY(!dialog->isModal());
+    QCOMPARE(dialog->windowModality(), Qt::NonModal);
+    QVERIFY(dialog->windowFlags() & Qt::WindowMinimizeButtonHint);
+    QVERIFY(window.isEnabled());
+
+    auto *minimizeButton = dialog->findChild<QPushButton *>(QStringLiteral("vlmMinimizeButton"));
+    QVERIFY(minimizeButton != nullptr);
+    QVERIFY(minimizeButton->isEnabled());
+
+    QTest::mouseClick(annotationButton, Qt::LeftButton);
+    QCOMPARE(window.findChildren<VlmAnnotationDialog *>().size(), 1);
+
+    dialog->close();
 }
 
 void tst_MainWindow::commandBar_compareModeButtonsControlComparePanel()

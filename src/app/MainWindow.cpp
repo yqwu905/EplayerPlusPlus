@@ -450,9 +450,22 @@ void MainWindow::showVlmAnnotationDialog()
         return;
     }
 
+    if (m_vlmAnnotationDialog) {
+        m_vlmAnnotationDialog->showNormal();
+        m_vlmAnnotationDialog->raise();
+        m_vlmAnnotationDialog->activateWindow();
+        return;
+    }
+
     const auto snapshots = m_browsePanel->currentColumnSnapshots();
-    VlmAnnotationDialog dialog(snapshots, m_settingsManager, m_imageMarkManager, this);
-    dialog.exec();
+    m_vlmAnnotationDialog = new VlmAnnotationDialog(snapshots, m_settingsManager, m_imageMarkManager, this);
+    m_vlmAnnotationDialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(m_vlmAnnotationDialog, &QObject::destroyed, this, [this]() {
+        m_vlmAnnotationDialog = nullptr;
+    });
+    m_vlmAnnotationDialog->show();
+    m_vlmAnnotationDialog->raise();
+    m_vlmAnnotationDialog->activateWindow();
 }
 
 void MainWindow::showSettingsDialog()

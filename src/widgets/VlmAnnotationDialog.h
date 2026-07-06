@@ -9,6 +9,7 @@
 #include "services/VlmAnnotationService.h"
 
 class QCheckBox;
+class QCloseEvent;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -31,6 +32,10 @@ public:
                                  ImageMarkManager *markManager,
                                  QWidget *parent = nullptr);
     ~VlmAnnotationDialog() override;
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
+    void reject() override;
 
 private slots:
     void updateRunButtonState();
@@ -96,6 +101,7 @@ private:
     QPushButton *m_runButton = nullptr;
     QPushButton *m_cancelButton = nullptr;
     QPushButton *m_exportButton = nullptr;
+    QPushButton *m_minimizeButton = nullptr;
     QPushButton *m_closeButton = nullptr;
 
     QList<VlmAnnotationService::Task> m_tasks;

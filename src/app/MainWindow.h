@@ -15,6 +15,7 @@ class SettingsManager;
 class CompareSession;
 class ImageLoader;
 class ImageMarkManager;
+class VlmAnnotationDialog;
 
 /**
  * @brief The MainWindow class
@@ -71,6 +72,7 @@ private:
     QAction *m_vlmAnnotationAction = nullptr;
     QLabel *m_thresholdValueLabel = nullptr;
     QSlider *m_thresholdSlider = nullptr;
+    VlmAnnotationDialog *m_vlmAnnotationDialog = nullptr;
 
     // Saved sizes for restoring collapsed panels
     QList<int> m_savedSplitterSizes;
