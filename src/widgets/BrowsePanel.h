@@ -141,6 +141,7 @@ private:
         int discoveredCount = 0;
         bool scanFinished = false;
         bool thumbnailRequestScheduled = false;
+        int pendingAutoSelectRow = -1;
     };
 
     void setupUi();
@@ -154,6 +155,7 @@ private:
     void onDecodeReloadTimeout();
     void updateColumnVisuals(int columnIndex);
     void clearSelection();
+    bool selectFallbackAfterFilteredRemoval(int column, int preferredRow);
     void navigateSelection(int delta);
     bool navigateFileNameMatchedSelection(int delta);
     bool navigateIndependentSelection(int delta);

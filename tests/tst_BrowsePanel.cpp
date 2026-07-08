@@ -35,6 +35,7 @@ private slots:
     void altClick_exactVsFuzzyFileNameMatch();
     void markButtons_clickPersistsAndCtrlClickMarksSameRow();
     void filters_fileNameAndCategoryLimitVisibleRows();
+    void categoryFilter_markingSelectedImageSelectsNextVisibleRow();
     void categoryFilter_ctrlClickAnchorsSameIndexRowsAcrossColumns();
     void categoryFilter_altClickAnchorsFuzzyFileNameMatchesAcrossColumns();
     void selection_preloadsPreviousAndNextThreeImages();
@@ -449,6 +450,57 @@ void tst_BrowsePanel::filters_fileNameAndCategoryLimitVisibleRows()
     QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 2, 1000);
     QVERIFY(rowByFileName(views[0], QStringLiteral("alpha_cat.png")) >= 0);
     QVERIFY(rowByFileName(views[0], QStringLiteral("alpha_dog.png")) >= 0);
+}
+
+void tst_BrowsePanel::categoryFilter_markingSelectedImageSelectsNextVisibleRow()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QImage image(16, 16, QImage::Format_ARGB32);
+    image.fill(Qt::darkBlue);
+    QStringList paths;
+    for (int i = 0; i < 3; ++i) {
+        const QString path = dir.filePath(QString("img_%1.png").arg(i, 2, 10, QChar('0')));
+        QVERIFY(image.save(path));
+        paths.append(path);
+    }
+
+    ImageMarkManager marks;
+    for (const QString &path : paths) {
+        QVERIFY(marks.setMarkForImage(dir.path(), path, "A"));
+    }
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(700, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(dir.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
+    waitForRows(views[0], 3);
+
+    auto *categoryFilter = panel.findChild<QComboBox *>("categoryFilterComboBox");
+    QVERIFY(categoryFilter != nullptr);
+    const int categoryAIndex = categoryFilter->findData(QStringLiteral("A"));
+    QVERIFY(categoryAIndex >= 0);
+    categoryFilter->setCurrentIndex(categoryAIndex);
+    QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 3, 1000);
+
+    clickRow(views[0], 0);
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], 0), 1000);
+
+    clickMarkButton(views[0], 0, 1); // B
+    QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 2, 1000);
+    QCOMPARE(rowByFileName(views[0], QStringLiteral("img_00.png")), -1);
+    QCOMPARE(rowByFileName(views[0], QStringLiteral("img_01.png")), 0);
+    QTRY_VERIFY_WITH_TIMEOUT(isRowSelected(views[0], 0), 1000);
+    QCOMPARE(marks.markForImage(dir.path(), paths.at(0)), QStringLiteral("B"));
 }
 
 void tst_BrowsePanel::categoryFilter_ctrlClickAnchorsSameIndexRowsAcrossColumns()

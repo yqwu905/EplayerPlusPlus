@@ -998,6 +998,31 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         }
     });
 
+    connect(col.model, &QAbstractItemModel::rowsAboutToBeRemoved,
+            this, [this, modelPtr](const QModelIndex &parent, int first, int last) {
+        if (parent.isValid() || currentCategoryFilter().isEmpty()) {
+            return;
+        }
+        const int currentIndex = columnIndexForModel(modelPtr);
+        if (currentIndex < 0) {
+            return;
+        }
+
+        auto &column = m_columns[currentIndex];
+        column.pendingAutoSelectRow = -1;
+        if (!column.model || !column.model->hasActiveFilters()) {
+            return;
+        }
+
+        const QList<int> selectedRows = column.model->selectedIndices();
+        for (int selectedRow : selectedRows) {
+            if (selectedRow >= first && selectedRow <= last) {
+                column.pendingAutoSelectRow = first;
+                return;
+            }
+        }
+    });
+
     connect(col.model, &QAbstractItemModel::rowsRemoved,
             this, [this, modelPtr](const QModelIndex &parent, int /*first*/, int /*last*/) {
         if (parent.isValid()) {
@@ -1008,11 +1033,21 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
             return;
         }
 
+        const int pendingAutoSelectRow = m_columns[currentIndex].pendingAutoSelectRow;
+        m_columns[currentIndex].pendingAutoSelectRow = -1;
+
         updateColumnProgressLabel(currentIndex);
         updateGlobalScanStatus();
         if (hasActiveCategoryFilterAnchor() &&
             currentIndex == m_categoryFilterAnchorColumn) {
             applyCurrentFilters();
+            if (pendingAutoSelectRow >= 0) {
+                selectFallbackAfterFilteredRemoval(currentIndex, pendingAutoSelectRow);
+            }
+            return;
+        }
+        if (pendingAutoSelectRow >= 0) {
+            selectFallbackAfterFilteredRemoval(currentIndex, pendingAutoSelectRow);
         }
     });
 
@@ -1532,6 +1567,64 @@ void BrowsePanel::clearSelection()
     for (auto &col : m_columns) {
         col.model->clearSelection();
     }
+}
+
+bool BrowsePanel::selectFallbackAfterFilteredRemoval(int column, int preferredRow)
+{
+    if (column < 0 || column >= m_columns.size()) {
+        return false;
+    }
+
+    ColumnInfo &anchorColumn = m_columns[column];
+    ImageListModel *anchorModel = anchorColumn.model;
+    if (!anchorModel || anchorModel->imageCount() <= 0 ||
+        !anchorModel->selectedIndices().isEmpty()) {
+        return false;
+    }
+
+    const int nextRow = qBound(0, preferredRow, anchorModel->imageCount() - 1);
+    QList<int> matchedIndices(m_columns.size(), -1);
+    matchedIndices[column] = nextRow;
+
+    if (hasActiveCategoryFilterAnchor() && column == m_categoryFilterAnchorColumn) {
+        for (int c = 0; c < m_columns.size(); ++c) {
+            if (c == column || !m_columns[c].model) {
+                continue;
+            }
+
+            if (m_categoryFilterMatchMode == FilterMatchMode::SameIndex) {
+                const int targetSourceRow = anchorModel->sourceRowForRow(nextRow);
+                const QString targetPath =
+                    m_columns[c].model->imagePathAtSourceRow(targetSourceRow);
+                matchedIndices[c] = m_columns[c].model->indexOfImagePath(targetPath);
+            } else {
+                matchedIndices[c] = findFileNameMatchIndex(c, anchorModel->fileNameAt(nextRow));
+            }
+        }
+        if (m_categoryFilterMatchMode == FilterMatchMode::FileName) {
+            setSelectionNavigationMode(SelectionNavigationMode::FileNameMatch, column);
+        }
+    }
+
+    clearSelection();
+    for (int c = 0; c < m_columns.size(); ++c) {
+        const int row = matchedIndices.value(c, -1);
+        if (m_columns[c].model && row >= 0 && row < m_columns[c].model->imageCount()) {
+            m_columns[c].model->setSelected(row, true);
+        }
+    }
+
+    if (anchorColumn.view) {
+        anchorColumn.view->scrollTo(anchorModel->index(nextRow),
+                                    QAbstractItemView::PositionAtCenter);
+    }
+    if (hasActiveCategoryFilterAnchor() && column == m_categoryFilterAnchorColumn) {
+        alignColumnsToAnchor(column, nextRow, matchedIndices);
+    }
+
+    requestVisibleThumbnailsForAllColumns();
+    emitSelectionChanged();
+    return true;
 }
 
 void BrowsePanel::clearColumnSelection(int column)
