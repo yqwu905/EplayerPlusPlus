@@ -1196,7 +1196,7 @@ void ImageMarkManager::scheduleCompaction(const QString &normalizedFolderPath)
 qint64 ImageMarkManager::nextJournalTimestamp()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const qint64 incremented = m_lastJournalTimestamp == std::numeric_limits<qint64>::max()
+    const qint64 incremented = m_lastJournalTimestamp == (std::numeric_limits<qint64>::max)()
         ? m_lastJournalTimestamp
         : m_lastJournalTimestamp + 1;
     m_lastJournalTimestamp = qMax(now, incremented);
