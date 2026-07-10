@@ -12,6 +12,7 @@ ZoomableImageWidget::ZoomableImageWidget(QWidget *parent)
     setFocusPolicy(Qt::StrongFocus);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setMinimumSize(200, 200);
+    setAttribute(Qt::WA_OpaquePaintEvent);
 }
 
 ZoomableImageWidget::~ZoomableImageWidget() = default;
@@ -146,9 +147,20 @@ void ZoomableImageWidget::paintEvent(QPaintEvent * /*event*/)
     double ox = (width() - imgW) / 2.0 + m_panOffset.x() * scale;
     double oy = (height() - imgH) / 2.0 + m_panOffset.y() * scale;
 
-    painter.translate(ox, oy);
-    painter.scale(scale, scale);
-    painter.drawImage(0, 0, m_image);
+    const QRectF targetRect(ox, oy, imgW, imgH);
+    const QRectF visibleTarget = targetRect.intersected(QRectF(rect()));
+    if (visibleTarget.isEmpty()) {
+        return;
+    }
+
+    // Explicit source clipping prevents the raster backend from sampling the
+    // entire full-resolution image during a deep zoom/pan when only a small
+    // viewport-sized region can contribute pixels.
+    const QRectF sourceRect((visibleTarget.left() - targetRect.left()) / scale,
+                            (visibleTarget.top() - targetRect.top()) / scale,
+                            visibleTarget.width() / scale,
+                            visibleTarget.height() / scale);
+    painter.drawImage(visibleTarget, m_image, sourceRect);
 }
 
 // ---- Mouse interaction ----

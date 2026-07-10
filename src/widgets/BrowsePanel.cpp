@@ -8,6 +8,7 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QColorSpace>
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDataStream>
@@ -483,6 +484,14 @@ public:
         return QSize(m.cardWidth + 16, m.itemHeight);
     }
 
+    void clearCoverCache()
+    {
+        m_coverCache.clear();
+        m_coverLru.clear();
+        m_coverTargetSize = QSize();
+        m_coverBytes = 0;
+    }
+
     void paint(QPainter *painter,
                const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
@@ -588,6 +597,7 @@ private:
             // it for all of them, so the whole cache is stale at once.
             m_coverCache.clear();
             m_coverLru.clear();
+            m_coverBytes = 0;
             m_coverTargetSize = target;
         }
         const qint64 key = src.cacheKey();
@@ -597,23 +607,58 @@ private:
             m_coverLru.prepend(key);
             return it.value();
         }
-        QImage cover = src.scaled(target, Qt::KeepAspectRatioByExpanding,
-                                  Qt::SmoothTransformation);
+        // Draw from the centered source crop directly into a target-sized
+        // buffer. KeepAspectRatioByExpanding first created the entire expanded
+        // image and relied on the delegate clip, which could make an extreme
+        // panorama/portrait consume several MiB for a 460x287 card.
+        QRect sourceRect = src.rect();
+        const double sourceAspect = double(src.width()) / qMax(1, src.height());
+        const double targetAspect = double(target.width()) / qMax(1, target.height());
+        if (sourceAspect > targetAspect) {
+            const int cropWidth = qBound(1,
+                                         qRound(src.height() * targetAspect),
+                                         src.width());
+            sourceRect.setLeft((src.width() - cropWidth) / 2);
+            sourceRect.setWidth(cropWidth);
+        } else if (sourceAspect < targetAspect) {
+            const int cropHeight = qBound(1,
+                                          qRound(src.width() / targetAspect),
+                                          src.height());
+            sourceRect.setTop((src.height() - cropHeight) / 2);
+            sourceRect.setHeight(cropHeight);
+        }
+
+        QImage cover(target, QImage::Format_ARGB32_Premultiplied);
+        cover.fill(Qt::transparent);
+        QPainter coverPainter(&cover);
+        coverPainter.setRenderHint(QPainter::SmoothPixmapTransform);
+        coverPainter.drawImage(cover.rect(), src, sourceRect);
+        coverPainter.end();
+        cover.setColorSpace(src.colorSpace());
         m_coverCache.insert(key, cover);
         m_coverLru.prepend(key);
-        while (m_coverLru.size() > kCoverCacheCap) {
-            m_coverCache.remove(m_coverLru.takeLast());
+        m_coverBytes += cover.sizeInBytes();
+        while (m_coverLru.size() > kCoverCacheCap ||
+               m_coverBytes > kCoverCacheByteCap) {
+            const qint64 victim = m_coverLru.takeLast();
+            const auto victimIt = m_coverCache.constFind(victim);
+            if (victimIt != m_coverCache.constEnd()) {
+                m_coverBytes -= victimIt->sizeInBytes();
+            }
+            m_coverCache.remove(victim);
         }
         return cover;
     }
 
-    static constexpr int kCoverCacheCap = 96;
+    static constexpr int kCoverCacheCap = 64;
+    static constexpr qsizetype kCoverCacheByteCap = 24 * 1024 * 1024;
 
     QColor m_accentColor;
     const ThumbMetrics *m_metrics = nullptr;
     mutable QHash<qint64, QImage> m_coverCache;
     mutable QList<qint64> m_coverLru; // front = most-recently used
     mutable QSize m_coverTargetSize;
+    mutable qsizetype m_coverBytes = 0;
 };
 
 int rowExtent(const QListView *view, const ThumbMetrics &m)
@@ -638,6 +683,30 @@ BrowsePanel::BrowsePanel(CompareSession *session, ImageLoader *imageLoader,
     m_decodeReloadTimer->setInterval(150);
     connect(m_decodeReloadTimer, &QTimer::timeout,
             this, &BrowsePanel::onDecodeReloadTimeout);
+
+    m_filterDebounceTimer = new QTimer(this);
+    m_filterDebounceTimer->setSingleShot(true);
+    m_filterDebounceTimer->setInterval(120);
+    connect(m_filterDebounceTimer, &QTimer::timeout,
+            this, &BrowsePanel::applyCurrentFilters);
+
+    m_anchorFilterRefreshTimer = new QTimer(this);
+    m_anchorFilterRefreshTimer->setSingleShot(true);
+    m_anchorFilterRefreshTimer->setInterval(25);
+    connect(m_anchorFilterRefreshTimer, &QTimer::timeout, this, [this]() {
+        const int fallbackColumn = columnIndexForModel(m_pendingAnchorFallbackModel);
+        const int fallbackRow = m_pendingAnchorFallbackRow;
+        m_pendingAnchorFallbackModel.clear();
+        m_pendingAnchorFallbackRow = -1;
+        m_suppressSelectionEmission = fallbackColumn >= 0 && fallbackRow >= 0;
+        applyCurrentFilters();
+        m_suppressSelectionEmission = false;
+        if (fallbackColumn >= 0 && fallbackRow >= 0) {
+            if (!selectFallbackAfterFilteredRemoval(fallbackColumn, fallbackRow)) {
+                emitSelectionChanged();
+            }
+        }
+    });
 
     connect(m_session, &CompareSession::folderAdded,
             this, &BrowsePanel::onFolderAdded);
@@ -711,6 +780,7 @@ void BrowsePanel::resizeEvent(QResizeEvent *event)
     // Dragging the splitter handle (or resizing the window) changes our width;
     // rescale the thumbnails to fill the new column width.
     recomputeThumbnailMetrics();
+    startInterleavedLoading();
 }
 
 void BrowsePanel::setupUi()
@@ -747,7 +817,11 @@ void BrowsePanel::setupUi()
     optionsRow->addWidget(m_categoryFilterCombo);
 
     connect(m_fileNameFilterEdit, &QLineEdit::textChanged,
-            this, &BrowsePanel::applyCurrentFilters);
+            this, [this](const QString &) {
+        if (m_filterDebounceTimer) {
+            m_filterDebounceTimer->start();
+        }
+    });
     connect(m_categoryFilterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int /*index*/) {
         applyCurrentFilters();
@@ -772,6 +846,17 @@ void BrowsePanel::setupUi()
     // No trailing stretch: the columns themselves (stretch 1, MinimumExpanding)
     // fill the panel width so each thumbnail card grows/shrinks with the column.
     m_columnsScrollArea->setWidget(m_columnsContainer);
+    connect(m_columnsScrollArea->horizontalScrollBar(), &QScrollBar::valueChanged,
+            this, [this](int) {
+        // Coalesce the many pixel updates from a horizontal drag/wheel gesture.
+        // The next event-loop tick activates the newly-near columns and releases
+        // caches belonging to columns now far outside the viewport.
+        startInterleavedLoading();
+    });
+    connect(m_columnsScrollArea->horizontalScrollBar(), &QScrollBar::rangeChanged,
+            this, [this](int, int) {
+        startInterleavedLoading();
+    });
     m_rootLayout->addLayout(optionsRow);
     m_rootLayout->addWidget(m_columnsScrollArea, 1);
     m_rootLayout->addWidget(m_scanStatusLabel);
@@ -987,6 +1072,12 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         }
 
         auto &column = m_columns[currentIndex];
+        const bool sourceRowsChanged =
+            column.sourceFileNameMatchIndex.indexedRowCount >= 0 &&
+            column.model &&
+            column.sourceFileNameMatchIndex.indexedRowCount !=
+                column.model->unfilteredImageCount();
+        invalidateFileNameMatchIndexes(currentIndex, sourceRowsChanged);
         column.discoveredCount = qMax(column.discoveredCount,
                                       column.model ? column.model->imageCount() : last + 1);
         updateColumnProgressLabel(currentIndex);
@@ -994,7 +1085,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         scheduleThumbnailRequest(currentIndex, 0);
         if (hasActiveCategoryFilterAnchor() &&
             currentIndex == m_categoryFilterAnchorColumn) {
-            applyCurrentFilters();
+            scheduleAnchorFilterRefresh();
         }
     });
 
@@ -1033,6 +1124,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
             return;
         }
 
+        invalidateFileNameMatchIndexes(currentIndex, false);
         const int pendingAutoSelectRow = m_columns[currentIndex].pendingAutoSelectRow;
         m_columns[currentIndex].pendingAutoSelectRow = -1;
 
@@ -1040,10 +1132,7 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
         updateGlobalScanStatus();
         if (hasActiveCategoryFilterAnchor() &&
             currentIndex == m_categoryFilterAnchorColumn) {
-            applyCurrentFilters();
-            if (pendingAutoSelectRow >= 0) {
-                selectFallbackAfterFilteredRemoval(currentIndex, pendingAutoSelectRow);
-            }
+            scheduleAnchorFilterRefresh(currentIndex, pendingAutoSelectRow);
             return;
         }
         if (pendingAutoSelectRow >= 0) {
@@ -1058,6 +1147,10 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
             return;
         }
 
+        // Filters and final source sorting both reset the visible row mapping.
+        // Source rows are invalidated separately on insertion/folderReady so an
+        // ordinary filter reset does not throw away the reusable full-list trie.
+        invalidateFileNameMatchIndexes(currentIndex, false);
         updateColumnProgressLabel(currentIndex);
         updateGlobalScanStatus();
         requestThumbnailsForColumn(currentIndex);
@@ -1124,6 +1217,8 @@ void BrowsePanel::onFolderReady(int columnIndex)
     auto &col = m_columns[columnIndex];
     col.scanFinished = true;
     col.discoveredCount = col.model ? col.model->unfilteredImageCount() : col.discoveredCount;
+    // finalizeScan may have reordered source rows without changing their count.
+    invalidateFileNameMatchIndexes(columnIndex, true);
 
     updateColumnProgressLabel(columnIndex);
     updateGlobalScanStatus();
@@ -1141,6 +1236,14 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
     if (index < 0 || index >= m_columns.size()) {
         return;
     }
+
+    // A delayed mark-filter fallback is tied to a specific model. Structural
+    // changes apply their own filter refresh below, so discard the stale timer.
+    if (m_anchorFilterRefreshTimer) {
+        m_anchorFilterRefreshTimer->stop();
+    }
+    m_pendingAnchorFallbackModel.clear();
+    m_pendingAnchorFallbackRow = -1;
 
     ColumnInfo &col = m_columns[index];
     m_columnsLayout->removeWidget(col.columnWidget);
@@ -1170,6 +1273,7 @@ void BrowsePanel::onFolderRemoved(const QString &folderPath, int index)
 
     // Removing a column widens the survivors → rescale their thumbnails.
     recomputeThumbnailMetrics();
+    startInterleavedLoading();
     if (!m_columns.isEmpty() && !currentCategoryFilter().isEmpty()) {
         applyCurrentFilters();
         return;
@@ -1185,6 +1289,12 @@ void BrowsePanel::onFoldersSwapped(int firstIndex, int secondIndex)
         firstIndex == secondIndex) {
         return;
     }
+
+    if (m_anchorFilterRefreshTimer) {
+        m_anchorFilterRefreshTimer->stop();
+    }
+    m_pendingAnchorFallbackModel.clear();
+    m_pendingAnchorFallbackRow = -1;
 
     m_columns.swapItemsAt(firstIndex, secondIndex);
     if (m_navigationAnchorColumn == firstIndex) {
@@ -1209,6 +1319,14 @@ void BrowsePanel::onFoldersSwapped(int firstIndex, int secondIndex)
 
 void BrowsePanel::onSessionCleared()
 {
+    if (m_filterDebounceTimer) {
+        m_filterDebounceTimer->stop();
+    }
+    if (m_anchorFilterRefreshTimer) {
+        m_anchorFilterRefreshTimer->stop();
+    }
+    m_pendingAnchorFallbackModel.clear();
+    m_pendingAnchorFallbackRow = -1;
     stopInterleavedLoading();
     clearAllColumns();
     resetSelectionNavigationMode();
@@ -1284,7 +1402,10 @@ void BrowsePanel::onThumbnailActivated(int clickedCol,
         m_columns[clickedCol].model->setSelected(clickedIdx, true);
     }
 
-    emitSelectionChanged();
+    // A repeated explicit activation is also the user's retry gesture when a
+    // full-image decode failed; let ComparePanel see it even if selection is
+    // otherwise identical.
+    emitSelectionChanged(true);
 }
 
 void BrowsePanel::onThumbnailMarkRequested(int column,
@@ -1306,7 +1427,7 @@ void BrowsePanel::onThumbnailMarkRequested(int column,
         : category;
     auto refreshAfterMarkChange = [this]() {
         if (hasActiveCategoryFilterAnchor()) {
-            applyCurrentFilters();
+            scheduleAnchorFilterRefresh();
             return;
         }
         updateAllColumnProgressLabels();
@@ -1554,7 +1675,8 @@ void BrowsePanel::updateColumnVisuals(int columnIndex)
 
     if (col.view) {
         QAbstractItemDelegate *oldDelegate = col.view->itemDelegate();
-        col.view->setItemDelegate(new ThumbnailDelegate(columnIndex, &m_metrics, col.view));
+        auto *newDelegate = new ThumbnailDelegate(columnIndex, &m_metrics, col.view);
+        col.view->setItemDelegate(newDelegate);
         if (oldDelegate && oldDelegate->parent() == col.view) {
             oldDelegate->deleteLater();
         }
@@ -1636,8 +1758,11 @@ void BrowsePanel::clearColumnSelection(int column)
     m_columns[column].model->clearSelection();
 }
 
-void BrowsePanel::emitSelectionChanged()
+void BrowsePanel::emitSelectionChanged(bool force)
 {
+    if (m_suppressSelectionEmission) {
+        return;
+    }
     QList<QPair<QString, QString>> selected;
 
     for (const auto &col : m_columns) {
@@ -1647,8 +1772,31 @@ void BrowsePanel::emitSelectionChanged()
         }
     }
 
+    if (!force && selected == m_lastEmittedSelection) {
+        return;
+    }
+    m_lastEmittedSelection = selected;
     emit selectionChanged(selected);
     preloadNeighborImagesForSelection();
+}
+
+void BrowsePanel::scheduleAnchorFilterRefresh(int fallbackColumn, int fallbackRow)
+{
+    if (!m_anchorFilterRefreshTimer) {
+        applyCurrentFilters();
+        if (fallbackColumn >= 0 && fallbackRow >= 0) {
+            selectFallbackAfterFilteredRemoval(fallbackColumn, fallbackRow);
+        }
+        return;
+    }
+
+    if (fallbackColumn >= 0 && fallbackRow >= 0) {
+        m_pendingAnchorFallbackModel = fallbackColumn < m_columns.size()
+            ? m_columns[fallbackColumn].model
+            : nullptr;
+        m_pendingAnchorFallbackRow = fallbackRow;
+    }
+    m_anchorFilterRefreshTimer->start();
 }
 
 void BrowsePanel::preloadNeighborImagesForSelection()
@@ -1657,42 +1805,58 @@ void BrowsePanel::preloadNeighborImagesForSelection()
         return;
     }
 
-    QSet<QString> preloadSet;
-    for (const auto &col : m_columns) {
-        if (!col.model) {
-            continue;
-        }
+    QSet<QString> seen;
+    QStringList preloadPaths;
+    // Preserve distance order so the single prefetch slot always works on the
+    // nearest useful neighbor first. QSet::values() previously randomized ±1…3.
+    for (int offset = 1; offset <= 3; ++offset) {
+        for (const auto &col : m_columns) {
+            if (!col.model) {
+                continue;
+            }
 
-        const QList<int> selectedIndices = col.model->selectedIndices();
-        for (int currentIdx : selectedIndices) {
-            for (int offset = 1; offset <= 3; ++offset) {
+            const QList<int> selectedIndices = col.model->selectedIndices();
+            for (int currentIdx : selectedIndices) {
                 const int prevIdx = currentIdx - offset;
                 const int nextIdx = currentIdx + offset;
 
-                if (prevIdx >= 0) {
-                    const QString prevPath = col.model->imagePathAt(prevIdx);
-                    if (!prevPath.isEmpty()) {
-                        preloadSet.insert(prevPath);
+                if (nextIdx < col.model->imageCount()) {
+                    const QString nextPath = col.model->imagePathAt(nextIdx);
+                    if (!nextPath.isEmpty() && !seen.contains(nextPath)) {
+                        seen.insert(nextPath);
+                        preloadPaths.append(nextPath);
                     }
                 }
 
-                if (nextIdx < col.model->imageCount()) {
-                    const QString nextPath = col.model->imagePathAt(nextIdx);
-                    if (!nextPath.isEmpty()) {
-                        preloadSet.insert(nextPath);
+                if (prevIdx >= 0) {
+                    const QString prevPath = col.model->imagePathAt(prevIdx);
+                    if (!prevPath.isEmpty() && !seen.contains(prevPath)) {
+                        seen.insert(prevPath);
+                        preloadPaths.append(prevPath);
                     }
                 }
             }
         }
     }
 
-    if (!preloadSet.isEmpty()) {
-        m_imageLoader->requestImageBatch(preloadSet.values());
+    if (!preloadPaths.isEmpty()) {
+        m_imageLoader->prefetchImages(preloadPaths);
     }
 }
 
 void BrowsePanel::applyCurrentFilters()
 {
+    // Synchronous callers (category change, folder-ready, structural updates)
+    // apply the current filename text too. Stop its pending timeout so it cannot
+    // run a second identical pass and clear a selection made in the meantime.
+    if (m_filterDebounceTimer) {
+        m_filterDebounceTimer->stop();
+    }
+    if (m_anchorFilterRefreshTimer) {
+        m_anchorFilterRefreshTimer->stop();
+    }
+    m_pendingAnchorFallbackModel.clear();
+    m_pendingAnchorFallbackRow = -1;
     resetSelectionNavigationMode();
     clearSelection();
 
@@ -1707,9 +1871,7 @@ void BrowsePanel::applyCurrentFilters()
 
     if (useAnchor) {
         ImageListModel *anchorModel = m_columns[m_categoryFilterAnchorColumn].model;
-        anchorModel->clearImagePathFilter();
-        anchorModel->setFileNameFilter(fileNameFilter);
-        anchorModel->setCategoryFilter(categoryFilter);
+        anchorModel->setFilters(fileNameFilter, categoryFilter);
 
         for (int column = 0; column < m_columns.size(); ++column) {
             ImageListModel *model = m_columns[column].model;
@@ -1721,18 +1883,14 @@ void BrowsePanel::applyCurrentFilters()
                 matchedImagePathsForColumn(column,
                                            m_categoryFilterAnchorColumn,
                                            m_categoryFilterMatchMode);
-            model->setFileNameFilter(QString());
-            model->setCategoryFilter(QString());
-            model->setImagePathFilter(matchedPaths, true);
+            model->setFilters(QString(), QString(), matchedPaths, true);
         }
     } else {
         for (auto &col : m_columns) {
             if (!col.model) {
                 continue;
             }
-            col.model->clearImagePathFilter();
-            col.model->setFileNameFilter(fileNameFilter);
-            col.model->setCategoryFilter(categoryFilter);
+            col.model->setFilters(fileNameFilter, categoryFilter);
         }
     }
 
@@ -1825,33 +1983,20 @@ int BrowsePanel::findFileNameMatchSourceRow(int column, const QString &targetFil
 
     const auto *model = m_columns[column].model;
     if (!m_fuzzyFileNameMatch) {
-        for (int i = 0; i < model->unfilteredImageCount(); ++i) {
-            if (model->fileNameAtSourceRow(i) == targetFileName) {
-                return i;
-            }
-        }
-        return -1;
+        return model->sourceIndexOfFileName(targetFileName);
     }
 
-    int bestIndex = -1;
-    int bestDistance = std::numeric_limits<int>::max();
-    const int targetLen = targetFileName.size();
-    for (int i = 0; i < model->unfilteredImageCount(); ++i) {
-        const QString candidate = model->fileNameAtSourceRow(i);
-        if (qAbs(targetLen - candidate.size()) >= bestDistance) {
-            continue;
-        }
-        const int distance = levenshteinDistance(targetFileName, candidate);
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            bestIndex = i;
-            if (bestDistance == 0) {
-                break;
-            }
-        }
+    // Exact matches dominate every fuzzy metric and are overwhelmingly common
+    // across comparison folders. Take the O(1) index path before allocating the
+    // dynamic-programming rows for a fuzzy search.
+    const int exact = model->sourceIndexOfFileName(targetFileName);
+    if (exact >= 0) {
+        return exact;
     }
 
-    return bestIndex;
+    ensureFileNameMatchIndex(column, true);
+    return nearestFileNameMatch(m_columns[column].sourceFileNameMatchIndex,
+                                targetFileName);
 }
 
 int BrowsePanel::findFileNameMatchIndex(int column, const QString &targetFileName) const
@@ -1865,30 +2010,244 @@ int BrowsePanel::findFileNameMatchIndex(int column, const QString &targetFileNam
         return model->indexOfFileName(targetFileName);
     }
 
-    int bestIndex = -1;
-    int bestDistance = std::numeric_limits<int>::max();
-    const int targetLen = targetFileName.size();
-    for (int i = 0; i < model->imageCount(); ++i) {
-        const QString candidate = model->fileNameAt(i);
-        // |len(a) - len(b)| is a lower bound on the edit distance, so a candidate
-        // whose length already differs by >= the best distance found so far can
-        // never win — skip its O(n*m) computation entirely. This keeps the
-        // per-click cost low when an exact (or near) match exists, which is the
-        // common case (same filenames across folders).
-        if (qAbs(targetLen - candidate.size()) >= bestDistance) {
-            continue;
-        }
-        const int distance = levenshteinDistance(targetFileName, candidate);
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            bestIndex = i;
-            if (bestDistance == 0) {
-                break; // exact match — cannot do better
+    const int exact = model->indexOfFileName(targetFileName);
+    if (exact >= 0) {
+        return exact;
+    }
+
+    if (!model->hasActiveFilters()) {
+        ensureFileNameMatchIndex(column, true);
+        return nearestFileNameMatch(m_columns[column].sourceFileNameMatchIndex,
+                                    targetFileName);
+    }
+
+    ensureFileNameMatchIndex(column, false);
+    return nearestFileNameMatch(m_columns[column].visibleFileNameMatchIndex,
+                                targetFileName);
+}
+
+void BrowsePanel::ensureFileNameMatchIndex(int column, bool sourceRows) const
+{
+    if (column < 0 || column >= m_columns.size() || !m_columns[column].model) {
+        return;
+    }
+
+    const ImageListModel *model = m_columns[column].model;
+    FileNameMatchIndex &index = sourceRows
+        ? m_columns[column].sourceFileNameMatchIndex
+        : m_columns[column].visibleFileNameMatchIndex;
+    const int rowCount = sourceRows ? model->unfilteredImageCount()
+                                    : model->imageCount();
+    if (index.indexedRowCount == rowCount) {
+        return;
+    }
+
+    index.nodes.clear();
+    index.rowNames.clear();
+    index.cachedRows.clear();
+    index.maxDepth = 0;
+    index.indexedRowCount = rowCount;
+    if (rowCount <= 0) {
+        return;
+    }
+
+    qsizetype characterCount = 0;
+    index.rowNames.reserve(rowCount);
+    for (int row = 0; row < rowCount; ++row) {
+        const QString fileName = sourceRows ? model->fileNameAtSourceRow(row)
+                                            : model->fileNameAt(row);
+        characterCount += fileName.size();
+        index.maxDepth = qMax(index.maxDepth, fileName.size());
+        index.rowNames.append(fileName);
+    }
+
+    // One node per unique prefix is the upper bound. QString copies above are
+    // implicit shares of the model strings, so the index owns no second copy of
+    // the filename payloads.
+    // Shared prefixes make the real node count far smaller than characterCount
+    // for camera/export sequences. Reserve conservatively so a 100k-file folder
+    // does not commit the theoretical worst case before we know it is needed.
+    index.nodes.reserve(qMin(characterCount + 1,
+                             qsizetype(rowCount) * 4 + 1));
+    index.nodes.append(FileNameMatchIndex::Node{}); // root
+
+    for (int row = 0; row < index.rowNames.size(); ++row) {
+        int nodeIndex = 0;
+        const QString &fileName = index.rowNames.at(row);
+        for (const QChar character : fileName) {
+            auto &node = index.nodes[nodeIndex];
+            if (node.minTerminalRow < 0 || row < node.minTerminalRow) {
+                node.minTerminalRow = row;
             }
+
+            const auto edgeIt = std::lower_bound(
+                node.children.cbegin(), node.children.cend(), character,
+                [](const FileNameMatchIndex::Edge &edge, QChar value) {
+                    return edge.character.unicode() < value.unicode();
+                });
+            const int edgePosition = static_cast<int>(
+                std::distance(node.children.cbegin(), edgeIt));
+            if (edgeIt != node.children.cend() &&
+                edgeIt->character == character) {
+                nodeIndex = edgeIt->child;
+                continue;
+            }
+
+            const int childIndex = index.nodes.size();
+            index.nodes.append(FileNameMatchIndex::Node{});
+            // append() may reallocate the node vector, so reacquire the parent.
+            index.nodes[nodeIndex].children.insert(
+                edgePosition, FileNameMatchIndex::Edge{character, childIndex});
+            nodeIndex = childIndex;
+        }
+
+        auto &terminal = index.nodes[nodeIndex];
+        if (terminal.minTerminalRow < 0 || row < terminal.minTerminalRow) {
+            terminal.minTerminalRow = row;
+        }
+        if (terminal.terminalRow < 0 || row < terminal.terminalRow) {
+            terminal.terminalRow = row;
         }
     }
 
-    return bestIndex;
+    index.cachedRows.reserve(qMin(rowCount, 8192));
+}
+
+int BrowsePanel::nearestFileNameMatch(FileNameMatchIndex &index,
+                                      const QString &targetFileName) const
+{
+    const auto cached = index.cachedRows.constFind(targetFileName);
+    if (cached != index.cachedRows.cend()) {
+        return cached.value();
+    }
+    if (index.nodes.isEmpty() || index.rowNames.isEmpty()) {
+        return -1;
+    }
+
+    // Seed the bound with a filename under the longest exact target prefix. The
+    // subsequent trie walk is still exhaustive under the Levenshtein lower bound,
+    // so this only changes speed, never the chosen row.
+    int seedNode = 0;
+    for (const QChar character : targetFileName) {
+        const auto &children = index.nodes.at(seedNode).children;
+        const auto edgeIt = std::lower_bound(
+            children.cbegin(), children.cend(), character,
+            [](const FileNameMatchIndex::Edge &edge, QChar value) {
+                return edge.character.unicode() < value.unicode();
+            });
+        if (edgeIt == children.cend() || edgeIt->character != character) {
+            break;
+        }
+        seedNode = edgeIt->child;
+    }
+
+    int bestRow = index.nodes.at(seedNode).minTerminalRow;
+    if (bestRow < 0 || bestRow >= index.rowNames.size()) {
+        bestRow = 0;
+    }
+    int bestDistance = levenshteinDistance(targetFileName,
+                                           index.rowNames.at(bestRow));
+
+    const int targetLength = targetFileName.size();
+    const int requiredRows = index.maxDepth + 1;
+    if (index.distanceRows.size() < requiredRows) {
+        index.distanceRows.resize(requiredRows);
+    }
+    for (int depth = 0; depth < requiredRows; ++depth) {
+        index.distanceRows[depth].resize(targetLength + 1);
+    }
+    auto &rootRow = index.distanceRows[0];
+    for (int column = 0; column <= targetLength; ++column) {
+        rootRow[column] = column;
+    }
+
+    auto visit = [&](auto &&self, int nodeIndex, int depth) -> void {
+        const auto &node = index.nodes.at(nodeIndex);
+        const auto &previous = index.distanceRows.at(depth);
+        if (node.terminalRow >= 0) {
+            const int distance = previous.at(targetLength);
+            if (distance < bestDistance ||
+                (distance == bestDistance && node.terminalRow < bestRow)) {
+                bestDistance = distance;
+                bestRow = node.terminalRow;
+            }
+        }
+
+        auto visitEdge = [&](const FileNameMatchIndex::Edge &edge) {
+            auto &current = index.distanceRows[depth + 1];
+            current[0] = previous.at(0) + 1;
+            int rowMinimum = current.at(0);
+            for (int column = 1; column <= targetLength; ++column) {
+                const int substitutionCost =
+                    targetFileName.at(column - 1) == edge.character ? 0 : 1;
+                current[column] = qMin(
+                    qMin(current.at(column - 1) + 1,
+                         previous.at(column) + 1),
+                    previous.at(column - 1) + substitutionCost);
+                rowMinimum = qMin(rowMinimum, current.at(column));
+            }
+
+            const int subtreeFirstRow = index.nodes.at(edge.child).minTerminalRow;
+            if (rowMinimum < bestDistance ||
+                (rowMinimum == bestDistance && subtreeFirstRow >= 0 &&
+                 subtreeFirstRow < bestRow)) {
+                self(self, edge.child, depth + 1);
+            }
+        };
+
+        // Following the same-position character first usually establishes the
+        // tight distance bound before visiting sibling branches.
+        int matchingEdge = -1;
+        if (depth < targetLength) {
+            const QChar wanted = targetFileName.at(depth);
+            const auto edgeIt = std::lower_bound(
+                node.children.cbegin(), node.children.cend(), wanted,
+                [](const FileNameMatchIndex::Edge &edge, QChar value) {
+                    return edge.character.unicode() < value.unicode();
+                });
+            if (edgeIt != node.children.cend() && edgeIt->character == wanted) {
+                matchingEdge = static_cast<int>(
+                    std::distance(node.children.cbegin(), edgeIt));
+                visitEdge(*edgeIt);
+            }
+        }
+        for (int edgeIndex = 0; edgeIndex < node.children.size(); ++edgeIndex) {
+            if (edgeIndex != matchingEdge) {
+                visitEdge(node.children.at(edgeIndex));
+            }
+        }
+    };
+
+    visit(visit, 0, 0);
+
+    // Repeated filter refreshes and navigation reuse results, but keep the cache
+    // bounded independently of folder size.
+    constexpr int kMaxCachedMatches = 8192;
+    if (index.cachedRows.size() >= kMaxCachedMatches) {
+        index.cachedRows.clear();
+    }
+    index.cachedRows.insert(targetFileName, bestRow);
+    return bestRow;
+}
+
+void BrowsePanel::invalidateFileNameMatchIndexes(int column, bool sourceRowsChanged)
+{
+    if (column < 0 || column >= m_columns.size()) {
+        return;
+    }
+
+    auto clearIndex = [](FileNameMatchIndex &index) {
+        index.nodes.clear();
+        index.rowNames.clear();
+        index.cachedRows.clear();
+        index.indexedRowCount = -1;
+        index.maxDepth = 0;
+    };
+
+    clearIndex(m_columns[column].visibleFileNameMatchIndex);
+    if (sourceRowsChanged) {
+        clearIndex(m_columns[column].sourceFileNameMatchIndex);
+    }
 }
 
 int BrowsePanel::levenshteinDistance(const QString &a, const QString &b) const
@@ -1896,8 +2255,13 @@ int BrowsePanel::levenshteinDistance(const QString &a, const QString &b) const
     const int n = a.size();
     const int m = b.size();
 
-    std::vector<int> prev(m + 1, 0);
-    std::vector<int> curr(m + 1, 0);
+    // Reuse the DP rows across candidate comparisons. Fuzzy matching scans many
+    // filenames; allocating two vectors for every candidate dominated short-name
+    // comparisons even when the edit-distance math itself was tiny.
+    thread_local std::vector<int> prev;
+    thread_local std::vector<int> curr;
+    prev.resize(m + 1);
+    curr.resize(m + 1);
 
     for (int j = 0; j <= m; ++j) {
         prev[j] = j;
@@ -2111,15 +2475,71 @@ QPair<int, int> BrowsePanel::prefetchRangeForColumn(const ColumnInfo &column) co
     };
 }
 
+bool BrowsePanel::isColumnNearHorizontalViewport(const ColumnInfo &column) const
+{
+    if (!m_columnsScrollArea || !m_columnsScrollArea->viewport() ||
+        !column.columnWidget || !column.columnWidget->isVisible()) {
+        return false;
+    }
+
+    QWidget *viewport = m_columnsScrollArea->viewport();
+    if (viewport->width() <= 0 || column.columnWidget->width() <= 0) {
+        // Geometry has not settled yet (folder just added / headless test). Let
+        // the first request through; a later layout/scroll pass will classify it.
+        return true;
+    }
+
+    QRect nearRect = viewport->rect();
+    // Retain one neighboring column on each side for instant horizontal scroll.
+    const int margin = qMax(1, column.columnWidget->width());
+    nearRect.adjust(-margin, 0, margin, 0);
+    const QRect columnRect(column.columnWidget->mapTo(viewport, QPoint(0, 0)),
+                           column.columnWidget->size());
+    return nearRect.intersects(columnRect);
+}
+
 void BrowsePanel::refreshAllVisibleThumbnails()
 {
+    for (auto &column : m_columns) {
+        if (column.model) {
+            column.model->invalidateThumbnailCache();
+        }
+    }
     requestVisibleThumbnailsForAllColumns();
 }
 
 void BrowsePanel::requestVisibleThumbnailsForAllColumns()
 {
     for (int i = 0; i < m_columns.size(); ++i) {
-        requestThumbnailsForColumn(i);
+        ColumnInfo &column = m_columns[i];
+        const bool active = isColumnNearHorizontalViewport(column);
+        if (active) {
+            if (column.model) {
+                column.model->setThumbnailDeliveryEnabled(true);
+            }
+            column.horizontallyActive = true;
+            requestThumbnailsForColumn(i);
+            continue;
+        }
+
+        if (column.model) {
+            // Also gate initial far columns: shared-loader broadcasts (including
+            // duplicate folders/paths) must not repopulate a cache that this
+            // horizontal virtualization pass just released.
+            column.model->setThumbnailDeliveryEnabled(false);
+        }
+        if (column.horizontallyActive) {
+            // Models own their display LRU in addition to ImageLoader's shared
+            // cache. Release both it and the delegate's scaled-cover cache once a
+            // column moves more than one column beyond the horizontal viewport.
+            if (column.view) {
+                if (auto *delegate = dynamic_cast<ThumbnailDelegate *>(
+                        column.view->itemDelegate())) {
+                    delegate->clearCoverCache();
+                }
+            }
+            column.horizontallyActive = false;
+        }
     }
 
     cancelStaleThumbnailRequests();
@@ -2154,8 +2574,11 @@ void BrowsePanel::scheduleThumbnailRequest(int columnIndex, int delayMs)
     }
 
     col.thumbnailRequestScheduled = true;
-    ImageListModel *modelPtr = col.model;
+    QPointer<ImageListModel> modelPtr = col.model;
     QTimer::singleShot(qMax(0, delayMs), this, [this, modelPtr]() {
+        if (!modelPtr) {
+            return;
+        }
         const int currentIndex = columnIndexForModel(modelPtr);
         if (currentIndex < 0) {
             return;
@@ -2174,6 +2597,9 @@ void BrowsePanel::requestThumbnailsForColumn(int columnIndex)
 
     auto &col = m_columns[columnIndex];
     if (!col.model || !col.view || col.model->imageCount() <= 0) {
+        return;
+    }
+    if (!isColumnNearHorizontalViewport(col)) {
         return;
     }
 
@@ -2203,6 +2629,9 @@ QSet<QString> BrowsePanel::aggregateVisiblePaths() const
     QSet<QString> visiblePaths;
     for (const auto &col : m_columns) {
         if (!col.model || !col.view || col.model->imageCount() <= 0) {
+            continue;
+        }
+        if (!isColumnNearHorizontalViewport(col)) {
             continue;
         }
         auto [firstVisible, lastVisible] = prefetchRangeForColumn(col);

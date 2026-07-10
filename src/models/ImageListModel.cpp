@@ -5,8 +5,9 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QFutureWatcher>
+#include <QPromise>
 #include <QtConcurrent>
-#include <QMetaObject>
 
 #include <algorithm>
 #include <numeric>
@@ -17,7 +18,8 @@ namespace
 // Upper bound on distinct decoded thumbnails kept in memory per folder column.
 // Far larger than any visible + prefetch window, so on-screen items are never
 // evicted; it only caps the long tail accumulated while scrolling huge folders.
-constexpr int kThumbnailCacheCap = 800;
+constexpr int kThumbnailCacheCap = 256;
+constexpr qint64 kThumbnailCacheByteCap = 32LL * 1024LL * 1024LL;
 const QString kUnmarkedCategoryFilter = QStringLiteral("__unmarked__");
 }
 
@@ -71,12 +73,9 @@ QVariant ImageListModel::data(const QModelIndex &index, int role) const
     case MarkReasonRole:
         return markReasonAtSourceIndex(sourceIndex);
     case Qt::ToolTipRole: {
-        const ImageMarkManager::MarkMetadata metadata =
-            m_markManager ? m_markManager->markMetadataForImageKey(m_normalizedFolderPath,
-                                                                   m_markKeys.at(sourceIndex))
-                          : ImageMarkManager::MarkMetadata{};
-        if (metadata.source == ImageMarkManager::vlmSource() && !metadata.reason.isEmpty()) {
-            return metadata.reason;
+        const CachedMark &mark = m_marks.at(sourceIndex);
+        if (mark.source == ImageMarkManager::vlmSource() && !mark.reason.isEmpty()) {
+            return mark.reason;
         }
         return QVariant();
     }
@@ -100,6 +99,8 @@ void ImageListModel::setFolder(const QString &folderPath)
     m_pathToIndex.clear();
     m_markKeys.clear();
     m_markKeyToIndex.clear();
+    m_marks.clear();
+    m_markSnapshot.clear();
     m_fileNames.clear();
     m_fileNameToIndex.clear();
     m_filteredSourceRows.clear();
@@ -110,8 +111,9 @@ void ImageListModel::setFolder(const QString &folderPath)
     endResetModel();
 
     if (m_markManager) {
-        m_markManager->loadFolder(m_normalizedFolderPath);
+        m_markManager->loadFolderAsync(m_normalizedFolderPath);
     }
+    refreshMarkSnapshot();
 
     startScan(folderPath);
 }
@@ -135,6 +137,7 @@ void ImageListModel::refresh()
     m_pathToIndex.clear();
     m_markKeys.clear();
     m_markKeyToIndex.clear();
+    m_marks.clear();
     m_fileNames.clear();
     m_fileNameToIndex.clear();
     m_filteredSourceRows.clear();
@@ -148,6 +151,7 @@ void ImageListModel::refresh()
         return;
     }
 
+    refreshMarkSnapshot();
     startScan(m_folderPath);
 }
 
@@ -186,13 +190,8 @@ int ImageListModel::unfilteredImageCount() const
 
 void ImageListModel::setFileNameFilter(const QString &filterText)
 {
-    const QString normalized = filterText.trimmed();
-    if (m_fileNameFilter == normalized) {
-        return;
-    }
-
-    m_fileNameFilter = normalized;
-    applyFilters();
+    setFilters(filterText, m_categoryFilter, m_imagePathFilter,
+               m_imagePathFilterEnabled);
 }
 
 QString ImageListModel::fileNameFilter() const
@@ -202,19 +201,8 @@ QString ImageListModel::fileNameFilter() const
 
 void ImageListModel::setCategoryFilter(const QString &category)
 {
-    const QString normalized = category.trimmed();
-    if (!normalized.isEmpty() &&
-        normalized != kUnmarkedCategoryFilter &&
-        !ImageMarkManager::isValidCategory(normalized)) {
-        return;
-    }
-
-    if (m_categoryFilter == normalized) {
-        return;
-    }
-
-    m_categoryFilter = normalized;
-    applyFilters();
+    setFilters(m_fileNameFilter, category, m_imagePathFilter,
+               m_imagePathFilterEnabled);
 }
 
 QString ImageListModel::categoryFilter() const
@@ -222,16 +210,39 @@ QString ImageListModel::categoryFilter() const
     return m_categoryFilter;
 }
 
-void ImageListModel::setImagePathFilter(const QSet<QString> &imagePaths, bool enabled)
+void ImageListModel::setFilters(const QString &fileNameFilter,
+                                const QString &categoryFilter,
+                                const QSet<QString> &imagePaths,
+                                bool imagePathFilterEnabled)
 {
-    const QSet<QString> normalized = enabled ? imagePaths : QSet<QString>{};
-    if (m_imagePathFilterEnabled == enabled && m_imagePathFilter == normalized) {
+    const QString normalizedFileName = fileNameFilter.trimmed();
+    const QString normalizedCategory = categoryFilter.trimmed();
+    if (!normalizedCategory.isEmpty() &&
+        normalizedCategory != kUnmarkedCategoryFilter &&
+        !ImageMarkManager::isValidCategory(normalizedCategory)) {
         return;
     }
 
-    m_imagePathFilterEnabled = enabled;
-    m_imagePathFilter = normalized;
+    const QSet<QString> normalizedPaths = imagePathFilterEnabled
+        ? imagePaths
+        : QSet<QString>{};
+    if (m_fileNameFilter == normalizedFileName &&
+        m_categoryFilter == normalizedCategory &&
+        m_imagePathFilterEnabled == imagePathFilterEnabled &&
+        m_imagePathFilter == normalizedPaths) {
+        return;
+    }
+
+    m_fileNameFilter = normalizedFileName;
+    m_categoryFilter = normalizedCategory;
+    m_imagePathFilterEnabled = imagePathFilterEnabled;
+    m_imagePathFilter = normalizedPaths;
     applyFilters();
+}
+
+void ImageListModel::setImagePathFilter(const QSet<QString> &imagePaths, bool enabled)
+{
+    setFilters(m_fileNameFilter, m_categoryFilter, imagePaths, enabled);
 }
 
 void ImageListModel::clearImagePathFilter()
@@ -254,6 +265,14 @@ bool ImageListModel::hasActiveFilters() const
 int ImageListModel::indexOfFileName(const QString &fileName) const
 {
     if (hasActiveFilters()) {
+        const int indexedSource = m_fileNameToIndex.value(fileName, -1);
+        const int indexedRow = rowForSourceIndex(indexedSource);
+        if (indexedRow >= 0) {
+            return indexedRow;
+        }
+        // Duplicate filenames can exist in future recursive scans. If the first
+        // indexed occurrence is filtered out, retain the legacy fallback that
+        // finds another visible occurrence.
         for (int row = 0; row < m_filteredSourceRows.size(); ++row) {
             const int sourceIndex = m_filteredSourceRows.at(row);
             if (sourceIndex >= 0 &&
@@ -265,6 +284,11 @@ int ImageListModel::indexOfFileName(const QString &fileName) const
         return -1;
     }
 
+    return m_fileNameToIndex.value(fileName, -1);
+}
+
+int ImageListModel::sourceIndexOfFileName(const QString &fileName) const
+{
     return m_fileNameToIndex.value(fileName, -1);
 }
 
@@ -372,10 +396,26 @@ void ImageListModel::setImageMarkManager(ImageMarkManager *manager)
     if (m_markManager) {
         connect(m_markManager, &ImageMarkManager::markChanged,
                 this, &ImageListModel::onMarkChanged);
+        connect(m_markManager, &ImageMarkManager::folderLoaded,
+                this, [this](const QString &folderPath) {
+            if (folderPath != m_normalizedFolderPath) {
+                return;
+            }
+            refreshMarkSnapshot();
+            if (!m_categoryFilter.isEmpty()) {
+                applyFilters();
+            } else if (imageCount() > 0) {
+                emit dataChanged(index(0), index(imageCount() - 1),
+                                 {MarkRole, MarkSourceRole, MarkReasonRole,
+                                  Qt::ToolTipRole});
+            }
+        });
         if (!m_folderPath.isEmpty()) {
-            m_markManager->loadFolder(m_normalizedFolderPath);
+            m_markManager->loadFolderAsync(m_normalizedFolderPath);
         }
     }
+
+    refreshMarkSnapshot();
 
     if (!m_categoryFilter.isEmpty()) {
         applyFilters();
@@ -415,8 +455,24 @@ void ImageListModel::setImageLoader(ImageLoader *loader)
     m_imageLoader = loader;
 
     if (m_imageLoader) {
-        connect(m_imageLoader, &ImageLoader::thumbnailReady,
+        connect(m_imageLoader, &ImageLoader::thumbnailReadyDetailed,
                 this, &ImageListModel::onThumbnailReady);
+    }
+}
+
+void ImageListModel::invalidateThumbnailCache()
+{
+    clearThumbnailCache();
+}
+
+void ImageListModel::setThumbnailDeliveryEnabled(bool enabled)
+{
+    if (m_thumbnailDeliveryEnabled == enabled) {
+        return;
+    }
+    m_thumbnailDeliveryEnabled = enabled;
+    if (!enabled) {
+        clearThumbnailCache();
     }
 }
 
@@ -426,8 +482,8 @@ void ImageListModel::setThumbnailSize(const QSize &size)
         return;
     }
     // Existing thumbnails stay cached for instant display; growing the bucket lets
-    // loadThumbnailsForRange() upgrade visible items to a sharper decode (gated by
-    // m_upgradedExtent), shrinking simply keeps the larger image and downscales it.
+    // loadThumbnailsForRange() upgrade visible items to a sharper decode; shrinking
+    // simply keeps the larger successful image and downscales it.
     m_thumbnailSize = size;
 }
 
@@ -439,7 +495,7 @@ QSize ImageListModel::thumbnailSize() const
 void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible,
                                             bool prefetchPriority)
 {
-    if (!m_imageLoader || imageCount() <= 0) {
+    if (!m_thumbnailDeliveryEnabled || !m_imageLoader || imageCount() <= 0) {
         return;
     }
 
@@ -450,11 +506,15 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible,
     }
 
     const int bucket = m_thumbnailSize.width();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     QStringList visibleFirst;
     visibleFirst.reserve(lastVisible - firstVisible + 1);
     for (int i = firstVisible; i <= lastVisible; ++i) {
         const QString path = imagePathAt(i);
         if (path.isEmpty()) {
+            continue;
+        }
+        if (m_thumbnailRetryAfterMs.value(path, 0) > nowMs) {
             continue;
         }
 
@@ -466,15 +526,15 @@ void ImageListModel::loadThumbnailsForRange(int firstVisible, int lastVisible,
             needRequest = true;
         } else {
             touchThumbnail(path);
-            // Zoomed in past the cached resolution: upgrade once per bucket.
-            if (qMax(it->width(), it->height()) < bucket &&
-                m_upgradedExtent.value(path, 0) < bucket) {
+            // requested extent records a successful completion, even for a tiny
+            // source that cannot physically reach the bucket. Until completion,
+            // repeat requests are safe because ImageLoader deduplicates them.
+            if (m_thumbnailCompletedExtent.value(path, 0) < bucket) {
                 needRequest = true;
             }
         }
 
         if (needRequest) {
-            m_upgradedExtent.insert(path, bucket);
             visibleFirst.append(path);
         }
     }
@@ -506,9 +566,6 @@ bool ImageListModel::loadNextThumbnailBatch(int batchSize)
         }
     }
     if (!pathsToLoad.isEmpty()) {
-        for (const QString &path : pathsToLoad) {
-            m_upgradedExtent.insert(path, m_thumbnailSize.width());
-        }
         m_imageLoader->requestThumbnailBatch(pathsToLoad, m_thumbnailSize,
                                              m_sourceModifiedUtc);
     }
@@ -521,23 +578,53 @@ bool ImageListModel::hasMoreToLoad() const
     return m_nextLoadIndex < imageCount();
 }
 
-void ImageListModel::onThumbnailReady(const QString &imagePath, const QImage &thumbnail)
+void ImageListModel::onThumbnailReady(const QString &imagePath,
+                                      const QImage &thumbnail,
+                                      const QSize &requestedSize,
+                                      bool highQuality)
 {
-    // thumbnailReady is a shared signal; ignore anything larger than this column's
-    // current decode bucket (e.g. a stale, sharper request that arrives after the
-    // user has zoomed back out — the already-cached image downscales fine).
-    if (thumbnail.width() > m_thumbnailSize.width() ||
-        thumbnail.height() > m_thumbnailSize.height()) {
+    if (!m_thumbnailDeliveryEnabled) {
+        return;
+    }
+    // thumbnailReadyDetailed is broadcast by a shared loader. Reject results
+    // for other folder models before recording retry/completion state.
+    auto pathIt = m_pathToIndex.constFind(imagePath);
+    if (pathIt == m_pathToIndex.constEnd()) {
         return;
     }
 
-    auto it = m_pathToIndex.constFind(imagePath);
-    if (it == m_pathToIndex.constEnd()) {
+    const int requestedExtent = qMax(requestedSize.width(), requestedSize.height());
+    const int currentExtent = qMax(m_thumbnailSize.width(), m_thumbnailSize.height());
+    // A stale size bucket must neither replace current pixels nor suppress a
+    // newer request after the user changes thumbnail zoom.
+    if (requestedExtent > currentExtent) {
         return;
     }
-    const int sourceIndex = it.value();
 
-    storeThumbnail(imagePath, thumbnail);
+    if (thumbnail.isNull()) {
+        // Corrupt/temporarily unavailable files stay retryable, but UI relayouts
+        // and scroll notifications must not hammer the decoder continuously.
+        // Only the current bucket owns the backoff; a failed smaller request
+        // must not suppress the sharper request now needed by this column.
+        if (requestedExtent < currentExtent) {
+            return;
+        }
+        m_thumbnailRetryAfterMs.insert(imagePath,
+                                       QDateTime::currentMSecsSinceEpoch() + 2000);
+        return;
+    }
+    m_thumbnailRetryAfterMs.remove(imagePath);
+
+    const int sourceIndex = pathIt.value();
+
+    const int oldExtent = m_thumbnailCompletedExtent.value(imagePath, 0);
+    const bool oldHighQuality = m_thumbnailHighQuality.value(imagePath, false);
+    if (requestedExtent < oldExtent ||
+        (requestedExtent == oldExtent && oldHighQuality && !highQuality)) {
+        return;
+    }
+
+    storeThumbnail(imagePath, thumbnail, requestedExtent, highQuality);
 
     const int row = rowForSourceIndex(sourceIndex);
     if (row < 0) {
@@ -558,29 +645,45 @@ void ImageListModel::touchThumbnail(const QString &path)
     m_thumbnailLru.splice(m_thumbnailLru.begin(), m_thumbnailLru, posIt.value());
 }
 
-void ImageListModel::storeThumbnail(const QString &path, const QImage &thumbnail)
+void ImageListModel::storeThumbnail(const QString &path,
+                                    const QImage &thumbnail,
+                                    int completedExtent,
+                                    bool highQuality)
 {
     auto posIt = m_thumbnailLruPos.find(path);
     if (posIt != m_thumbnailLruPos.end()) {
+        m_thumbnailCacheBytes -= m_thumbnails.value(path).sizeInBytes();
         m_thumbnails.insert(path, thumbnail);
+        m_thumbnailCacheBytes += thumbnail.sizeInBytes();
+        m_thumbnailCompletedExtent.insert(path, completedExtent);
+        m_thumbnailHighQuality.insert(path, highQuality);
         touchThumbnail(path);
+        trimThumbnailCache();
         return;
     }
 
     m_thumbnailLru.push_front(path);
     m_thumbnailLruPos.insert(path, m_thumbnailLru.begin());
     m_thumbnails.insert(path, thumbnail);
+    m_thumbnailCompletedExtent.insert(path, completedExtent);
+    m_thumbnailHighQuality.insert(path, highQuality);
+    m_thumbnailCacheBytes += thumbnail.sizeInBytes();
     trimThumbnailCache();
 }
 
 void ImageListModel::trimThumbnailCache()
 {
-    while (m_thumbnails.size() > kThumbnailCacheCap && !m_thumbnailLru.empty()) {
+    while ((m_thumbnails.size() > kThumbnailCacheCap ||
+            m_thumbnailCacheBytes > kThumbnailCacheByteCap) &&
+           !m_thumbnailLru.empty()) {
         const QString victim = m_thumbnailLru.back();
         m_thumbnailLru.pop_back();
         m_thumbnailLruPos.remove(victim);
+        m_thumbnailCacheBytes -= m_thumbnails.value(victim).sizeInBytes();
         m_thumbnails.remove(victim);
-        m_upgradedExtent.remove(victim);
+        m_thumbnailCompletedExtent.remove(victim);
+        m_thumbnailHighQuality.remove(victim);
+        m_thumbnailRetryAfterMs.remove(victim);
     }
 }
 
@@ -589,7 +692,10 @@ void ImageListModel::clearThumbnailCache()
     m_thumbnails.clear();
     m_thumbnailLru.clear();
     m_thumbnailLruPos.clear();
-    m_upgradedExtent.clear();
+    m_thumbnailCompletedExtent.clear();
+    m_thumbnailHighQuality.clear();
+    m_thumbnailRetryAfterMs.clear();
+    m_thumbnailCacheBytes = 0;
 }
 
 void ImageListModel::onMarkChanged(const QString &folderPath,
@@ -604,6 +710,21 @@ void ImageListModel::onMarkChanged(const QString &folderPath,
     }
 
     const QString markKey = ImageMarkManager::imageKeyForPath(m_normalizedFolderPath, imagePath);
+    const ImageMarkManager::MarkMetadata metadata = m_markManager
+        ? m_markManager->markMetadataForImageKey(m_normalizedFolderPath, markKey)
+        : ImageMarkManager::MarkMetadata{};
+    const CachedMark cached{metadata.category, metadata.source, metadata.reason};
+
+    // The signal can arrive while the asynchronous folder scan is still
+    // discovering rows. Keep the folder snapshot authoritative even when this
+    // image has not reached m_markKeyToIndex yet; appendScanBatch() will then
+    // initialize the later row with the current mark instead of stale metadata.
+    if (metadata.category.isEmpty() && metadata.source.isEmpty() && metadata.reason.isEmpty()) {
+        m_markSnapshot.remove(markKey);
+    } else {
+        m_markSnapshot.insert(markKey, cached);
+    }
+
     int idx = m_markKeyToIndex.value(markKey, -1);
     if (idx < 0) {
         idx = m_pathToIndex.value(imagePath, -1);
@@ -611,8 +732,36 @@ void ImageListModel::onMarkChanged(const QString &folderPath,
     if (idx < 0) {
         return;
     }
+    if (idx >= m_marks.size()) {
+        return;
+    }
+    m_marks[idx] = cached;
+    if (metadata.category.isEmpty() && metadata.source.isEmpty() && metadata.reason.isEmpty()) {
+        m_markSnapshot.remove(m_markKeys.at(idx));
+    } else {
+        m_markSnapshot.insert(m_markKeys.at(idx), m_marks.at(idx));
+    }
 
     updateFilteredRowForSourceIndex(idx);
+}
+
+void ImageListModel::refreshMarkSnapshot()
+{
+    m_markSnapshot.clear();
+    if (m_markManager && !m_normalizedFolderPath.isEmpty()) {
+        const auto snapshot = m_markManager->markMetadataForFolder(m_normalizedFolderPath);
+        m_markSnapshot.reserve(snapshot.size());
+        for (auto it = snapshot.constBegin(); it != snapshot.constEnd(); ++it) {
+            m_markSnapshot.insert(it.key(),
+                                  CachedMark{it->category, it->source, it->reason});
+        }
+    }
+
+    m_marks.clear();
+    m_marks.reserve(m_markKeys.size());
+    for (const QString &key : std::as_const(m_markKeys)) {
+        m_marks.append(m_markSnapshot.value(key));
+    }
 }
 
 void ImageListModel::startScan(const QString &path)
@@ -630,36 +779,75 @@ void ImageListModel::startScan(const QString &path)
     emit scanProgressChanged(0, false);
 
     auto cancelToken = m_scanCancelToken;
-    m_scanFuture = QtConcurrent::run([this, path, generation, cancelToken]() {
+    QFuture<ScanEvent> future = QtConcurrent::run([path, cancelToken](QPromise<ScanEvent> &promise) {
         FileUtils::ScanOptions options;
         options.recursive = false;
+        options.captureLastModified = false;
         options.batchSize = 64;
         options.initialBatchSize = 24;
 
         FileUtils::scanForImagesBatched(
             path,
             options,
-            [this, generation](const QVector<FileUtils::ScannedImage> &batch, bool /*initialBatch*/) {
-                if (batch.isEmpty()) {
+            [&promise, &cancelToken](const QVector<FileUtils::ScannedImage> &batch,
+                                     bool /*initialBatch*/) {
+                if (batch.isEmpty() || cancelToken->isCancelled()) {
                     return;
                 }
-                QMetaObject::invokeMethod(this, [this, batch, generation]() {
-                    appendScanBatch(batch, generation);
-                }, Qt::QueuedConnection);
+                ScanEvent event;
+                event.kind = ScanEvent::Kind::Batch;
+                event.batch = std::make_shared<QVector<FileUtils::ScannedImage>>(batch);
+                promise.addResult(std::move(event));
             },
-            [this, generation](const FileUtils::ScanProgress &progress) {
-                QMetaObject::invokeMethod(this, [this, progress, generation]() {
-                    if (generation != m_scanGeneration) {
-                        return;
-                    }
-                    emit scanProgressChanged(progress.discoveredCount, progress.finished);
-                    if (progress.finished) {
-                        finalizeScan(generation);
-                    }
-                }, Qt::QueuedConnection);
+            [&promise, &cancelToken](const FileUtils::ScanProgress &progress) {
+                if (cancelToken->isCancelled()) {
+                    return;
+                }
+                ScanEvent event;
+                event.kind = ScanEvent::Kind::Progress;
+                event.progress = progress;
+                promise.addResult(std::move(event));
             },
             cancelToken);
     });
+
+    auto *watcher = new QFutureWatcher<ScanEvent>(this);
+    m_scanWatcher = watcher;
+    connect(watcher, &QFutureWatcher<ScanEvent>::resultReadyAt, this,
+            [this, watcher, generation, cancelToken](int resultIndex) {
+        if (generation != m_scanGeneration || cancelToken->isCancelled()) {
+            return;
+        }
+
+        ScanEvent event = watcher->resultAt(resultIndex);
+        if (event.kind == ScanEvent::Kind::Batch) {
+            if (event.batch) {
+                // Empty the shared holder retained by QFuture as soon as this
+                // event is consumed; only the model's compact arrays remain.
+                QVector<FileUtils::ScannedImage> batch = std::move(*event.batch);
+                appendScanBatch(batch, generation);
+            }
+            return;
+        }
+
+        emit scanProgressChanged(event.progress.discoveredCount,
+                                 event.progress.finished);
+        if (event.progress.finished) {
+            finalizeScan(generation);
+        }
+    });
+    connect(watcher, &QFutureWatcher<ScanEvent>::finished, this,
+            [this, watcher, generation, cancelToken]() {
+        if (m_scanWatcher == watcher) {
+            m_scanWatcher = nullptr;
+        }
+        if (generation == m_scanGeneration &&
+            m_scanCancelToken == cancelToken) {
+            m_scanCancelToken.reset();
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(future);
 }
 
 void ImageListModel::appendScanBatch(const QVector<FileUtils::ScannedImage> &batch, int generation)
@@ -672,6 +860,7 @@ void ImageListModel::appendScanBatch(const QVector<FileUtils::ScannedImage> &bat
     m_fileNames.reserve(m_fileNames.size() + batch.size());
     m_pathToIndex.reserve(m_pathToIndex.size() + batch.size());
     m_markKeys.reserve(m_markKeys.size() + batch.size());
+    m_marks.reserve(m_marks.size() + batch.size());
     m_markKeyToIndex.reserve(m_markKeyToIndex.size() + batch.size());
     m_fileNameToIndex.reserve(m_fileNameToIndex.size() + batch.size());
     m_filteredSourceRows.reserve(m_filteredSourceRows.size() + batch.size());
@@ -684,10 +873,14 @@ void ImageListModel::appendScanBatch(const QVector<FileUtils::ScannedImage> &bat
         for (const FileUtils::ScannedImage &item : batch) {
             const QString &path = item.path;
             const int index = m_imagePaths.size();
-            const QString fileName = QFileInfo(path).fileName();
-            const QString markKey = ImageMarkManager::imageKeyForPath(m_normalizedFolderPath, path);
+            const QString &fileName = item.fileName;
+            // The list scan is intentionally non-recursive, so the normalized
+            // folder-relative mark key is exactly the filename. Avoid repeated
+            // path cleaning/QDir construction for every discovered row.
+            const QString &markKey = fileName;
             m_pathToIndex.insert(path, index);
             m_markKeys.append(markKey);
+            m_marks.append(m_markSnapshot.value(markKey));
             if (!markKey.isEmpty()) {
                 m_markKeyToIndex.insert(markKey, index);
             }
@@ -696,17 +889,22 @@ void ImageListModel::appendScanBatch(const QVector<FileUtils::ScannedImage> &bat
             }
             m_imagePaths.append(path);
             m_fileNames.append(fileName);
-            m_sourceModifiedUtc.insert(path, item.lastModifiedUtc);
+            if (item.lastModifiedUtc.isValid()) {
+                m_sourceModifiedUtc.insert(path, item.lastModifiedUtc);
+            }
         }
         endInsertRows();
     } else {
+        QVector<int> matchingSourceRows;
+        matchingSourceRows.reserve(batch.size());
         for (const FileUtils::ScannedImage &item : batch) {
             const QString &path = item.path;
             const int sourceIndex = m_imagePaths.size();
-            const QString fileName = QFileInfo(path).fileName();
-            const QString markKey = ImageMarkManager::imageKeyForPath(m_normalizedFolderPath, path);
+            const QString &fileName = item.fileName;
+            const QString &markKey = fileName;
             m_pathToIndex.insert(path, sourceIndex);
             m_markKeys.append(markKey);
+            m_marks.append(m_markSnapshot.value(markKey));
             if (!markKey.isEmpty()) {
                 m_markKeyToIndex.insert(markKey, sourceIndex);
             }
@@ -715,14 +913,20 @@ void ImageListModel::appendScanBatch(const QVector<FileUtils::ScannedImage> &bat
             }
             m_imagePaths.append(path);
             m_fileNames.append(fileName);
-            m_sourceModifiedUtc.insert(path, item.lastModifiedUtc);
+            if (item.lastModifiedUtc.isValid()) {
+                m_sourceModifiedUtc.insert(path, item.lastModifiedUtc);
+            }
 
             if (sourceImageMatchesFilters(sourceIndex)) {
-                const int row = m_filteredSourceRows.size();
-                beginInsertRows(QModelIndex(), row, row);
-                m_filteredSourceRows.append(sourceIndex);
-                endInsertRows();
+                matchingSourceRows.append(sourceIndex);
             }
+        }
+        if (!matchingSourceRows.isEmpty()) {
+            const int firstRow = m_filteredSourceRows.size();
+            beginInsertRows(QModelIndex(), firstRow,
+                            firstRow + matchingSourceRows.size() - 1);
+            m_filteredSourceRows.append(matchingSourceRows);
+            endInsertRows();
         }
     }
 
@@ -744,9 +948,6 @@ void ImageListModel::appendScanBatch(const QVector<FileUtils::ScannedImage> &bat
 
         const int count = qMin(m_initialPrefetchRemaining, candidates.size());
         const QStringList initial = candidates.mid(0, count);
-        for (const QString &path : initial) {
-            m_upgradedExtent.insert(path, m_thumbnailSize.width());
-        }
         m_imageLoader->requestThumbnailBatchVisibleFirst(initial,
                                                          m_thumbnailSize,
                                                          m_sourceModifiedUtc);
@@ -784,7 +985,10 @@ void ImageListModel::sortSourcesByPath()
     QVector<int> order(n);
     std::iota(order.begin(), order.end(), 0);
     std::sort(order.begin(), order.end(), [this](int a, int b) {
-        return m_imagePaths.at(a) < m_imagePaths.at(b);
+        // This model scans one directory non-recursively, so every absolute path
+        // shares the same long prefix. Filename ordering is identical and avoids
+        // re-comparing that prefix O(N log N) times.
+        return m_fileNames.at(a) < m_fileNames.at(b);
     });
 
     // Skip the reset (and the view churn it causes) when discovery order already
@@ -806,14 +1010,17 @@ void ImageListModel::sortSourcesByPath()
     QStringList sortedPaths;
     QStringList sortedFileNames;
     QStringList sortedMarkKeys;
+    QVector<CachedMark> sortedMarks;
     sortedPaths.reserve(n);
     sortedFileNames.reserve(n);
     sortedMarkKeys.reserve(n);
+    sortedMarks.reserve(n);
     for (int i = 0; i < n; ++i) {
         const int oldIndex = order.at(i);
         sortedPaths.append(m_imagePaths.at(oldIndex));
         sortedFileNames.append(m_fileNames.at(oldIndex));
         sortedMarkKeys.append(m_markKeys.at(oldIndex));
+        sortedMarks.append(m_marks.at(oldIndex));
     }
 
     beginResetModel();
@@ -821,6 +1028,7 @@ void ImageListModel::sortSourcesByPath()
     m_imagePaths = std::move(sortedPaths);
     m_fileNames = std::move(sortedFileNames);
     m_markKeys = std::move(sortedMarkKeys);
+    m_marks = std::move(sortedMarks);
 
     // Rebuild the value->index maps, mirroring appendScanBatch's collision rules:
     // path is unique; markKey (when non-empty) takes the last index; fileName keeps
@@ -860,25 +1068,28 @@ void ImageListModel::sortSourcesByPath()
 
 void ImageListModel::cancelPendingScan()
 {
+    // Invalidate any already-posted watcher result before changing model state.
+    // The watcher is disconnected rather than joined: its worker owns only
+    // value data, a promise and the shared cancellation token, so it may safely
+    // finish after this model has switched folders or been destroyed.
+    ++m_scanGeneration;
     if (m_scanCancelToken) {
         m_scanCancelToken->cancel();
         m_scanCancelToken.reset();
     }
 
-    // Cancelling the token only asks the background scan to stop; we must also
-    // block until the worker has actually returned. The scan thread captures
-    // `this` and posts batches back via QMetaObject::invokeMethod(this, ...), so a
-    // scan still in flight when the model (or the QApplication) is destroyed
-    // dereferences freed memory — a teardown use-after-free that segfaulted
-    // tst_BrowsePanel on Windows CI. scanForImagesBatched checks the cancel flag
-    // once per directory entry, so this wait returns promptly.
-    if (m_scanFuture.isRunning()) {
-        m_scanFuture.waitForFinished();
+    if (m_scanWatcher) {
+        QFutureWatcher<ScanEvent> *watcher = m_scanWatcher;
+        m_scanWatcher = nullptr;
+        disconnect(watcher, nullptr, this, nullptr);
+        // Mark the future canceled as well as setting the cooperative token, so
+        // a worker racing between its token check and addResult() cannot retain
+        // an undeliverable batch in the future's result store.
+        watcher->cancel();
+        watcher->deleteLater();
     }
 
-    if (m_loading) {
-        m_loading = false;
-    }
+    m_loading = false;
 }
 
 int ImageListModel::sourceIndexForRow(int row) const
@@ -1013,31 +1224,24 @@ void ImageListModel::updateFilteredRowForSourceIndex(int sourceIndex)
 
 QString ImageListModel::markAtSourceIndex(int sourceIndex) const
 {
-    if (!m_markManager || sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+    if (sourceIndex < 0 || sourceIndex >= m_marks.size()) {
         return QString();
     }
-
-    return m_markManager->markForImageKey(m_normalizedFolderPath, m_markKeys.at(sourceIndex));
+    return m_marks.at(sourceIndex).category;
 }
 
 QString ImageListModel::markSourceAtSourceIndex(int sourceIndex) const
 {
-    if (!m_markManager || sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+    if (sourceIndex < 0 || sourceIndex >= m_marks.size()) {
         return QString();
     }
-
-    return m_markManager
-        ->markMetadataForImageKey(m_normalizedFolderPath, m_markKeys.at(sourceIndex))
-        .source;
+    return m_marks.at(sourceIndex).source;
 }
 
 QString ImageListModel::markReasonAtSourceIndex(int sourceIndex) const
 {
-    if (!m_markManager || sourceIndex < 0 || sourceIndex >= m_imagePaths.size()) {
+    if (sourceIndex < 0 || sourceIndex >= m_marks.size()) {
         return QString();
     }
-
-    return m_markManager
-        ->markMetadataForImageKey(m_normalizedFolderPath, m_markKeys.at(sourceIndex))
-        .reason;
+    return m_marks.at(sourceIndex).reason;
 }

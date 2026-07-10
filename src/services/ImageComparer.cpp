@@ -49,15 +49,13 @@ struct RowContext {
     qsizetype resultBytesPerLine = 0;
     int width = 0;
     int threshold = 0;
+    const std::atomic_bool *cancelled = nullptr;
 };
 
-// Dedicated pool for the per-row fan-out below. generateToleranceMapAsync hands
-// the whole computation to QtConcurrent::run on the GLOBAL pool, and ComparePanel
-// can launch several of those at once (one per cell). If the inner blockingMap
-// also used the global pool, those outer tasks would occupy every global thread
-// and starve their own row work down to serial. A separate pool keeps the row
-// parallelism available. Intentionally leaked (never destroyed) to sidestep
-// static-destruction ordering at program exit.
+// Dedicated pool for the per-row fan-out below. If inner blockingMap shared the
+// outer job pool, its sole dispatcher thread would starve its own row work. This
+// separate pool keeps row parallelism available. Intentionally leaked (never
+// destroyed) to sidestep static-destruction ordering at program exit.
 QThreadPool *toleranceRowPool()
 {
     static QThreadPool *pool = [] {
@@ -68,8 +66,27 @@ QThreadPool *toleranceRowPool()
     return pool;
 }
 
+// A single outer job is enough because each map already fans out over every CPU
+// in toleranceRowPool(). Serializing the memory-heavy conversion/allocation stage
+// prevents N comparison columns (or rapid threshold generations) from each
+// holding two ARGB32 inputs plus an output buffer at the same time. Cancelled
+// queued jobs return before allocating any full-resolution buffer.
+QThreadPool *toleranceJobPool()
+{
+    static QThreadPool *pool = [] {
+        auto *p = new QThreadPool;
+        p->setMaxThreadCount(1);
+        p->setExpiryTimeout(30000);
+        return p;
+    }();
+    return pool;
+}
+
 void processRow(int y, const RowContext &ctx)
 {
+    if (ctx.cancelled && ctx.cancelled->load(std::memory_order_relaxed)) {
+        return;
+    }
     const int width = ctx.width;
     const int heightA = ctx.heightA;
     const int widthA = ctx.widthA;
@@ -141,7 +158,19 @@ QImage ImageComparer::generateToleranceMap(const QImage &imageA,
                                            const QImage &imageB,
                                            int threshold)
 {
+    return generateToleranceMapCancellable(imageA, imageB, threshold, {});
+}
+
+QImage ImageComparer::generateToleranceMapCancellable(
+    const QImage &imageA,
+    const QImage &imageB,
+    int threshold,
+    const std::shared_ptr<std::atomic_bool> &cancelFlag)
+{
     if (imageA.isNull() || imageB.isNull()) {
+        return QImage();
+    }
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
         return QImage();
     }
 
@@ -150,7 +179,13 @@ QImage ImageComparer::generateToleranceMap(const QImage &imageA,
 
     // Convert both images to ARGB32 for consistent pixel access.
     const QImage srcA = imageA.convertToFormat(QImage::Format_ARGB32);
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return QImage();
+    }
     const QImage srcB = imageB.convertToFormat(QImage::Format_ARGB32);
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return QImage();
+    }
 
     // Allocate the output buffer directly — the previous implementation copied
     // imageB only to overwrite every pixel, wasting ≈4 bytes per pixel of I/O.
@@ -175,6 +210,7 @@ QImage ImageComparer::generateToleranceMap(const QImage &imageA,
     ctx.resultBytesPerLine = result.bytesPerLine();
     ctx.width = outputSize.width();
     ctx.threshold = threshold;
+    ctx.cancelled = cancelFlag.get();
 
     // Parallelize over rows: each worker writes to a disjoint scanline range
     // in `result`, so no synchronization is needed. blockingMap waits until
@@ -190,6 +226,10 @@ QImage ImageComparer::generateToleranceMap(const QImage &imageA,
         processRow(y, ctx);
     });
 
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return QImage();
+    }
+
     return result;
 }
 
@@ -202,8 +242,20 @@ QFuture<QImage> ImageComparer::generateToleranceMapAsync(const QImage &imageA,
     // the parallelized synchronous version with QtConcurrent::run so the
     // dispatch happens off the calling (GUI) thread; the inner blockingMap
     // then fans the per-row work out across the global thread pool.
-    return QtConcurrent::run([imageA, imageB, threshold]() {
+    return QtConcurrent::run(toleranceJobPool(), [imageA, imageB, threshold]() {
         return ImageComparer::generateToleranceMap(imageA, imageB, threshold);
+    });
+}
+
+QFuture<QImage> ImageComparer::generateToleranceMapAsync(
+    const QImage &imageA,
+    const QImage &imageB,
+    int threshold,
+    const std::shared_ptr<std::atomic_bool> &cancelFlag)
+{
+    return QtConcurrent::run(toleranceJobPool(), [imageA, imageB, threshold, cancelFlag]() {
+        return ImageComparer::generateToleranceMapCancellable(
+            imageA, imageB, threshold, cancelFlag);
     });
 }
 

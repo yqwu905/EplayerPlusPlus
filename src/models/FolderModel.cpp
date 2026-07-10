@@ -5,6 +5,8 @@
 #include <QFileInfo>
 #include <QtConcurrent>
 
+#include <utility>
+
 FolderModel::FolderModel(QObject *parent)
     : QAbstractItemModel(parent)
 {
@@ -56,16 +58,16 @@ QModelIndex FolderModel::parent(const QModelIndex &child) const
     // Find the row of the parent
     if (!parentNode->parent) {
         // Parent is a root node
-        int row = m_rootNodes.indexOf(parentNode);
-        if (row < 0) {
+        const int row = parentNode->rowInParent;
+        if (row < 0 || row >= m_rootNodes.size()) {
             return QModelIndex();
         }
         return createIndex(row, 0, parentNode);
     }
 
     // Parent is a child of some other node
-    int row = parentNode->parent->children.indexOf(parentNode);
-    if (row < 0) {
+    const int row = parentNode->rowInParent;
+    if (row < 0 || row >= parentNode->parent->children.size()) {
         return QModelIndex();
     }
     return createIndex(row, 0, parentNode);
@@ -168,12 +170,17 @@ void FolderModel::fetchMore(const QModelIndex &parent)
 
     auto *watcher = new QFutureWatcher<QStringList>(this);
     m_activeWatchers.insert(node, watcher);
+    const quint64 nodeGeneration = node->generation;
 
-    connect(watcher, &QFutureWatcher<QStringList>::finished, this, [this, node, watcher]() {
+    connect(watcher, &QFutureWatcher<QStringList>::finished, this,
+            [this, node, nodeGeneration, watcher]() {
         QStringList subdirs = watcher->result();
-        m_activeWatchers.remove(node);
+        auto activeIt = m_activeWatchers.find(node);
+        if (activeIt != m_activeWatchers.end() && activeIt.value() == watcher) {
+            m_activeWatchers.erase(activeIt);
+        }
         watcher->deleteLater();
-        onFetchFinished(node, subdirs);
+        onFetchFinished(node, nodeGeneration, subdirs);
     });
 
     watcher->setFuture(future);
@@ -204,7 +211,10 @@ bool FolderModel::addFolder(const QString &path)
     node->path = absPath;
     node->displayName = QDir(absPath).dirName();
     node->parent = nullptr;
+    node->rowInParent = row;
+    node->generation = m_nextNodeGeneration++;
     m_rootNodes.append(node);
+    m_liveNodes.insert(node);
 
     endInsertRows();
     return true;
@@ -222,22 +232,23 @@ bool FolderModel::removeFolder(const QModelIndex &index)
         return false;
     }
 
-    int row = m_rootNodes.indexOf(node);
+    const int row = node->rowInParent;
     if (row < 0) {
         return false;
     }
 
     // Cancel any in-flight fetch for this folder or its expanded descendants
-    // before freeing them. onFetchFinished only guards with a pointer-equality
-    // tree search, so a deleted node whose address is later reused by a new
-    // FolderNode (ABA) would otherwise have stale subdir results applied to the
-    // wrong folder — and the stale watcher's m_activeWatchers.remove() would
-    // drop the new node's entry. refreshFolder already does this per node.
+    // before freeing them. A per-node generation also protects against address
+    // reuse (ABA), so stale async results cannot populate a replacement node.
     cancelWatchersForSubtree(node);
 
     beginRemoveRows(QModelIndex(), row, row);
     m_rootNodes.removeAt(row);
+    unregisterSubtree(node);
     delete node;
+    for (int i = row; i < m_rootNodes.size(); ++i) {
+        m_rootNodes[i]->rowInParent = i;
+    }
     endRemoveRows();
 
     return true;
@@ -254,11 +265,9 @@ void FolderModel::refreshFolder(const QModelIndex &index)
         return;
     }
 
-    // Cancel any in-progress async fetch for this node
-    if (auto *watcher = m_activeWatchers.take(node)) {
-        watcher->cancel();
-        watcher->deleteLater();
-    }
+    // Refresh deletes the complete descendant subtree, so detach every watcher
+    // in it before any node address can be reused.
+    cancelWatchersForSubtree(node);
 
     // Clear and re-fetch children
     if (!node->children.isEmpty()) {
@@ -290,6 +299,7 @@ void FolderModel::clearAll()
     cancelAllWatchers();
 
     beginResetModel();
+    m_liveNodes.clear();
     qDeleteAll(m_rootNodes);
     m_rootNodes.clear();
     endResetModel();
@@ -326,7 +336,9 @@ QStringList FolderModel::rootFolderPaths() const
 
 void FolderModel::setRootFolders(const QStringList &paths)
 {
+    cancelAllWatchers();
     beginResetModel();
+    m_liveNodes.clear();
     qDeleteAll(m_rootNodes);
     m_rootNodes.clear();
 
@@ -337,7 +349,10 @@ void FolderModel::setRootFolders(const QStringList &paths)
             node->path = fi.absoluteFilePath();
             node->displayName = QDir(node->path).dirName();
             node->parent = nullptr;
+            node->rowInParent = m_rootNodes.size();
+            node->generation = m_nextNodeGeneration++;
             m_rootNodes.append(node);
+            m_liveNodes.insert(node);
         }
     }
 
@@ -361,11 +376,11 @@ QModelIndex FolderModel::indexFromNode(FolderNode *node) const
     }
 
     if (!node->parent) {
-        int row = m_rootNodes.indexOf(node);
+        const int row = node->rowInParent;
         return (row >= 0) ? createIndex(row, 0, node) : QModelIndex();
     }
 
-    int row = node->parent->children.indexOf(node);
+    const int row = node->rowInParent;
     return (row >= 0) ? createIndex(row, 0, node) : QModelIndex();
 }
 
@@ -384,7 +399,10 @@ void FolderModel::populateChildren(FolderNode *node, const QStringList &subdirs)
             child->path = subdir;
             child->displayName = QDir(subdir).dirName();
             child->parent = node;
+            child->rowInParent = node->children.size();
+            child->generation = m_nextNodeGeneration++;
             node->children.append(child);
+            m_liveNodes.insert(child);
         }
 
         endInsertRows();
@@ -396,32 +414,32 @@ void FolderModel::populateChildren(FolderNode *node, const QStringList &subdirs)
 
 void FolderModel::clearChildren(FolderNode *node)
 {
+    for (FolderNode *child : std::as_const(node->children)) {
+        unregisterSubtree(child);
+    }
     qDeleteAll(node->children);
     node->children.clear();
     node->fetched = false;
     node->fetching = false;
 }
 
-void FolderModel::onFetchFinished(FolderNode *node, const QStringList &subdirs)
+void FolderModel::unregisterSubtree(FolderNode *node)
 {
-    // Verify the node is still valid (not deleted during async operation)
-    // Check if the node is still in our tree
-    bool nodeValid = false;
-    std::function<bool(FolderNode *)> findNode = [&](FolderNode *root) -> bool {
-        if (root == node) return true;
-        for (FolderNode *child : root->children) {
-            if (findNode(child)) return true;
-        }
-        return false;
-    };
-    for (FolderNode *root : m_rootNodes) {
-        if (findNode(root)) {
-            nodeValid = true;
-            break;
-        }
+    if (!node) {
+        return;
     }
+    for (FolderNode *child : std::as_const(node->children)) {
+        unregisterSubtree(child);
+    }
+    m_liveNodes.remove(node);
+}
 
-    if (!nodeValid) {
+void FolderModel::onFetchFinished(FolderNode *node, quint64 generation,
+                                  const QStringList &subdirs)
+{
+    // O(1) lifetime validation. A DFS over the whole tree on every completed
+    // directory fetch made broad expanded trees increasingly expensive.
+    if (!m_liveNodes.contains(node) || node->generation != generation) {
         return;  // Node was deleted while async fetch was running
     }
 
@@ -451,6 +469,7 @@ void FolderModel::cancelWatchersForSubtree(FolderNode *node)
 void FolderModel::cancelAllWatchers()
 {
     for (auto it = m_activeWatchers.begin(); it != m_activeWatchers.end(); ++it) {
+        it.value()->disconnect();
         it.value()->cancel();
         it.value()->deleteLater();
     }

@@ -39,6 +39,7 @@ private slots:
     // eventually complete and deliver bit-identical output to the sync version.
     void testAsyncVariantCompletes();
     void testAsyncMatchesSync();
+    void testAsyncCancellationReturnsNull();
 
 private:
     QImage createSolidImage(int w, int h, QRgb color);
@@ -408,6 +409,21 @@ void tst_ImageComparer::testAsyncMatchesSync()
     // match exactly — this is the safety net for the parallelization being
     // race-free.
     QCOMPARE(syncResult, asyncResult);
+}
+
+void tst_ImageComparer::testAsyncCancellationReturnsNull()
+{
+    QImage first(4096, 4096, QImage::Format_ARGB32);
+    QImage second(4096, 4096, QImage::Format_ARGB32);
+    first.fill(Qt::black);
+    second.fill(Qt::white);
+
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    QFuture<QImage> future = ImageComparer::generateToleranceMapAsync(
+        first, second, 10, cancelled);
+    cancelled->store(true, std::memory_order_relaxed);
+    future.waitForFinished();
+    QVERIFY(future.result().isNull());
 }
 
 QTEST_MAIN(tst_ImageComparer)

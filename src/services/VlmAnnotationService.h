@@ -1,6 +1,8 @@
 #ifndef VLMANNOTATIONSERVICE_H
 #define VLMANNOTATIONSERVICE_H
 
+#include <QByteArray>
+#include <QFutureWatcher>
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
@@ -8,11 +10,13 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QObject>
-#include <QPointer>
-#include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QThreadPool>
 #include <QUrl>
+
+#include <atomic>
+#include <memory>
 
 class ImageMarkManager;
 
@@ -134,12 +138,34 @@ signals:
     void finished(bool cancelled);
 
 private:
+    friend class tst_VlmAnnotationService;
+
     void startNextBatch();
+    int activeBatchCount() const;
     bool sendBatch(int batchStart,
                    const QList<Task> &batch,
                    int retryCount,
                    PayloadFormat format = PayloadFormat::OpenAiContentParts);
+    void postPreparedBatch(int batchStart,
+                           const QList<Task> &batch,
+                           int retryCount,
+                           PayloadFormat format,
+                           const QByteArray &requestBody,
+                           quint64 generation,
+                           quint64 batchIdentity);
     void completeBatch(int batchStart, const QList<Task> &batch);
+    static QJsonObject buildChatCompletionsPayloadImpl(
+        const ApiConfig &config,
+        const QList<Task> &tasks,
+        QString *error,
+        PayloadFormat format,
+        const std::shared_ptr<std::atomic_bool> &cancelFlag);
+    static QString imageToDataUrlImpl(
+        const QString &imagePath,
+        int maxLongSide,
+        int jpegQuality,
+        QString *error,
+        const std::shared_ptr<std::atomic_bool> &cancelFlag);
     static QString builtInFormatPrompt();
     static QString extractJsonObjectText(const QString &content);
     static int findMatchIndex(const ColumnSnapshot &column,
@@ -148,13 +174,22 @@ private:
     static int levenshteinDistance(const QString &a, const QString &b);
 
     QNetworkAccessManager m_network;
-    QSet<QNetworkReply *> m_currentReplies;
+    // Heap ownership permits bounded teardown when a network-backed image path
+    // is stuck in an uninterruptible OS read. Detached workers capture no
+    // service state and retain the shared cancellation flag independently.
+    std::unique_ptr<QThreadPool> m_payloadPool;
+    QHash<quint64, QFutureWatcherBase *> m_payloadWatchers;
+    QHash<QNetworkReply *, quint64> m_currentReplies;
+    std::shared_ptr<std::atomic_bool> m_payloadCancelFlag;
     ApiConfig m_config;
     QList<Task> m_tasks;
     int m_nextIndex = 0;
     int m_completed = 0;
+    quint64 m_generation = 0;
+    quint64 m_nextBatchIdentity = 0;
     bool m_running = false;
     bool m_cancelRequested = false;
+    bool m_shuttingDown = false;
 };
 
 #endif // VLMANNOTATIONSERVICE_H

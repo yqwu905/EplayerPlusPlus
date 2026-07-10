@@ -36,9 +36,12 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QSignalBlocker>
+#include <QTimer>
 #include <QFutureWatcher>
 #include <QPointer>
+#include <QtConcurrent>
 #include <cmath>
+#include <utility>
 
 namespace
 {
@@ -100,6 +103,7 @@ ComparePanel::ComparePanel(CompareSession *session,
     : QWidget(parent)
     , m_session(session)
     , m_imageLoader(imageLoader)
+    , m_resizePool(std::make_unique<QThreadPool>())
     , m_settingsManager(settingsManager)
 {
     if (m_settingsManager) {
@@ -107,6 +111,24 @@ ComparePanel::ComparePanel(CompareSession *session,
         m_resizeToFirstImageEnabled = m_settingsManager->resizeToFirstImageEnabled();
     }
     setupUi();
+
+    // Smooth resize-to-first resampling is CPU-heavy at 4K/8K. Two workers let
+    // neighboring cells prepare in parallel without competing with the loader's
+    // full-image pool or flooding memory with one task per comparison cell.
+    m_resizePool->setMaxThreadCount(2);
+    m_resizePool->setExpiryTimeout(30000);
+
+    m_toleranceRefreshTimer = new QTimer(this);
+    m_toleranceRefreshTimer->setSingleShot(true);
+    m_toleranceRefreshTimer->setInterval(75);
+    connect(m_toleranceRefreshTimer, &QTimer::timeout, this, [this]() {
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (m_cells[i].showingToleranceMap &&
+                m_cells[i].toleranceSourceIndex >= 0) {
+                showToleranceMap(m_cells[i].toleranceSourceIndex, i);
+            }
+        }
+    });
 
     // Make the panel focusable for keyboard navigation
     setFocusPolicy(Qt::StrongFocus);
@@ -128,7 +150,25 @@ ComparePanel::ComparePanel(CompareSession *session,
     }
 }
 
-ComparePanel::~ComparePanel() = default;
+ComparePanel::~ComparePanel()
+{
+    if (m_toleranceRefreshTimer) {
+        m_toleranceRefreshTimer->stop();
+    }
+    for (ImageCell &cell : m_cells) {
+        cancelToleranceWatcher(cell);
+        cancelResizeWatcher(cell);
+    }
+    if (m_resizePool) {
+        m_resizePool->clear();
+        // Smooth scaling is CPU-local but can still take a long time for a
+        // malformed/huge image. Tasks capture only QImage values and a shared
+        // cancel flag, so keep panel teardown bounded if a worker cannot stop.
+        if (!m_resizePool->waitForDone(2000)) {
+            m_resizePool.release();
+        }
+    }
+}
 
 void ComparePanel::setImageMarkManager(ImageMarkManager *manager)
 {
@@ -141,8 +181,16 @@ void ComparePanel::setImageMarkManager(ImageMarkManager *manager)
     if (m_markManager) {
         connect(m_markManager, &ImageMarkManager::markChanged,
                 this, &ComparePanel::onMarkChanged);
+        connect(m_markManager, &ImageMarkManager::folderLoaded,
+                this, [this](const QString &folderPath) {
+            for (int i = 0; i < m_cells.size(); ++i) {
+                if (ImageMarkManager::normalizeFolderPath(m_cells[i].folderPath) == folderPath) {
+                    updateMarkButtonsForCell(i);
+                }
+            }
+        });
         for (const QString &folderPath : m_session->folders()) {
-            m_markManager->loadFolder(folderPath);
+            m_markManager->loadFolderAsync(folderPath);
         }
     }
 
@@ -220,14 +268,10 @@ void ComparePanel::setComparisonThreshold(int value)
         m_settingsManager->setComparisonThreshold(clamped);
     }
 
-    for (int i = 0; i < m_cells.size(); ++i) {
-        if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
-            // No need to wipe cachedToleranceImage here — showToleranceMap
-            // compares cachedToleranceThreshold against the new m_threshold
-            // and triggers an async regeneration when they differ. Any in-flight
-            // job from a previous slider tick is cancelled inside showToleranceMap.
-            showToleranceMap(m_cells[i].toleranceSourceIndex, i);
-        }
+    // A slider drag can deliver dozens of values per second. Regenerate only for
+    // the settled value; the label/settings still update immediately.
+    if (m_toleranceRefreshTimer) {
+        m_toleranceRefreshTimer->start();
     }
 
     emit comparisonThresholdChanged(clamped);
@@ -255,6 +299,8 @@ void ComparePanel::setResizeToFirstImageEnabled(bool enabled)
     }
 
     for (int i = 0; i < m_cells.size(); ++i) {
+        cancelResizeWatcher(m_cells[i]);
+        invalidateResizedCompareImage(m_cells[i]);
         m_cells[i].cachedToleranceImage = QImage();
         if (m_cells[i].showingToleranceMap && m_cells[i].toleranceSourceIndex >= 0) {
             showToleranceMap(m_cells[i].toleranceSourceIndex, i);
@@ -396,7 +442,7 @@ void ComparePanel::onModeToggled()
 void ComparePanel::onFolderAdded(const QString &folderPath, int /*index*/)
 {
     if (m_markManager) {
-        m_markManager->loadFolder(folderPath);
+        m_markManager->loadFolderAsync(folderPath);
     }
     ImageCell cell = createCell(folderPath);
     m_cells.append(cell);
@@ -423,6 +469,7 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
     }
 
     cancelToleranceWatcher(m_cells[removeIndex]);
+    cancelResizeWatcher(m_cells[removeIndex]);
     if (m_cells[removeIndex].container) {
         m_cells[removeIndex].container->removeEventFilter(this);
     }
@@ -458,6 +505,12 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
     for (int i = 0; i < m_cells.size(); ++i) {
         ImageCell &cell = m_cells[i];
         cancelToleranceWatcher(cell);
+        cancelResizeWatcher(cell);
+        if (removeIndex == 0) {
+            invalidateResizedCompareImage(cell);
+            cell.cachedToleranceImage = QImage();
+            cell.cachedToleranceThreshold = -1;
+        }
         if (cell.toleranceSourceIndex == removeIndex) {
             // The image this cell was diffing against is gone; drop the diff.
             cell.showingToleranceMap = false;
@@ -481,6 +534,18 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
         --m_currentCellIndex;
     }
     rebuildGrid();
+
+    if (removeIndex == 0 && m_resizeToFirstImageEnabled) {
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (m_cells[i].showingToleranceMap &&
+                m_cells[i].toleranceSourceIndex >= 0) {
+                showToleranceMap(m_cells[i].toleranceSourceIndex, i);
+            } else if (m_cells[i].hasImage) {
+                showOriginalImage(i);
+            }
+        }
+        return;
+    }
 
     for (int i : revertToOriginal) {
         showOriginalImage(i);
@@ -517,6 +582,8 @@ void ComparePanel::onFoldersSwapped(int firstIndex, int secondIndex)
         // ordering; cancel it so the result doesn't get applied to the wrong
         // cell index when it completes.
         cancelToleranceWatcher(cell);
+        cancelResizeWatcher(cell);
+        invalidateResizedCompareImage(cell);
         if (cell.toleranceSourceIndex >= 0) {
             cell.toleranceSourceIndex = remapIndex(cell.toleranceSourceIndex);
             cell.cachedToleranceImage = QImage();
@@ -571,6 +638,11 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
             loadImage(i);
 
             updateCellHeader(i);
+        } else if (!m_cells[i].hasImage && m_imageLoader) {
+            // A repeated activation is a retry gesture after a failed full decode.
+            // requestImage() deduplicates harmlessly if the original job is merely
+            // still in flight.
+            m_imageLoader->requestImage(newImagePath);
         }
         updateMarkButtonsForCell(i);
     }
@@ -879,6 +951,7 @@ void ComparePanel::clearCells()
 
     for (auto &cell : m_cells) {
         cancelToleranceWatcher(cell);
+        cancelResizeWatcher(cell);
         if (cell.container) {
             cell.container->removeEventFilter(this);
         }
@@ -1367,7 +1440,9 @@ void ComparePanel::loadImage(int cellIndex)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
-    cancelToleranceWatcher(cell);
+    cancelToleranceJobsDependingOn(cellIndex);
+    markResizeWorkStale(cell);
+    invalidateResizedCompareImage(cell);
     cell.previewImage = QImage();
     cell.showingPreview = false;
     if (m_imageLoader) {
@@ -1379,11 +1454,19 @@ void ComparePanel::loadImage(int cellIndex)
             } else {
                 cell.imageWidget->setText(tr("Loading image..."));
             }
-            m_imageLoader->requestThumbnail(cell.imagePath, QSize(960, 960));
+            // A browse thumbnail is enough for an immediate preview. Avoid a
+            // second 960px decode competing with the full-image request unless
+            // no preview at all is cached for this path.
+            if (cachedPreview.isNull()) {
+                m_imageLoader->requestThumbnail(cell.imagePath, QSize(960, 960));
+            }
             m_imageLoader->requestImage(cell.imagePath);
             cell.hasImage = false;
             cell.cachedToleranceImage = QImage();
             cell.cachedToleranceThreshold = -1;
+            if (cellIndex == 0 && cachedPreview.isNull()) {
+                refreshCellsUsingFirstImage();
+            }
             return;
         }
     } else {
@@ -1399,6 +1482,11 @@ void ComparePanel::loadImage(int cellIndex)
     cell.imageWidget->setGeometry(r);
 
     showOriginalImage(cellIndex, true);  // resetView on initial load
+    if (cellIndex == 0) {
+        refreshCellsUsingFirstImage();
+    } else {
+        refreshToleranceJobsDependingOn(cellIndex);
+    }
 }
 
 void ComparePanel::preloadImagesForSelection(const QList<QPair<QString, QString>> &selectedImages)
@@ -1419,7 +1507,6 @@ void ComparePanel::preloadImagesForSelection(const QList<QPair<QString, QString>
 
     if (!uniquePaths.isEmpty()) {
         m_imageLoader->cancelImageRequestsExcept(seen);
-        m_imageLoader->requestImageBatch(uniquePaths);
     }
 }
 
@@ -1441,7 +1528,9 @@ void ComparePanel::clearImage(int cellIndex)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
-    cancelToleranceWatcher(cell);
+    cancelToleranceJobsDependingOn(cellIndex);
+    cancelResizeWatcher(cell);
+    invalidateResizedCompareImage(cell);
     cell.imagePath.clear();
     cell.originalImage = QImage();
     cell.previewImage = QImage();
@@ -1452,6 +1541,10 @@ void ComparePanel::clearImage(int cellIndex)
     cell.showingToleranceMap = false;
     cell.toleranceSourceIndex = -1;
     cell.imageWidget->setText(tr("Click a thumbnail\nto compare"));
+
+    if (cellIndex == 0) {
+        refreshCellsUsingFirstImage();
+    }
 
     updateCellHeader(cellIndex);
     updateMarkButtonsForCell(cellIndex);
@@ -1475,14 +1568,28 @@ void ComparePanel::showPreviewImage(int cellIndex, const QImage &preview, bool r
 {
     if (cellIndex < 0 || cellIndex >= m_cells.size() || preview.isNull()) return;
 
+    cancelToleranceJobsDependingOn(cellIndex);
     ImageCell &cell = m_cells[cellIndex];
+    markResizeWorkStale(cell);
+    invalidateResizedCompareImage(cell);
     cell.previewImage = preview;
     cell.showingPreview = true;
+    ensureResizedCompareImage(cellIndex);
     cell.imageWidget->setImage(imageForCompare(cellIndex), resetView);
 
     if (cellIndex == 0) {
         refreshCellsUsingFirstImage();
+        if (m_resizeToFirstImageEnabled) {
+            // refreshCellsUsingFirstImage already regenerated every dependent
+            // target except cell 0 itself; avoid immediately cancelling/restarting
+            // those jobs a second time.
+            if (cell.showingToleranceMap && cell.toleranceSourceIndex >= 0) {
+                showToleranceMap(cell.toleranceSourceIndex, 0);
+            }
+            return;
+        }
     }
+    refreshToleranceJobsDependingOn(cellIndex);
 }
 
 void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
@@ -1490,6 +1597,8 @@ void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
     if (cellIndex < 0 || cellIndex >= m_cells.size()) return;
 
     ImageCell &cell = m_cells[cellIndex];
+    markToleranceWorkStale(cell, false);
+    ensureResizedCompareImage(cellIndex);
     const QImage displayImage = imageForCompare(cellIndex);
     if (displayImage.isNull()) {
         cell.imageWidget->setText(tr("Failed to load image"));
@@ -1502,6 +1611,41 @@ void ComparePanel::showOriginalImage(int cellIndex, bool resetView)
     cell.toleranceSourceIndex = -1;
 }
 
+void ComparePanel::cancelToleranceJobsDependingOn(int cellIndex)
+{
+    for (int i = 0; i < m_cells.size(); ++i) {
+        ImageCell &cell = m_cells[i];
+        if (i == cellIndex || cell.toleranceSourceIndex == cellIndex) {
+            markToleranceWorkStale(cell, cell.showingToleranceMap);
+            cell.cachedToleranceImage = QImage();
+            cell.cachedToleranceThreshold = -1;
+            // A source change should never leave an old diff on screen. Preserve
+            // the target's tolerance intent/source index so a preview/full-image
+            // arrival can regenerate it, but show its own base pixels meanwhile.
+            if (i != cellIndex && cell.showingToleranceMap && cell.imageWidget) {
+                ensureResizedCompareImage(i);
+                const QImage base = imageForCompare(i);
+                if (!base.isNull()) {
+                    cell.imageWidget->setImage(base, false);
+                }
+            }
+        }
+    }
+}
+
+void ComparePanel::refreshToleranceJobsDependingOn(int cellIndex)
+{
+    for (int targetIndex = 0; targetIndex < m_cells.size(); ++targetIndex) {
+        const ImageCell &target = m_cells.at(targetIndex);
+        if (!target.showingToleranceMap || target.toleranceSourceIndex < 0) {
+            continue;
+        }
+        if (targetIndex == cellIndex || target.toleranceSourceIndex == cellIndex) {
+            showToleranceMap(target.toleranceSourceIndex, targetIndex);
+        }
+    }
+}
+
 void ComparePanel::cancelToleranceWatcher(ImageCell &cell)
 {
     // Bumping the generation makes any in-flight result get dropped when the
@@ -1509,11 +1653,201 @@ void ComparePanel::cancelToleranceWatcher(ImageCell &cell)
     // try to apply its result; QtConcurrent::run itself isn't cancellable, so
     // the work keeps running but its output is discarded.
     ++cell.toleranceGeneration;
+    cell.pendingToleranceSourceKey = 0;
+    cell.pendingToleranceTargetKey = 0;
+    cell.pendingToleranceThreshold = -1;
+    cell.pendingToleranceSourceIndex = -1;
+    cell.toleranceRerunRequested = false;
+    if (cell.toleranceCancel) {
+        cell.toleranceCancel->store(true, std::memory_order_relaxed);
+        cell.toleranceCancel.reset();
+    }
     if (cell.toleranceWatcher) {
         cell.toleranceWatcher->disconnect();
         cell.toleranceWatcher->deleteLater();
         cell.toleranceWatcher = nullptr;
     }
+}
+
+void ComparePanel::markToleranceWorkStale(ImageCell &cell, bool rerunLatest)
+{
+    if (!cell.toleranceWatcher) {
+        return;
+    }
+    if (cell.toleranceCancel) {
+        cell.toleranceCancel->store(true, std::memory_order_relaxed);
+    }
+    cell.toleranceRerunRequested = rerunLatest;
+}
+
+void ComparePanel::cancelResizeWatcher(ImageCell &cell)
+{
+    ++cell.resizeGeneration;
+    cell.pendingResizeSrcKey = 0;
+    cell.pendingResizeRefSize = QSize();
+    cell.resizeRerunRequested = false;
+    if (cell.resizeCancel) {
+        cell.resizeCancel->store(true, std::memory_order_relaxed);
+        cell.resizeCancel.reset();
+    }
+    if (cell.resizeWatcher) {
+        cell.resizeWatcher->disconnect();
+        cell.resizeWatcher->deleteLater();
+        cell.resizeWatcher = nullptr;
+    }
+}
+
+void ComparePanel::markResizeWorkStale(ImageCell &cell)
+{
+    // Keep the watcher connected so its completion can schedule the latest
+    // desired source/reference. This guarantees at most one queued/active
+    // worker per cell during rapid image or reference changes.
+    cell.resizeRerunRequested = false;
+    if (cell.resizeCancel) {
+        cell.resizeCancel->store(true, std::memory_order_relaxed);
+    }
+}
+
+void ComparePanel::invalidateResizedCompareImage(ImageCell &cell)
+{
+    cell.resizedCompareImage = QImage();
+    cell.resizedCompareSrcKey = 0;
+    cell.resizedCompareRefSize = QSize();
+}
+
+void ComparePanel::ensureResizedCompareImage(int cellIndex)
+{
+    if (cellIndex <= 0 || cellIndex >= m_cells.size()) {
+        return;
+    }
+
+    ImageCell &cell = m_cells[cellIndex];
+    const QImage baseImage = baseImageForCell(cellIndex);
+    const QSize referenceSize = resizeReferenceSize();
+    if (!m_resizeToFirstImageEnabled || baseImage.isNull() ||
+        !referenceSize.isValid() || baseImage.size() == referenceSize) {
+        markResizeWorkStale(cell);
+        invalidateResizedCompareImage(cell);
+        return;
+    }
+
+    const qint64 srcKey = baseImage.cacheKey();
+    if (cell.resizedCompareSrcKey == srcKey &&
+        cell.resizedCompareRefSize == referenceSize &&
+        !cell.resizedCompareImage.isNull()) {
+        return;
+    }
+    scheduleResizedCompareImage(cellIndex, baseImage, referenceSize);
+}
+
+void ComparePanel::scheduleResizedCompareImage(int cellIndex,
+                                               const QImage &baseImage,
+                                               const QSize &referenceSize)
+{
+    if (cellIndex <= 0 || cellIndex >= m_cells.size() || baseImage.isNull() ||
+        !referenceSize.isValid() || baseImage.size() == referenceSize) {
+        return;
+    }
+
+    ImageCell &cell = m_cells[cellIndex];
+    const qint64 srcKey = baseImage.cacheKey();
+    if (cell.resizeWatcher && cell.pendingResizeSrcKey == srcKey &&
+        cell.pendingResizeRefSize == referenceSize) {
+        if (cell.resizeCancel &&
+            cell.resizeCancel->load(std::memory_order_relaxed)) {
+            cell.resizeRerunRequested = true;
+        }
+        return;
+    }
+
+    if (cell.resizeWatcher) {
+        if (cell.resizeCancel) {
+            cell.resizeCancel->store(true, std::memory_order_relaxed);
+        }
+        cell.resizeRerunRequested = true;
+        return;
+    }
+
+    cancelResizeWatcher(cell);
+    const quint64 generation = ++cell.resizeGeneration;
+    cell.pendingResizeSrcKey = srcKey;
+    cell.pendingResizeRefSize = referenceSize;
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    cell.resizeWatcher = watcher;
+    cell.resizeCancel = std::make_shared<std::atomic_bool>(false);
+    const auto cancelFlag = cell.resizeCancel;
+    QPointer<ComparePanel> guard(this);
+    QPointer<QWidget> cellIdentity(cell.container);
+    connect(watcher, &QFutureWatcher<QImage>::finished,
+            this, [this, guard, watcher, cellIdentity, generation, srcKey, referenceSize]() {
+        watcher->deleteLater();
+        if (!guard || !cellIdentity) {
+            return;
+        }
+
+        int cellIndex = -1;
+        for (int i = 0; i < m_cells.size(); ++i) {
+            if (m_cells[i].container == cellIdentity) {
+                cellIndex = i;
+                break;
+            }
+        }
+        if (cellIndex <= 0) {
+            return;
+        }
+
+        ImageCell &cell = m_cells[cellIndex];
+        if (cell.resizeWatcher != watcher || cell.resizeGeneration != generation) {
+            return;
+        }
+        const bool rerunRequested = cell.resizeRerunRequested;
+        cell.resizeWatcher = nullptr;
+        cell.resizeCancel.reset();
+        cell.pendingResizeSrcKey = 0;
+        cell.pendingResizeRefSize = QSize();
+        cell.resizeRerunRequested = false;
+
+        if (rerunRequested) {
+            ensureResizedCompareImage(cellIndex);
+            return;
+        }
+
+        const QImage currentBase = baseImageForCell(cellIndex);
+        if (currentBase.isNull() || currentBase.cacheKey() != srcKey ||
+            resizeReferenceSize() != referenceSize) {
+            return;
+        }
+
+        const QImage resized = watcher->result();
+        if (resized.isNull()) {
+            return;
+        }
+        cell.resizedCompareImage = resized;
+        cell.resizedCompareSrcKey = srcKey;
+        cell.resizedCompareRefSize = referenceSize;
+
+        // Replace the temporary base-image display only if the user has not
+        // switched this cell into a swap/tolerance preview in the meantime.
+        if (!cell.showingToleranceMap && cell.imageWidget &&
+            cell.imageWidget->image().cacheKey() == currentBase.cacheKey()) {
+            cell.imageWidget->setImage(cell.resizedCompareImage, false);
+        }
+        refreshToleranceJobsDependingOn(cellIndex);
+    });
+
+    watcher->setFuture(QtConcurrent::run(m_resizePool.get(),
+                                         [baseImage, referenceSize, cancelFlag]() {
+        if (cancelFlag->load(std::memory_order_relaxed)) {
+            return QImage();
+        }
+        QImage resized = baseImage.scaled(referenceSize,
+                                          Qt::IgnoreAspectRatio,
+                                          Qt::SmoothTransformation);
+        if (cancelFlag->load(std::memory_order_relaxed)) {
+            return QImage();
+        }
+        return resized;
+    }));
 }
 
 void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
@@ -1522,9 +1856,25 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
     if (targetIndex < 0 || targetIndex >= m_cells.size()) return;
 
     ImageCell &target = m_cells[targetIndex];
+    ensureResizedCompareImage(sourceIndex);
+    ensureResizedCompareImage(targetIndex);
     const QImage sourceImage = imageForCompare(sourceIndex);
     const QImage targetImage = imageForCompare(targetIndex);
     if (sourceImage.isNull() || targetImage.isNull()) return;
+
+    // Preserve the user's intent while an async resize-to-first job prepares the
+    // exact aligned pixels. Its completion calls refreshToleranceJobsDependingOn
+    // and starts the map once both inputs are ready.
+    const bool sourceResizePending = sourceIndex > 0 &&
+        m_cells[sourceIndex].resizeWatcher;
+    const bool targetResizePending = targetIndex > 0 &&
+        m_cells[targetIndex].resizeWatcher;
+    if (sourceResizePending || targetResizePending) {
+        target.showingToleranceMap = true;
+        target.toleranceSourceIndex = sourceIndex;
+        markToleranceWorkStale(target, true);
+        return;
+    }
 
     // Fast path: cache is valid for this source/threshold — display immediately
     // without re-running the comparer.
@@ -1533,6 +1883,10 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
                              && target.cachedToleranceThreshold == m_threshold;
 
     if (cacheUsable) {
+        // A newer in-flight threshold job may still exist while the user slides
+        // back to this cached value. Cancel it before returning, otherwise its
+        // later completion could overwrite the now-current cached map.
+        markToleranceWorkStale(target, false);
         target.imageWidget->setImage(target.cachedToleranceImage, false);
         target.showingToleranceMap = true;
         target.toleranceSourceIndex = sourceIndex;
@@ -1544,16 +1898,40 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
     target.showingToleranceMap = true;
     target.toleranceSourceIndex = sourceIndex;
 
-    cancelToleranceWatcher(target);
+    const int threshold = m_threshold;
+    const qint64 sourceKey = sourceImage.cacheKey();
+    const qint64 targetKey = targetImage.cacheKey();
+    if (target.toleranceWatcher) {
+        if (target.pendingToleranceSourceIndex == sourceIndex &&
+            target.pendingToleranceSourceKey == sourceKey &&
+            target.pendingToleranceTargetKey == targetKey &&
+            target.pendingToleranceThreshold == threshold &&
+            target.toleranceCancel &&
+            !target.toleranceCancel->load(std::memory_order_relaxed)) {
+            return;
+        }
+        // Keep only one active/queued job per target. Its completion discards
+        // the cancelled generation and submits the then-latest descriptor,
+        // rather than retaining a full-resolution QImage pair per slider tick.
+        markToleranceWorkStale(target, true);
+        return;
+    }
 
     const quint64 generation = ++target.toleranceGeneration;
-    const int threshold = m_threshold;
     auto *watcher = new QFutureWatcher<QImage>(this);
     target.toleranceWatcher = watcher;
+    target.toleranceCancel = std::make_shared<std::atomic_bool>(false);
+    target.pendingToleranceSourceIndex = sourceIndex;
+    target.pendingToleranceSourceKey = sourceKey;
+    target.pendingToleranceTargetKey = targetKey;
+    target.pendingToleranceThreshold = threshold;
+    target.toleranceRerunRequested = false;
+    const auto cancelFlag = target.toleranceCancel;
 
     QPointer<ComparePanel> guard(this);
     connect(watcher, &QFutureWatcher<QImage>::finished,
-            this, [this, guard, watcher, generation, sourceIndex, targetIndex, threshold]() {
+            this, [this, guard, watcher, generation, sourceIndex, targetIndex, threshold,
+                   sourceKey, targetKey]() {
         watcher->deleteLater();
         if (!guard) return;
         if (targetIndex < 0 || targetIndex >= m_cells.size()) return;
@@ -1564,7 +1942,25 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
         // source of truth for "is this watcher still current".
         if (cell.toleranceWatcher != watcher) return;
         if (cell.toleranceGeneration != generation) return;
+        const bool rerunRequested = cell.toleranceRerunRequested;
         cell.toleranceWatcher = nullptr;
+        cell.toleranceCancel.reset();
+        cell.pendingToleranceSourceKey = 0;
+        cell.pendingToleranceTargetKey = 0;
+        cell.pendingToleranceThreshold = -1;
+        cell.pendingToleranceSourceIndex = -1;
+        cell.toleranceRerunRequested = false;
+        if (rerunRequested) {
+            if (cell.showingToleranceMap && cell.toleranceSourceIndex >= 0) {
+                showToleranceMap(cell.toleranceSourceIndex, targetIndex);
+            }
+            return;
+        }
+        if (threshold != m_threshold) return;
+        if (imageForCompare(sourceIndex).cacheKey() != sourceKey ||
+            imageForCompare(targetIndex).cacheKey() != targetKey) {
+            return;
+        }
 
         const QImage result = watcher->result();
         if (result.isNull()) return;
@@ -1579,7 +1975,8 @@ void ComparePanel::showToleranceMap(int sourceIndex, int targetIndex)
     });
 
     watcher->setFuture(
-        ImageComparer::generateToleranceMapAsync(sourceImage, targetImage, threshold));
+        ImageComparer::generateToleranceMapAsync(sourceImage, targetImage,
+                                                 threshold, cancelFlag));
 }
 
 void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
@@ -1587,6 +1984,7 @@ void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
     if (sourceIndex < 0 || sourceIndex >= m_cells.size()) return;
     if (targetIndex < 0 || targetIndex >= m_cells.size()) return;
 
+    ensureResizedCompareImage(sourceIndex);
     const QImage sourceImage = imageForCompare(sourceIndex);
     if (sourceImage.isNull()) return;
     m_cells[targetIndex].imageWidget->setImage(sourceImage, false);
@@ -1594,19 +1992,38 @@ void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
 
 void ComparePanel::refreshCellsUsingFirstImage()
 {
-    if (!m_resizeToFirstImageEnabled ||
-        m_cells.isEmpty() ||
-        !resizeReferenceSize().isValid()) {
+    if (!m_resizeToFirstImageEnabled || m_cells.isEmpty()) {
         return;
+    }
+
+    const QSize referenceSize = resizeReferenceSize();
+    for (int i = 1; i < m_cells.size(); ++i) {
+        ImageCell &cell = m_cells[i];
+        markResizeWorkStale(cell);
+        invalidateResizedCompareImage(cell);
+        markToleranceWorkStale(cell, cell.showingToleranceMap);
+        cell.cachedToleranceImage = QImage();
+        cell.cachedToleranceThreshold = -1;
     }
 
     for (int i = 1; i < m_cells.size(); ++i) {
         ImageCell &cell = m_cells[i];
-        if (baseImageForCell(i).isNull()) {
+        const QImage baseImage = baseImageForCell(i);
+        if (baseImage.isNull()) {
             continue;
         }
 
-        cell.cachedToleranceImage = QImage();
+        // If the first image is temporarily unavailable (for example while a
+        // new network file is loading), immediately release the old full-size
+        // resample and show the cell's own pixels. Keep tolerance intent so it
+        // can regenerate when the new reference arrives.
+        if (!referenceSize.isValid()) {
+            if (cell.imageWidget) {
+                cell.imageWidget->setImage(baseImage, false);
+            }
+            continue;
+        }
+
         if (cell.showingToleranceMap && cell.toleranceSourceIndex >= 0) {
             showToleranceMap(cell.toleranceSourceIndex, i);
         } else {
@@ -1768,12 +2185,9 @@ QImage ComparePanel::imageForCompare(int cellIndex) const
         return baseImage;
     }
 
-    // Reuse the cached resize when the source image and reference size are
-    // unchanged. Without this, dragging the threshold slider re-runs this
-    // full-res SmoothTransformation for the source and target of every cell on
-    // every tick (on the GUI thread). cacheKey() changes whenever the image is
-    // replaced, so the cache self-invalidates on a new decode/preview.
-    const ImageCell &cell = m_cells[cellIndex];
+    // Pure cache read: scheduling is kept in ensureResizedCompareImage() so
+    // result-validation and paint paths cannot mutate async state re-entrantly.
+    const ImageCell &cell = m_cells.at(cellIndex);
     const qint64 srcKey = baseImage.cacheKey();
     if (cell.resizedCompareSrcKey == srcKey
         && cell.resizedCompareRefSize == referenceSize
@@ -1781,13 +2195,8 @@ QImage ComparePanel::imageForCompare(int cellIndex) const
         return cell.resizedCompareImage;
     }
 
-    QImage scaled = baseImage.scaled(referenceSize,
-                                     Qt::IgnoreAspectRatio,
-                                     Qt::SmoothTransformation);
-    cell.resizedCompareImage = scaled;
-    cell.resizedCompareSrcKey = srcKey;
-    cell.resizedCompareRefSize = referenceSize;
-    return scaled;
+    // Keep interaction immediate while the smooth aligned version is prepared.
+    return baseImage;
 }
 
 void ComparePanel::showImageContextMenuForCell(QWidget *cellContainer,
@@ -1962,13 +2371,19 @@ void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
         return;
     }
 
-    bool firstReferenceImageBecameAvailable = false;
+    bool firstReferenceChanged = false;
+    QList<int> changedCells;
     for (int i = 0; i < m_cells.size(); ++i) {
         if (m_cells[i].imagePath != imagePath) {
             continue;
         }
 
-        const bool wasMissingOriginalImage = m_cells[i].originalImage.isNull();
+        const qint64 previousBaseKey = baseImageForCell(i).cacheKey();
+        const bool wantsTolerance = m_cells[i].showingToleranceMap;
+        const int toleranceSource = m_cells[i].toleranceSourceIndex;
+        cancelToleranceJobsDependingOn(i);
+        markResizeWorkStale(m_cells[i]);
+        invalidateResizedCompareImage(m_cells[i]);
         // If the full-resolution image is merely replacing a low-res preview that
         // the user has already zoomed into, keep their zoom/pan instead of
         // snapping back to fit. zoom is a fit-relative factor and pan is a
@@ -1981,16 +2396,33 @@ void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
         m_cells[i].originalImage = image;
         m_cells[i].hasImage = true;
         m_cells[i].showingPreview = false;
+        m_cells[i].previewImage = QImage();
         m_cells[i].cachedToleranceImage = QImage();
         showOriginalImage(i, /*resetView=*/!wasShowingZoomedPreview);
+        if (wantsTolerance && toleranceSource >= 0) {
+            m_cells[i].showingToleranceMap = true;
+            m_cells[i].toleranceSourceIndex = toleranceSource;
+        }
+        changedCells.append(i);
 
-        if (i == 0 && wasMissingOriginalImage) {
-            firstReferenceImageBecameAvailable = true;
+        if (i == 0 && previousBaseKey != image.cacheKey()) {
+            firstReferenceChanged = true;
         }
     }
 
-    if (firstReferenceImageBecameAvailable) {
+    if (firstReferenceChanged) {
         refreshCellsUsingFirstImage();
+    }
+    for (int changedCell : std::as_const(changedCells)) {
+        if (firstReferenceChanged &&
+            m_resizeToFirstImageEnabled && changedCell == 0) {
+            if (m_cells[0].showingToleranceMap &&
+                m_cells[0].toleranceSourceIndex >= 0) {
+                showToleranceMap(m_cells[0].toleranceSourceIndex, 0);
+            }
+            continue;
+        }
+        refreshToleranceJobsDependingOn(changedCell);
     }
 }
 

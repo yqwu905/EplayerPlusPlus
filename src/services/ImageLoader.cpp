@@ -11,6 +11,8 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QCryptographicHash>
+#include <QDeadlineTimer>
+#include <QFileInfoList>
 
 #include <tuple>
 #include <utility>
@@ -20,35 +22,90 @@ namespace
 constexpr int kPriorityBackground = 0;
 constexpr int kPriorityPrefetch = 1;
 constexpr int kPriorityVisible = 2;
+constexpr int kMaxPendingDiskWrites = 16;
+constexpr qint64 kMaxPendingDiskWriteBytes = 32LL * 1024LL * 1024LL;
+constexpr qint64 kDiskCacheBudgetBytes = 512LL * 1024LL * 1024LL;
 }
 
 ImageLoader::ImageLoader(QObject *parent)
     : QObject(parent),
       m_thumbnailCancel(std::make_shared<CancellationState>()),
-      m_imageCancel(std::make_shared<CancellationState>())
+      m_imageCancel(std::make_shared<CancellationState>()),
+      m_decodePool(std::make_unique<QThreadPool>()),
+      m_imageDecodePool(std::make_unique<QThreadPool>()),
+      m_diskCachePool(std::make_unique<QThreadPool>())
 {
     // More in-flight loads than CPU cores so network/slow-disk reads overlap
     // their I/O latency. Bounded so we don't flood a share with connections.
-    m_decodePool.setMaxThreadCount(qBound(4, QThread::idealThreadCount() * 2, 12));
-    m_decodePool.setExpiryTimeout(30000);
+    m_decodePool->setMaxThreadCount(qMax(m_maxConcurrentLoads,
+                                         qBound(4, QThread::idealThreadCount() * 2, 12)));
+    m_decodePool->setExpiryTimeout(30000);
+    // Keep full-resolution current-image loads independent from a saturated
+    // thumbnail queue. One prefetch slot plus two visible slots gives rapid
+    // navigation a guaranteed path to the decoder.
+    m_imageDecodePool->setMaxThreadCount(m_maxConcurrentImageLoads);
+    m_imageDecodePool->setExpiryTimeout(30000);
+    // PNG compression/persistence must not extend time-to-first-paint or occupy
+    // decode slots. A single bounded writer preserves ordering and avoids an I/O
+    // burst while the decode pool is filling the viewport.
+    m_diskCachePool->setMaxThreadCount(1);
+    m_diskCachePool->setExpiryTimeout(30000);
+
+    static std::atomic_flag maintenanceScheduled = ATOMIC_FLAG_INIT;
+    if (!maintenanceScheduled.test_and_set(std::memory_order_acq_rel)) {
+        const QFuture<void> future = QtConcurrent::run(m_diskCachePool.get(), []() {
+            pruneDiskCache();
+        });
+        Q_UNUSED(future);
+    }
 }
 
 ImageLoader::~ImageLoader()
 {
-    // Bump generations so any worker still in its pre-decode check self-aborts.
+    // Shutdown is an unconditional cancellation boundary: the normal keep-set
+    // semantics must not preserve visible/selected paths while the destructor is
+    // waiting for the pools to drain.
+    {
+        QMutexLocker locker(&m_thumbnailCancel->keepMutex);
+        m_thumbnailCancel->keepPaths.clear();
+    }
+    {
+        QMutexLocker locker(&m_imageCancel->keepMutex);
+        m_imageCancel->keepPaths.clear();
+    }
     m_thumbnailCancel->generation.fetch_add(1, std::memory_order_release);
     m_imageCancel->generation.fetch_add(1, std::memory_order_release);
 
-    // Drain the pool while `this` is still alive. Workers capture only a
-    // shared_ptr to the cancellation state (never `this`), so joining them is
-    // safe; clear() drops queued-but-unstarted runnables first.
-    m_decodePool.clear();
-    m_decodePool.waitForDone();
+    // Drop every queued runnable before waiting so the three pools share one
+    // shutdown deadline rather than each adding its own timeout. Workers capture
+    // only value data/shared state (never `this`), so a pool that is still stuck
+    // in OS I/O can safely be detached after the overall deadline expires.
+    if (m_decodePool) m_decodePool->clear();
+    if (m_imageDecodePool) m_imageDecodePool->clear();
+    if (m_diskCachePool) m_diskCachePool->clear();
+    QDeadlineTimer shutdownDeadline(2000);
+    auto drainWorkerPool = [&shutdownDeadline](std::unique_ptr<QThreadPool> &pool) {
+        if (!pool) {
+            return;
+        }
+        const qint64 remaining = qMax<qint64>(0, shutdownDeadline.remainingTime());
+        if (!pool->waitForDone(static_cast<int>(remaining))) {
+            // QImageReader/file I/O cannot be interrupted once inside the OS.
+            // The runnable captures only value data/shared cancellation state;
+            // detach the self-contained pool so teardown remains bounded.
+            pool.release();
+        }
+    };
+    drainWorkerPool(m_decodePool);
+    drainWorkerPool(m_imageDecodePool);
+    // Persistence is best-effort too: an active atomic write gets the same
+    // bounded opportunity to finish, then its self-contained pool is detached.
+    drainWorkerPool(m_diskCachePool);
 
-    // The QFutureWatcher children's finished-slots capture `this`. Their futures
-    // are now finished, but the queued slot invocations have not run (we're on
-    // the main thread). Delete the watchers now so those invocations never fire
-    // on a half-destroyed object.
+    // The QFutureWatcher children's finished-slots capture `this`. Normally their
+    // futures are finished; a pool detached after the timeout may still be inside
+    // OS I/O. Delete every watcher now so neither case can later invoke a slot on
+    // a half-destroyed object.
     const auto watchers = findChildren<QFutureWatcherBase *>();
     for (QFutureWatcherBase *watcher : watchers) {
         delete watcher;
@@ -98,6 +155,8 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
     }
 
     QImage cachedThumbnail;
+    QSize cachedRequestedSize;
+    bool cachedHighQuality = false;
     bool hasCached = false;
     bool shouldProcess = false;
 
@@ -122,6 +181,8 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
             cachedThumbnail = listIt->thumbnail;
             hasCached = !cachedThumbnail.isNull();
             if (hasCached) {
+                cachedRequestedSize = listIt->requestedSize;
+                cachedHighQuality = listIt->highQuality;
                 touchThumbnailEntryUnlocked(listIt);
                 ++m_metricMemoryHits;
             }
@@ -129,25 +190,43 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
 
         if (!hasCached) {
             ThumbnailRequest request{key, imagePath, thumbnailSize, priority, highQuality,
-                                     ignoreColorProfile, sourceModifiedUtc};
+                                     ignoreColorProfile, sourceModifiedUtc, 0};
             auto pendingIt = m_pendingRequests.find(key);
             if (pendingIt != m_pendingRequests.end()) {
                 if (priority > pendingIt->priority) {
                     pendingIt->priority = priority;
-                    enqueueRequestUnlocked(*pendingIt);
-                    shouldProcess = true;
+                    // An in-flight request needs no second worker: the result is
+                    // identical and will satisfy the newly-visible consumer.
+                    if (!m_activeThumbnailRequests.contains(key)) {
+                        enqueueRequestUnlocked(*pendingIt);
+                        shouldProcess = true;
+                    }
                 }
             } else {
+                request.token = m_nextRequestToken++;
                 m_pendingRequests.insert(key, request);
-                enqueueRequestUnlocked(request);
-                shouldProcess = true;
+                // A cancelled request for the same key can still be draining.
+                // Its token cannot satisfy this new state; queue the replacement
+                // as soon as the stale worker releases the key.
+                if (!m_activeThumbnailRequests.contains(key)) {
+                    enqueueRequestUnlocked(request);
+                    shouldProcess = true;
+                }
             }
         }
     }
 
     if (hasCached) {
-        QMetaObject::invokeMethod(this, [this, imagePath, cachedThumbnail]() {
+        QMetaObject::invokeMethod(this, [this, imagePath, cachedThumbnail,
+                                         cachedRequestedSize, cachedHighQuality,
+                                         ignoreColorProfile]() {
+            if (ignoreColorProfile !=
+                m_ignoreColorProfile.load(std::memory_order_acquire)) {
+                return;
+            }
             emit thumbnailReady(imagePath, cachedThumbnail);
+            emit thumbnailReadyDetailed(imagePath, cachedThumbnail,
+                                        cachedRequestedSize, cachedHighQuality);
         }, Qt::QueuedConnection);
         return;
     }
@@ -188,7 +267,8 @@ void ImageLoader::processQueue()
                     if (pendingIt == m_pendingRequests.constEnd()) {
                         continue;
                     }
-                    if (pendingIt->priority != candidate.priority) {
+                    if (pendingIt->priority != candidate.priority ||
+                        pendingIt->token != candidate.token) {
                         continue;
                     }
                     request = candidate;
@@ -209,6 +289,7 @@ void ImageLoader::processQueue()
             }
 
             ++m_activeLoads;
+            m_activeThumbnailRequests.insert(request.key, request.token);
             capturedGeneration = m_thumbnailCancel->generation.load(std::memory_order_acquire);
         }
 
@@ -218,7 +299,7 @@ void ImageLoader::processQueue()
         // and self-aborts so fast folder switches don't burn CPU.
         auto cancelState = m_thumbnailCancel;
 
-        auto future = QtConcurrent::run(&m_decodePool, [request, cancelState, capturedGeneration]() {
+        auto future = QtConcurrent::run(m_decodePool.get(), [request, cancelState, capturedGeneration]() {
             const auto makeResult = [&request](const QImage &img,
                                                const QDateTime &mod,
                                                bool fromDisk,
@@ -231,7 +312,8 @@ void ImageLoader::processQueue()
                                        request.highQuality,
                                        request.ignoreColorProfile,
                                        fromDisk,
-                                       cancelled);
+                                       cancelled,
+                                       request.token);
             };
 
             const auto isCancelled = [&]() {
@@ -281,30 +363,32 @@ void ImageLoader::processQueue()
                 request.imagePath, request.thumbnailSize, mode,
                 request.ignoreColorProfile);
 
-            if (!generated.isNull()) {
-                persistDiskThumbnail(request.imagePath,
-                                     request.thumbnailSize,
-                                     modifiedUtc,
-                                     generated,
-                                     request.highQuality,
-                                     request.ignoreColorProfile);
-            }
-
             return makeResult(generated, modifiedUtc, false, false);
         });
 
-        using ResultTuple = std::tuple<QString, QString, QSize, QImage, QDateTime, bool, bool, bool, bool>;
+        using ResultTuple = std::tuple<QString, QString, QSize, QImage, QDateTime,
+                                       bool, bool, bool, bool, quint64>;
         auto *watcher = new QFutureWatcher<ResultTuple>(this);
         connect(watcher, &QFutureWatcher<ResultTuple>::finished, this,
                 [this, watcher]() {
                     auto [key, imagePath, thumbnailSize, thumbnail, modifiedUtc,
-                          highQuality, ignoreColorProfile, fromDisk, workerCancelled] = watcher->result();
+                          highQuality, ignoreColorProfile, fromDisk, workerCancelled,
+                          completedToken] = watcher->result();
                     watcher->deleteLater();
 
                     bool cancelledBeforeEmit = false;
+                    bool shouldPersist = false;
                     {
                         QMutexLocker locker(&m_cacheMutex);
-                        if (workerCancelled) {
+                        const auto activeIt = m_activeThumbnailRequests.constFind(key);
+                        const bool ownsActive = activeIt != m_activeThumbnailRequests.constEnd()
+                            && activeIt.value() == completedToken;
+                        const auto pendingIt = m_pendingRequests.find(key);
+                        const bool tokenMatches = ownsActive &&
+                            pendingIt != m_pendingRequests.end()
+                            && pendingIt->token == completedToken;
+
+                        if (workerCancelled || !tokenMatches) {
                             // Worker self-aborted; nothing to cache and
                             // nothing to emit. Don't disturb m_pendingRequests:
                             // if the user re-issued the request after the
@@ -319,15 +403,18 @@ void ImageLoader::processQueue()
                                 ++m_metricDecodes;
                             }
 
-                            if (m_pendingRequests.contains(key)) {
-                                m_pendingRequests.remove(key);
-                            } else {
-                                cancelledBeforeEmit = true;
-                                ++m_metricCancelled;
-                            }
+                            m_pendingRequests.erase(pendingIt);
+                            shouldPersist = !fromDisk && !thumbnail.isNull();
                         }
 
+                        if (ownsActive) {
+                            m_activeThumbnailRequests.remove(key);
+                        }
                         m_activeLoads = qMax(0, m_activeLoads - 1);
+                        auto currentIt = m_pendingRequests.constFind(key);
+                        if (ownsActive && currentIt != m_pendingRequests.constEnd()) {
+                            enqueueRequestUnlocked(*currentIt);
+                        }
                     }
 
                     finishRequest(imagePath,
@@ -337,6 +424,11 @@ void ImageLoader::processQueue()
                                   highQuality,
                                   ignoreColorProfile,
                                   cancelledBeforeEmit);
+                    if (shouldPersist) {
+                        scheduleDiskThumbnailWrite(imagePath, thumbnailSize,
+                                                   modifiedUtc, thumbnail,
+                                                   highQuality, ignoreColorProfile);
+                    }
                     processQueue();
                 });
 
@@ -352,7 +444,7 @@ void ImageLoader::finishRequest(const QString &imagePath,
                                 bool ignoreColorProfile,
                                 bool cancelledBeforeEmit)
 {
-    if (!thumbnail.isNull()) {
+    if (!cancelledBeforeEmit && !thumbnail.isNull()) {
         QMutexLocker locker(&m_cacheMutex);
         const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality, ignoreColorProfile);
         const qint64 bytes = imageByteSize(thumbnail);
@@ -370,47 +462,13 @@ void ImageLoader::finishRequest(const QString &imagePath,
 
     if (!cancelledBeforeEmit) {
         emit thumbnailReady(imagePath, thumbnail);
+        emit thumbnailReadyDetailed(imagePath, thumbnail, thumbnailSize, highQuality);
     }
 }
 
 void ImageLoader::requestImage(const QString &imagePath)
 {
-    if (imagePath.isEmpty()) {
-        return;
-    }
-
-    QImage cachedImage;
-    bool hasCached = false;
-    bool shouldProcess = false;
-    {
-        QMutexLocker locker(&m_cacheMutex);
-        auto it = m_imageIndex.find(imagePath);
-        if (it != m_imageIndex.end()) {
-            ImageIter listIt = it.value();
-            cachedImage = listIt->image;
-            hasCached = !cachedImage.isNull();
-            if (hasCached) {
-                touchImageEntryUnlocked(listIt);
-            }
-        }
-
-        if (!hasCached && !m_pendingImageRequests.contains(imagePath)) {
-            m_pendingImageRequests.insert(imagePath);
-            m_imageQueue.enqueue(imagePath);
-            shouldProcess = true;
-        }
-    }
-
-    if (hasCached) {
-        QMetaObject::invokeMethod(this, [this, imagePath, cachedImage]() {
-            emit imageReady(imagePath, cachedImage);
-        }, Qt::QueuedConnection);
-        return;
-    }
-
-    if (shouldProcess) {
-        processImageQueue();
-    }
+    enqueueImageRequest(imagePath, kPriorityVisible, true);
 }
 
 void ImageLoader::requestImageBatch(const QStringList &imagePaths)
@@ -420,10 +478,89 @@ void ImageLoader::requestImageBatch(const QStringList &imagePaths)
     }
 }
 
+void ImageLoader::prefetchImages(const QStringList &imagePaths)
+{
+    for (const QString &path : imagePaths) {
+        enqueueImageRequest(path, kPriorityPrefetch, false);
+    }
+}
+
+void ImageLoader::enqueueImageRequest(const QString &imagePath, int priority, bool notify)
+{
+    if (imagePath.isEmpty()) {
+        return;
+    }
+
+    QImage cachedImage;
+    bool hasCached = false;
+    bool shouldProcess = false;
+    const bool ignoreColorProfile = m_ignoreColorProfile.load(std::memory_order_acquire);
+    {
+        QMutexLocker locker(&m_cacheMutex);
+        auto cacheIt = m_imageIndex.find(imagePath);
+        if (cacheIt != m_imageIndex.end()) {
+            ImageIter listIt = cacheIt.value();
+            cachedImage = listIt->image;
+            hasCached = !cachedImage.isNull();
+            if (hasCached) {
+                touchImageEntryUnlocked(listIt);
+            }
+        }
+
+        if (!hasCached) {
+            auto pendingIt = m_pendingImageRequests.find(imagePath);
+            if (pendingIt != m_pendingImageRequests.end()) {
+                const bool priorityRaised = priority > pendingIt->priority;
+                pendingIt->priority = qMax(pendingIt->priority, priority);
+                pendingIt->notify = pendingIt->notify || notify;
+                if (priorityRaised && !m_activeImageRequests.contains(imagePath)) {
+                    enqueueImageRequestUnlocked(*pendingIt);
+                    shouldProcess = true;
+                }
+            } else {
+                ImageRequest request{imagePath, priority, notify, m_nextRequestToken++};
+                m_pendingImageRequests.insert(imagePath, request);
+                if (!m_activeImageRequests.contains(imagePath)) {
+                    enqueueImageRequestUnlocked(request);
+                    shouldProcess = true;
+                }
+            }
+        }
+    }
+
+    if (hasCached) {
+        if (notify) {
+            QMetaObject::invokeMethod(this, [this, imagePath, cachedImage,
+                                             ignoreColorProfile]() {
+                if (ignoreColorProfile !=
+                    m_ignoreColorProfile.load(std::memory_order_acquire)) {
+                    return;
+                }
+                emit imageReady(imagePath, cachedImage);
+            }, Qt::QueuedConnection);
+        }
+        return;
+    }
+
+    if (shouldProcess) {
+        processImageQueue();
+    }
+}
+
+void ImageLoader::enqueueImageRequestUnlocked(const ImageRequest &request)
+{
+    if (request.priority >= kPriorityVisible) {
+        m_visibleImageQueue.enqueue(request);
+    } else {
+        m_prefetchImageQueue.enqueue(request);
+    }
+}
+
 void ImageLoader::processImageQueue()
 {
     while (true) {
-        QString imagePath;
+        ImageRequest request;
+        bool hasRequest = false;
         int capturedGeneration = 0;
 
         {
@@ -432,19 +569,35 @@ void ImageLoader::processImageQueue()
                 return;
             }
 
-            while (!m_imageQueue.isEmpty()) {
-                const QString candidate = m_imageQueue.dequeue();
-                if (m_pendingImageRequests.contains(candidate)) {
-                    imagePath = candidate;
-                    break;
+            auto takeCurrent = [this, &request, &hasRequest](QQueue<ImageRequest> &queue) {
+                while (!queue.isEmpty()) {
+                    const ImageRequest candidate = queue.dequeue();
+                    const auto pendingIt = m_pendingImageRequests.constFind(candidate.imagePath);
+                    if (pendingIt == m_pendingImageRequests.constEnd() ||
+                        pendingIt->token != candidate.token ||
+                        pendingIt->priority != candidate.priority) {
+                        continue;
+                    }
+                    request = candidate;
+                    hasRequest = true;
+                    return;
                 }
-            }
+            };
 
-            if (imagePath.isEmpty()) {
+            takeCurrent(m_visibleImageQueue);
+            if (!hasRequest &&
+                m_activeImagePrefetchLoads < m_maxConcurrentImagePrefetchLoads) {
+                takeCurrent(m_prefetchImageQueue);
+            }
+            if (!hasRequest) {
                 return;
             }
 
             ++m_activeImageLoads;
+            if (request.priority < kPriorityVisible) {
+                ++m_activeImagePrefetchLoads;
+            }
+            m_activeImageRequests.insert(request.imagePath, request.token);
             capturedGeneration = m_imageCancel->generation.load(std::memory_order_acquire);
         }
 
@@ -452,38 +605,47 @@ void ImageLoader::processImageQueue()
         // Snapshot the strip-profile flag for this load so a runtime toggle
         // can't make the in-flight decode disagree with the user's intent.
         const bool ignoreColorProfile = m_ignoreColorProfile.load(std::memory_order_acquire);
-        auto future = QtConcurrent::run(&m_decodePool, [imagePath, cancelState, capturedGeneration, ignoreColorProfile]() {
-            if (capturedGeneration !=
-                cancelState->generation.load(std::memory_order_acquire)) {
-                bool keep = false;
-                {
-                    QMutexLocker locker(&cancelState->keepMutex);
-                    keep = cancelState->keepPaths.contains(imagePath);
+        auto future = QtConcurrent::run(m_imageDecodePool.get(),
+                                        [request, cancelState, capturedGeneration,
+                                         ignoreColorProfile]() {
+            const auto isCancelled = [&]() {
+                if (capturedGeneration ==
+                    cancelState->generation.load(std::memory_order_acquire)) {
+                    return false;
                 }
-                if (!keep) {
-                    return std::make_tuple(QImage(), true, ignoreColorProfile);
-                }
+                QMutexLocker locker(&cancelState->keepMutex);
+                return !cancelState->keepPaths.contains(request.imagePath);
+            };
+            if (isCancelled()) {
+                return std::make_tuple(QImage(), true, ignoreColorProfile,
+                                       request.token);
             }
-            QImage image(imagePath);
+            QImage image(request.imagePath);
             if (ignoreColorProfile) {
                 ImageUtils::stripColorProfile(image);
+            }
+            if (isCancelled()) {
+                return std::make_tuple(QImage(), true, ignoreColorProfile,
+                                       request.token);
             }
             // Report which policy this decode used: a toggle that lands after we
             // pass the abort check above can't stop this worker, so the finish
             // handler must detect and discard the now-wrong-policy result.
-            return std::make_tuple(image, false, ignoreColorProfile);
+            return std::make_tuple(image, false, ignoreColorProfile,
+                                   request.token);
         });
 
-        using ImageResult = std::tuple<QImage, bool, bool>;
+        using ImageResult = std::tuple<QImage, bool, bool, quint64>;
         auto *watcher = new QFutureWatcher<ImageResult>(this);
         connect(watcher, &QFutureWatcher<ImageResult>::finished, this,
-                [this, watcher, imagePath]() {
+                [this, watcher, request]() {
                     const ImageResult result = watcher->result();
                     watcher->deleteLater();
 
                     const QImage image = std::get<0>(result);
                     const bool workerCancelled = std::get<1>(result);
                     const bool usedIgnoreColorProfile = std::get<2>(result);
+                    const quint64 completedToken = std::get<3>(result);
 
                     // The full-image cache is keyed by path only, so a result
                     // produced under a since-changed color-profile policy would
@@ -494,25 +656,40 @@ void ImageLoader::processImageQueue()
                         m_ignoreColorProfile.load(std::memory_order_acquire);
                     const bool drop = workerCancelled || staleProfile;
 
-                    bool cancelledBeforeEmit = false;
+                    bool accepted = false;
+                    bool notify = false;
                     {
                         QMutexLocker locker(&m_cacheMutex);
-                        if (drop) {
-                            // Self-aborted or stale-policy; leave
-                            // m_pendingImageRequests alone so a re-issued request
-                            // can still be serviced by a fresh worker.
-                            cancelledBeforeEmit = true;
-                        } else if (m_pendingImageRequests.contains(imagePath)) {
-                            m_pendingImageRequests.remove(imagePath);
-                        } else {
-                            cancelledBeforeEmit = true;
+                        const auto activeIt = m_activeImageRequests.constFind(request.imagePath);
+                        const bool ownsActive = activeIt != m_activeImageRequests.constEnd()
+                            && activeIt.value() == completedToken;
+                        auto pendingIt = m_pendingImageRequests.find(request.imagePath);
+                        const bool tokenMatches = ownsActive &&
+                            pendingIt != m_pendingImageRequests.end() &&
+                            pendingIt->token == completedToken;
+                        if (!drop && tokenMatches) {
+                            accepted = true;
+                            notify = pendingIt->notify;
+                            m_pendingImageRequests.erase(pendingIt);
+                        }
+                        if (ownsActive) {
+                            m_activeImageRequests.remove(request.imagePath);
                         }
                         m_activeImageLoads = qMax(0, m_activeImageLoads - 1);
+                        if (request.priority < kPriorityVisible) {
+                            m_activeImagePrefetchLoads = qMax(0,
+                                m_activeImagePrefetchLoads - 1);
+                        }
+                        const auto currentIt = m_pendingImageRequests.constFind(request.imagePath);
+                        if (ownsActive && currentIt != m_pendingImageRequests.constEnd()) {
+                            enqueueImageRequestUnlocked(*currentIt);
+                        }
                     }
 
-                    finishImageRequest(imagePath,
-                                       drop ? QImage() : image,
-                                       cancelledBeforeEmit);
+                    finishImageRequest(request.imagePath,
+                                       accepted ? image : QImage(),
+                                       accepted,
+                                       notify);
                     processImageQueue();
                 });
 
@@ -522,9 +699,10 @@ void ImageLoader::processImageQueue()
 
 void ImageLoader::finishImageRequest(const QString &imagePath,
                                      const QImage &image,
-                                     bool cancelledBeforeEmit)
+                                     bool accepted,
+                                     bool notify)
 {
-    if (!image.isNull()) {
+    if (accepted && !image.isNull()) {
         QMutexLocker locker(&m_cacheMutex);
         const qint64 bytes = imageByteSize(image);
         ImageCacheEntry entry{imagePath, image, bytes};
@@ -532,12 +710,12 @@ void ImageLoader::finishImageRequest(const QString &imagePath,
         trimImageCache();
     }
 
-    if (!cancelledBeforeEmit) {
+    if (accepted && notify) {
         emit imageReady(imagePath, image);
     }
 }
 
-QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
+QImage ImageLoader::getCachedThumbnail(const QString &imagePath)
 {
     // Honour the current color-profile policy: a thumbnail decoded under the
     // previous policy could linger in the path index (e.g. an in-flight worker
@@ -552,10 +730,13 @@ QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
     }
 
     // Walk only the (small) list of cached sizes for this path.
-    // Prefer high-quality over fast, then largest byte size.
+    // Prefer the sharpest available decode; use quality as the tie-breaker.
+    // A tiny HQ list thumbnail is a worse compare preview than a larger fast
+    // decode of the same source.
     QImage best;
-    qint64 bestBytes = 0;
+    int bestExtent = 0;
     bool bestHighQuality = false;
+    ThumbnailIter bestIt = m_thumbnailLru.end();
     for (const QString &key : pathIt.value()) {
         auto it = m_thumbnailIndex.constFind(key);
         if (it == m_thumbnailIndex.constEnd()) {
@@ -568,42 +749,50 @@ QImage ImageLoader::getCachedThumbnail(const QString &imagePath) const
         if (entry.thumbnail.isNull()) {
             continue;
         }
-        const qint64 bytes = entry.byteSize;
+        const int extent = qMax(entry.requestedSize.width(),
+                                entry.requestedSize.height());
         const bool hq = entry.highQuality;
         const bool better = best.isNull()
-            || (hq && !bestHighQuality)
-            || (hq == bestHighQuality && bytes > bestBytes);
+            || extent > bestExtent
+            || (extent == bestExtent && hq && !bestHighQuality);
         if (better) {
             best = entry.thumbnail;
-            bestBytes = bytes;
+            bestExtent = extent;
             bestHighQuality = hq;
+            bestIt = it.value();
         }
+    }
+    if (bestIt != m_thumbnailLru.end()) {
+        touchThumbnailEntryUnlocked(bestIt);
     }
     return best;
 }
 
-QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize) const
+QImage ImageLoader::getCachedThumbnail(const QString &imagePath, const QSize &thumbnailSize)
 {
     const bool ignoreColorProfile = m_ignoreColorProfile.load(std::memory_order_acquire);
     QMutexLocker locker(&m_cacheMutex);
     const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true, ignoreColorProfile);
     auto it = m_thumbnailIndex.constFind(highQualityKey);
     if (it != m_thumbnailIndex.constEnd()) {
+        touchThumbnailEntryUnlocked(it.value());
         return it.value()->thumbnail;
     }
     const QString fastKey = memoryCacheKey(imagePath, thumbnailSize, false, ignoreColorProfile);
     it = m_thumbnailIndex.constFind(fastKey);
     if (it != m_thumbnailIndex.constEnd()) {
+        touchThumbnailEntryUnlocked(it.value());
         return it.value()->thumbnail;
     }
     return QImage();
 }
 
-QImage ImageLoader::getCachedImage(const QString &imagePath) const
+QImage ImageLoader::getCachedImage(const QString &imagePath)
 {
     QMutexLocker locker(&m_cacheMutex);
     auto it = m_imageIndex.constFind(imagePath);
     if (it != m_imageIndex.constEnd()) {
+        touchImageEntryUnlocked(it.value());
         return it.value()->image;
     }
     return QImage();
@@ -622,7 +811,8 @@ void ImageLoader::clearCache()
     m_highPriorityQueue.clear();
     m_normalPriorityQueue.clear();
     m_backgroundPriorityQueue.clear();
-    m_imageQueue.clear();
+    m_visibleImageQueue.clear();
+    m_prefetchImageQueue.clear();
     m_currentThumbnailCacheBytes = 0;
     m_currentImageCacheBytes = 0;
 }
@@ -645,8 +835,8 @@ void ImageLoader::setMaxConcurrentLoads(int maxConcurrentLoads)
     }
     // Make sure the pool can actually run the requested number of loads
     // concurrently (it never shrinks below its configured floor).
-    if (m_decodePool.maxThreadCount() < desired) {
-        m_decodePool.setMaxThreadCount(desired);
+    if (m_decodePool->maxThreadCount() < desired) {
+        m_decodePool->setMaxThreadCount(desired);
     }
     processQueue();
 }
@@ -675,8 +865,13 @@ void ImageLoader::cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths)
             if (keepPaths.contains(it->imagePath)) {
                 ++it;
             } else {
+                const bool wasActive = m_activeThumbnailRequests.contains(it.key());
                 it = m_pendingRequests.erase(it);
-                ++m_metricCancelled;
+                // Active tokens are counted when their completion is rejected;
+                // count only never-dispatched work here to avoid double metrics.
+                if (!wasActive) {
+                    ++m_metricCancelled;
+                }
             }
         }
     }
@@ -702,17 +897,21 @@ void ImageLoader::cancelImageRequestsExcept(const QSet<QString> &keepPaths)
     {
         QMutexLocker locker(&m_cacheMutex);
 
-        QQueue<QString> filtered;
-        while (!m_imageQueue.isEmpty()) {
-            const QString path = m_imageQueue.dequeue();
-            if (keepPaths.contains(path)) {
-                filtered.enqueue(path);
+        auto filterQueue = [&keepPaths](QQueue<ImageRequest> &queue) {
+            QQueue<ImageRequest> filtered;
+            while (!queue.isEmpty()) {
+                const ImageRequest request = queue.dequeue();
+                if (keepPaths.contains(request.imagePath)) {
+                    filtered.enqueue(request);
+                }
             }
-        }
-        m_imageQueue = filtered;
+            queue = std::move(filtered);
+        };
+        filterQueue(m_visibleImageQueue);
+        filterQueue(m_prefetchImageQueue);
 
         for (auto it = m_pendingImageRequests.begin(); it != m_pendingImageRequests.end();) {
-            if (keepPaths.contains(*it)) {
+            if (keepPaths.contains(it->imagePath)) {
                 ++it;
             } else {
                 it = m_pendingImageRequests.erase(it);
@@ -754,26 +953,50 @@ void ImageLoader::setIgnoreColorProfile(bool enabled)
         m_currentThumbnailCacheBytes = 0;
         m_currentImageCacheBytes = 0;
 
+        // Drop old-policy thumbnail work as well. Request keys isolate the
+        // resulting cache entry, but emitting an old-policy image to a model
+        // after the toggle would still briefly display inconsistent pixels.
+        m_pendingRequests.clear();
+        m_highPriorityQueue.clear();
+        m_normalPriorityQueue.clear();
+        m_backgroundPriorityQueue.clear();
+
         // Drop queued/pending IMAGE requests: any in-flight worker finishes
         // under the old policy and is discarded by the stale-policy check, and
         // clearing the pending set lets the post-toggle reload re-queue fresh
         // decodes for the same paths (the dedup in requestImage would otherwise
-        // suppress them). Thumbnail requests need no such reset — their cache
-        // key already encodes the policy, so a re-request uses a fresh key and
-        // never collides with the stale in-flight entry.
+        // suppress them).
         m_pendingImageRequests.clear();
-        m_imageQueue.clear();
+        m_visibleImageQueue.clear();
+        m_prefetchImageQueue.clear();
     }
 
-    // Bump cancel generations so any in-flight worker that started under the
-    // old policy and is not on the keep path can self-abort before doing
-    // pointless work — its output would be discarded by the cache anyway.
+    // Policy changes cancel old work unconditionally. Reusing the viewport keep
+    // sets here would let an old-policy decode for a visible/current path run to
+    // completion and block its fresh replacement behind the active-token guard.
+    {
+        QMutexLocker locker(&m_thumbnailCancel->keepMutex);
+        m_thumbnailCancel->keepPaths.clear();
+    }
+    {
+        QMutexLocker locker(&m_imageCancel->keepMutex);
+        m_imageCancel->keepPaths.clear();
+    }
     m_thumbnailCancel->generation.fetch_add(1, std::memory_order_release);
     m_imageCancel->generation.fetch_add(1, std::memory_order_release);
 }
 
 QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
 {
+    qint64 pendingDiskWrites = 0;
+    qint64 pendingDiskWriteBytes = 0;
+    qint64 droppedDiskWrites = 0;
+    {
+        QMutexLocker locker(&m_diskWriteState->mutex);
+        pendingDiskWrites = m_diskWriteState->pendingCount;
+        pendingDiskWriteBytes = m_diskWriteState->pendingBytes;
+        droppedDiskWrites = m_diskWriteState->droppedCount;
+    }
     QMutexLocker locker(&m_cacheMutex);
     return {
         {QStringLiteral("requests"), m_metricRequests},
@@ -782,7 +1005,10 @@ QHash<QString, qint64> ImageLoader::thumbnailMetrics() const
         {QStringLiteral("decodes"), m_metricDecodes},
         {QStringLiteral("cancelled"), m_metricCancelled},
         {QStringLiteral("thumbnailCacheBytes"), m_currentThumbnailCacheBytes},
-        {QStringLiteral("imageCacheBytes"), m_currentImageCacheBytes}
+        {QStringLiteral("imageCacheBytes"), m_currentImageCacheBytes},
+        {QStringLiteral("pendingDiskWrites"), pendingDiskWrites},
+        {QStringLiteral("pendingDiskWriteBytes"), pendingDiskWriteBytes},
+        {QStringLiteral("droppedDiskWrites"), droppedDiskWrites}
     };
 }
 
@@ -956,6 +1182,52 @@ QString ImageLoader::cachePathForKey(const QString &cacheKey)
     return QDir(cacheRootDir()).filePath(cacheKey + QStringLiteral(".png"));
 }
 
+void ImageLoader::pruneDiskCache(qint64 byteBudget, bool respectMaintenanceStamp)
+{
+    const QDir dir(cacheRootDir());
+    const QString stampPath = dir.filePath(QStringLiteral(".maintenance"));
+    const QFileInfo stampInfo(stampPath);
+    if (respectMaintenanceStamp && stampInfo.exists() &&
+        stampInfo.lastModified().toUTC().secsTo(QDateTime::currentDateTimeUtc()) < 24 * 60 * 60) {
+        return;
+    }
+
+    QFileInfoList entries = dir.entryInfoList({QStringLiteral("*.png")},
+                                              QDir::Files | QDir::NoSymLinks,
+                                              QDir::Time | QDir::Reversed);
+    qint64 totalBytes = 0;
+    const QDateTime expiry = QDateTime::currentDateTimeUtc().addDays(-90);
+    for (const QFileInfo &entry : std::as_const(entries)) {
+        if (entry.lastModified().toUTC() < expiry) {
+            QFile::remove(entry.absoluteFilePath());
+            continue;
+        }
+        totalBytes += entry.size();
+    }
+
+    if (totalBytes > byteBudget) {
+        // entries are oldest first. Remove until the retained cache fits its hard
+        // budget; cache misses remain correctness-neutral and regenerate lazily.
+        for (const QFileInfo &entry : std::as_const(entries)) {
+            if (totalBytes <= byteBudget) {
+                break;
+            }
+            if (!entry.exists()) {
+                continue;
+            }
+            const qint64 bytes = entry.size();
+            if (QFile::remove(entry.absoluteFilePath())) {
+                totalBytes -= bytes;
+            }
+        }
+    }
+
+    QFile stamp(stampPath);
+    if (stamp.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        stamp.write(QByteArray::number(QDateTime::currentMSecsSinceEpoch()));
+    }
+}
+
 QDateTime ImageLoader::sourceLastModifiedUtc(const QString &imagePath)
 {
     return QFileInfo(imagePath).lastModified().toUTC();
@@ -1012,6 +1284,64 @@ void ImageLoader::persistDiskThumbnail(const QString &imagePath,
         return;
     }
     file.commit();
+}
+
+void ImageLoader::scheduleDiskThumbnailWrite(const QString &imagePath,
+                                             const QSize &thumbnailSize,
+                                             const QDateTime &lastModifiedUtc,
+                                             const QImage &thumbnail,
+                                             bool highQuality,
+                                             bool ignoreColorProfile)
+{
+    if (thumbnail.isNull() || !lastModifiedUtc.isValid()) {
+        return;
+    }
+
+    const QString cacheKey = makeCacheKey(imagePath, thumbnailSize, lastModifiedUtc,
+                                          highQuality, ignoreColorProfile);
+    const qint64 bytes = imageByteSize(thumbnail);
+    const auto state = m_diskWriteState;
+    {
+        QMutexLocker locker(&state->mutex);
+        if (state->pendingKeys.contains(cacheKey)) {
+            return;
+        }
+        if (bytes > kMaxPendingDiskWriteBytes ||
+            state->pendingCount >= kMaxPendingDiskWrites ||
+            state->pendingBytes + bytes > kMaxPendingDiskWriteBytes) {
+            ++state->droppedCount;
+            return;
+        }
+        state->pendingKeys.insert(cacheKey);
+        ++state->pendingCount;
+        state->pendingBytes += bytes;
+    }
+
+    const QFuture<void> future = QtConcurrent::run(
+        m_diskCachePool.get(),
+        [imagePath, thumbnailSize, lastModifiedUtc, thumbnail, cacheKey, bytes,
+         highQuality, ignoreColorProfile, state]() {
+            persistDiskThumbnail(imagePath, thumbnailSize, lastModifiedUtc,
+                                 thumbnail, highQuality, ignoreColorProfile);
+            {
+                QMutexLocker locker(&state->mutex);
+                state->pendingKeys.remove(cacheKey);
+                state->pendingCount = qMax(0, state->pendingCount - 1);
+                state->pendingBytes = qMax<qint64>(0, state->pendingBytes - bytes);
+            }
+
+            // Startup maintenance is throttled to once per day, but a long-lived
+            // process still needs periodic enforcement. Normal 200px thumbnails
+            // trigger an inexpensive background sweep every 128 writes; unusually
+            // large preview entries trigger one immediately.
+            static std::atomic<quint64> writesSincePrune{0};
+            const quint64 completed = writesSincePrune.fetch_add(
+                1, std::memory_order_relaxed) + 1;
+            if ((completed % 128) == 0 || bytes >= 2LL * 1024LL * 1024LL) {
+                pruneDiskCache(kDiskCacheBudgetBytes, false);
+            }
+        });
+    Q_UNUSED(future);
 }
 
 qint64 ImageLoader::imageByteSize(const QImage &image)

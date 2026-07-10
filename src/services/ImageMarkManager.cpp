@@ -1,6 +1,8 @@
 #include "ImageMarkManager.h"
 
 #include <QCryptographicHash>
+#include <QDeadlineTimer>
+#include <QFutureWatcher>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -11,7 +13,11 @@
 #include <QMutexLocker>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QTemporaryFile>
+#include <QThreadPool>
+#include <QtConcurrent>
+
+#include <utility>
+#include <limits>
 
 #ifdef Q_OS_WIN
 #  include <io.h>
@@ -43,6 +49,32 @@ constexpr qint64 kJournalCompactBytes = 64 * 1024;
 // shared journal lives on a stuck network share the local fallback already
 // has the data, so abandoning is safe.
 constexpr int kShutdownWaitMs = 2000;
+
+QThreadPool *markReadPool()
+{
+    // Canonical local app-data reads must never queue behind a stuck remote
+    // sidecar. Keep a small independent pool for them.
+    static QThreadPool *pool = [] {
+        auto *p = new QThreadPool;
+        p->setMaxThreadCount(2);
+        p->setExpiryTimeout(30000);
+        return p;
+    }();
+    return pool;
+}
+
+QThreadPool *remoteMarkReadPool()
+{
+    // Remote sidecar import is best effort and isolated: even if both workers
+    // block inside the OS, canonical local marks still load and the UI updates.
+    static QThreadPool *pool = [] {
+        auto *p = new QThreadPool;
+        p->setMaxThreadCount(2);
+        p->setExpiryTimeout(30000);
+        return p;
+    }();
+    return pool;
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +112,25 @@ void ImageMarkManager::Worker::run()
                 return;
             }
             task = m_queue.dequeue();
+
+            // Coalesce a burst of marks for the same folder into one append and
+            // one fsync. Ctrl-mark and VLM batches can enqueue hundreds of tiny
+            // JSON lines; durability is unchanged because the combined payload
+            // is flushed before the worker advances to the next task.
+            if (task.kind == TaskKind::AppendJournal) {
+                if (m_queue.isEmpty() && !m_shutdown) {
+                    m_queueCondition.wait(&m_queueMutex, 2);
+                }
+                while (!m_queue.isEmpty()) {
+                    const WriteTask &next = m_queue.head();
+                    if (next.kind != TaskKind::AppendJournal ||
+                        next.primaryPath != task.primaryPath) {
+                        break;
+                    }
+                    task.journalLine.append(next.journalLine);
+                    m_queue.dequeue();
+                }
+            }
         }
         execute(task);
     }
@@ -99,14 +150,8 @@ void ImageMarkManager::Worker::execute(const WriteTask &task)
 
 bool ImageMarkManager::Worker::appendJournal(const WriteTask &task)
 {
-    const QStringList attempts = { task.primaryPath, task.fallbackPath };
-    for (const QString &path : attempts) {
-        if (path.isEmpty()) {
-            continue;
-        }
-        if (writeJournalLine(path, task.journalLine)) {
-            return true;
-        }
+    if (writeJournalLine(task.primaryPath, task.journalLine)) {
+        return true;
     }
     // Pre-format then log via "%s": the streaming qCWarning(category) form takes
     // no variadic argument, which trips -Wvariadic-macro-arguments-omitted under
@@ -114,8 +159,8 @@ bool ImageMarkManager::Worker::appendJournal(const WriteTask &task)
     // and is format-clean and portable on every compiler.
     qCWarning(lcMarkManager, "%s",
               qPrintable(QStringLiteral(
-                  "ImageMarkManager: failed to append journal entry to %1 (fallback: %2)")
-                  .arg(task.primaryPath, task.fallbackPath)));
+                  "ImageMarkManager: failed to append journal entry to %1")
+                  .arg(task.primaryPath)));
     return false;
 }
 
@@ -153,12 +198,6 @@ bool ImageMarkManager::Worker::writeSnapshot(const WriteTask &task)
     // Snapshot is committed; the journal is now redundant.
     if (!task.journalPathToTruncate.isEmpty()) {
         QFile::remove(task.journalPathToTruncate);
-    }
-    if (!task.fallbackJournalPathToTruncate.isEmpty()) {
-        QFile::remove(task.fallbackJournalPathToTruncate);
-    }
-    if (!task.fallbackSnapshotPathToTruncate.isEmpty()) {
-        QFile::remove(task.fallbackSnapshotPathToTruncate);
     }
     return true;
 }
@@ -238,20 +277,20 @@ ImageMarkManager::ImageMarkManager(QObject *parent)
     : QObject(parent)
 {
     m_worker = new Worker;
+    m_remoteWorker = new Worker;
     m_worker->start();
+    m_remoteWorker->start();
 }
 
 ImageMarkManager::~ImageMarkManager()
 {
-    if (!m_worker) {
+    if (!m_worker && !m_remoteWorker) {
         return;
     }
 
-    // Snapshot-compact only folders that THIS manager actually wrote to
-    // (m_journalBytesSinceCompaction > 0). A read-only manager that just
-    // called loadFolder must not write a snapshot — doing so would race
-    // with a concurrent writer's pending journal entries, and the writer's
-    // subsequent compaction unlinks the journal, losing the data.
+    // Compact only folders this manager actually mutated. Local and remote
+    // queues are independent, so a stuck sidecar cannot delay the canonical
+    // local snapshot beyond the shared bounded shutdown deadline.
     QList<QString> foldersToCompact;
     {
         QMutexLocker locker(&m_mutex);
@@ -261,33 +300,46 @@ ImageMarkManager::~ImageMarkManager()
             if (it.value() <= 0) {
                 continue;
             }
-            auto folderIt = m_folderMarks.constFind(it.key());
+            const auto folderIt = m_folderMarks.constFind(it.key());
             if (folderIt != m_folderMarks.constEnd() && folderIt->loaded) {
                 foldersToCompact.append(it.key());
             }
         }
     }
-    for (const QString &folder : foldersToCompact) {
+    for (const QString &folder : std::as_const(foldersToCompact)) {
         scheduleCompaction(folder);
     }
 
-    m_worker->requestShutdown();
-    if (!m_worker->wait(kShutdownWaitMs)) {
-        qCWarning(lcMarkManager, "%s",
-                  qPrintable(QStringLiteral(
-                      "ImageMarkManager: background writer did not finish within %1 ms; "
-                      "abandoning thread. Marks remain in the local fallback store and "
-                      "will be picked up on next start.")
-                      .arg(kShutdownWaitMs)));
-        // Leak the thread on purpose: deleting a still-running QThread would
-        // qFatal. The worker is self-contained (no back-pointer into us) and
-        // it will be torn down by the OS at process exit. The cost is one
-        // pinned thread for the rest of the process lifetime.
-        m_worker = nullptr;
-        return;
-    }
-    delete m_worker;
-    m_worker = nullptr;
+    if (m_worker) m_worker->requestShutdown();
+    if (m_remoteWorker) m_remoteWorker->requestShutdown();
+
+    QDeadlineTimer deadline(kShutdownWaitMs);
+    auto drainWorker = [&deadline](Worker *&worker, const QString &label) {
+        if (!worker) {
+            return;
+        }
+        const unsigned long remaining = static_cast<unsigned long>(
+            qMax<qint64>(0, deadline.remainingTime()));
+        if (!worker->wait(remaining)) {
+            qCWarning(lcMarkManager, "%s",
+                      qPrintable(QStringLiteral(
+                          "ImageMarkManager: %1 writer exceeded the shared %2 ms "
+                          "shutdown deadline; abandoning its self-contained thread. "
+                          "The canonical local journal was queued independently.")
+                          .arg(label)
+                          .arg(kShutdownWaitMs)));
+            // Deleting a running QThread is fatal. Workers never reference the
+            // manager, so a stuck remote filesystem operation can be detached.
+            worker = nullptr;
+            return;
+        }
+        delete worker;
+        worker = nullptr;
+    };
+    // Give the canonical local queue the deadline first; remote sidecar
+    // replication is explicitly best effort.
+    drainWorker(m_worker, QStringLiteral("local"));
+    drainWorker(m_remoteWorker, QStringLiteral("remote"));
 }
 
 // ---------------------------------------------------------------------------
@@ -437,10 +489,25 @@ bool ImageMarkManager::loadFolder(const QString &folderPath)
     if (slot.loaded) {
         return true;
     }
+    ++slot.loadGeneration;
     slot.loaded = true;
-    slot.marks.clear();
-    loadSnapshot(normalizedFolder, slot);
-    loadJournal(normalizedFolder, slot);
+    slot.loading = false;
+    slot.pendingLoadParts = 0;
+    FolderMarks remoteData;
+    loadSnapshotFile(markFilePath(normalizedFolder), remoteData);
+    loadJournalFile(markJournalPath(normalizedFolder), remoteData);
+    FolderMarks localData;
+    loadSnapshotFile(localSnapshotPath(normalizedFolder, false), localData);
+    loadJournalFile(localMarkJournalPath(normalizedFolder, false), localData);
+
+    slot.marks = remoteData.marks;
+    slot.localAuthoritativeKeys.clear();
+    for (auto it = localData.marks.constBegin(); it != localData.marks.constEnd(); ++it) {
+        // Canonical local state wins even if a remote machine's wall clock was
+        // ahead. Remote replay remains an import path for locally-missing keys.
+        slot.marks.insert(it.key(), it.value());
+        slot.localAuthoritativeKeys.insert(it.key());
+    }
 
     // Guard last-writer-wins against a system-clock rollback across restarts.
     // nextJournalTimestamp() keeps timestamps monotonic within a session but
@@ -449,74 +516,200 @@ bool ImageMarkManager::loadFolder(const QString &folderPath)
     // persisted and lose on replay. Raise the floor to every timestamp loaded
     // here so freshly minted ones always win. (m_lastJournalTimestamp is
     // guarded by m_mutex, held here.)
-    for (auto it = slot.marks.constBegin(); it != slot.marks.constEnd(); ++it) {
+    for (auto it = remoteData.marks.constBegin(); it != remoteData.marks.constEnd(); ++it) {
         m_lastJournalTimestamp = qMax(m_lastJournalTimestamp, it->timestamp);
+    }
+    for (auto it = localData.marks.constBegin(); it != localData.marks.constEnd(); ++it) {
+        m_lastJournalTimestamp = qMax(m_lastJournalTimestamp, it->timestamp);
+    }
+
+    QList<QPair<QString, MarkEntry>> rewrites;
+    rewrites.reserve(slot.pendingOverrides.size());
+    for (auto it = slot.pendingOverrides.begin();
+         it != slot.pendingOverrides.end(); ++it) {
+        MarkEntry entry = it.value();
+        entry.timestamp = nextJournalTimestamp();
+        slot.marks.insert(it.key(), entry);
+        slot.localAuthoritativeKeys.insert(it.key());
+        rewrites.append({it.key(), entry});
+    }
+    slot.pendingOverrides.clear();
+    const bool compactAfterMerge =
+        m_journalBytesSinceCompaction.value(normalizedFolder) >=
+        kJournalCompactBytes;
+    locker.unlock();
+    for (const auto &rewrite : std::as_const(rewrites)) {
+        scheduleJournalWrite(normalizedFolder,
+                             rewrite.first,
+                             rewrite.second.category,
+                             rewrite.second.timestamp,
+                             rewrite.second.source,
+                             rewrite.second.reason);
+    }
+    if (compactAfterMerge) {
+        scheduleCompaction(normalizedFolder);
+    }
+    emit folderLoaded(normalizedFolder);
+    return true;
+}
+
+void ImageMarkManager::loadFolderAsync(const QString &folderPath)
+{
+    const QString normalizedFolder = normalizeFolderPath(folderPath);
+    if (normalizedFolder.isEmpty()) {
+        return;
+    }
+
+    quint64 generation = 0;
+    {
+        QMutexLocker locker(&m_mutex);
+        FolderMarks &slot = m_folderMarks[normalizedFolder];
+        if (slot.loaded || slot.loading) {
+            return;
+        }
+        slot.loading = true;
+        slot.pendingLoadParts = 2;
+        generation = ++slot.loadGeneration;
+    }
+
+    // Resolve paths before dispatch. Local canonical state and remote sidecars
+    // use independent pools, so a hung share cannot delay local marks or consume
+    // the workers that load them.
+    const QString localSnapshot = localSnapshotPath(normalizedFolder, false);
+    const QString localJournal = localMarkJournalPath(normalizedFolder, false);
+    const QString remoteSnapshot = markFilePath(normalizedFolder);
+    const QString remoteJournal = markJournalPath(normalizedFolder);
+
+    auto startPart = [this, normalizedFolder, generation](
+                         QThreadPool *pool,
+                         const QString &snapshotPath,
+                         const QString &journalPath,
+                         bool localPart) {
+        auto *watcher = new QFutureWatcher<FolderMarks>(this);
+        connect(watcher, &QFutureWatcher<FolderMarks>::finished,
+                this, [this, watcher, normalizedFolder, generation, localPart]() {
+            const FolderMarks loaded = watcher->result();
+            watcher->deleteLater();
+
+            QList<QPair<QString, MarkEntry>> rewrites;
+            bool notify = false;
+            bool compactAfterMerge = false;
+            {
+                QMutexLocker locker(&m_mutex);
+                FolderMarks &slot = m_folderMarks[normalizedFolder];
+                if (slot.loadGeneration != generation) {
+                    return;
+                }
+                for (auto it = loaded.marks.constBegin();
+                     it != loaded.marks.constEnd(); ++it) {
+                    m_lastJournalTimestamp = qMax(m_lastJournalTimestamp, it->timestamp);
+                    if (localPart) {
+                        // Local is canonical: force it over an earlier-arriving
+                        // remote value even when the remote clock is ahead.
+                        slot.marks.insert(it.key(), it.value());
+                        slot.localAuthoritativeKeys.insert(it.key());
+                    } else if (!slot.localAuthoritativeKeys.contains(it.key()) &&
+                               !slot.pendingOverrides.contains(it.key())) {
+                        applyStoredMark(slot,
+                                        it.key(),
+                                        it->category,
+                                        it->timestamp,
+                                        it->source,
+                                        it->reason);
+                    }
+                }
+                slot.pendingLoadParts = qMax(0, slot.pendingLoadParts - 1);
+                if (localPart) {
+                    slot.loaded = true;
+                    slot.loading = false;
+                    rewrites.reserve(slot.pendingOverrides.size());
+                    for (auto it = slot.pendingOverrides.begin();
+                         it != slot.pendingOverrides.end(); ++it) {
+                        MarkEntry entry = it.value();
+                        entry.timestamp = nextJournalTimestamp();
+                        slot.marks.insert(it.key(), entry);
+                        slot.localAuthoritativeKeys.insert(it.key());
+                        rewrites.append({it.key(), entry});
+                    }
+                    slot.pendingOverrides.clear();
+                    compactAfterMerge =
+                        m_journalBytesSinceCompaction.value(normalizedFolder) >=
+                        kJournalCompactBytes;
+                }
+                notify = slot.loaded;
+            }
+
+            // Re-stamp mutations made during replay above every loaded timestamp
+            // and append the compensating record outside the state mutex.
+            for (const auto &rewrite : std::as_const(rewrites)) {
+                scheduleJournalWrite(normalizedFolder,
+                                     rewrite.first,
+                                     rewrite.second.category,
+                                     rewrite.second.timestamp,
+                                     rewrite.second.source,
+                                     rewrite.second.reason);
+            }
+            if (compactAfterMerge) {
+                scheduleCompaction(normalizedFolder);
+            }
+            if (notify) {
+                emit folderLoaded(normalizedFolder);
+            }
+        });
+
+        watcher->setFuture(QtConcurrent::run(
+            pool,
+            [snapshotPath, journalPath]() {
+                FolderMarks loaded;
+                loadSnapshotFile(snapshotPath, loaded);
+                loadJournalFile(journalPath, loaded);
+                return loaded;
+            }));
+    };
+
+    startPart(markReadPool(), localSnapshot, localJournal, true);
+    startPart(remoteMarkReadPool(), remoteSnapshot, remoteJournal, false);
+}
+
+bool ImageMarkManager::loadSnapshotFile(const QString &snapshotPath,
+                                        FolderMarks &folderMarks)
+{
+    if (snapshotPath.isEmpty()) {
+        return false;
+    }
+    QFile file(snapshotPath);
+    if (!file.exists() || !file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject()) {
+        return false;
+    }
+    const QJsonObject marks = document.object().value(kMarksKey).toObject();
+    for (auto it = marks.constBegin(); it != marks.constEnd(); ++it) {
+        const QJsonValue value = it.value();
+        // New-format snapshot stores metadata per entry; v1 stored a category
+        // string. Accept both during background and synchronous replay.
+        if (value.isObject()) {
+            const QJsonObject entry = value.toObject();
+            applyStoredMark(folderMarks,
+                            it.key(),
+                            entry.value(kCategoryKey).toString(),
+                            entry.value(kTimestampKey).toVariant().toLongLong(),
+                            entry.value(kSourceKey).toString(),
+                            entry.value(kReasonKey).toString());
+        } else {
+            applyStoredMark(folderMarks,
+                            it.key(),
+                            value.toString(),
+                            kUntimedJournalEntryTimestamp);
+        }
     }
     return true;
 }
 
-bool ImageMarkManager::loadSnapshot(const QString &normalizedFolderPath,
-                                    FolderMarks &folderMarks) const
-{
-    // Try the folder snapshot first, then fall back to the local store so
-    // marks written in fallback mode survive across runs even if the source
-    // folder remains read-only.
-    const QStringList candidates = {
-        markFilePath(normalizedFolderPath),
-        localSnapshotPath(normalizedFolderPath, false)
-    };
-
-    bool readAny = false;
-    for (const QString &path : candidates) {
-        if (path.isEmpty()) {
-            continue;
-        }
-        QFile file(path);
-        if (!file.exists()) {
-            continue;
-        }
-        if (!file.open(QIODevice::ReadOnly)) {
-            continue;
-        }
-        const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-        if (!document.isObject()) {
-            continue;
-        }
-        const QJsonObject root = document.object();
-        const QJsonObject marks = root.value(kMarksKey).toObject();
-        for (auto it = marks.constBegin(); it != marks.constEnd(); ++it) {
-            const QJsonValue value = it.value();
-            // New-format snapshot stores {category, timestamp} per entry; old
-            // format (v1) stored just the category string. Accept both.
-            if (value.isObject()) {
-                const QJsonObject entry = value.toObject();
-                applyStoredMark(folderMarks,
-                                it.key(),
-                                entry.value(kCategoryKey).toString(),
-                                entry.value(kTimestampKey).toVariant().toLongLong(),
-                                entry.value(kSourceKey).toString(),
-                                entry.value(kReasonKey).toString());
-            } else {
-                applyStoredMark(folderMarks,
-                                it.key(),
-                                value.toString(),
-                                kUntimedJournalEntryTimestamp);
-            }
-        }
-        readAny = true;
-    }
-    return readAny;
-}
-
-bool ImageMarkManager::loadJournal(const QString &normalizedFolderPath,
-                                   FolderMarks &folderMarks) const
-{
-    loadJournalFile(markJournalPath(normalizedFolderPath), folderMarks);
-    return loadJournalFile(localMarkJournalPath(normalizedFolderPath, false), folderMarks);
-}
-
 bool ImageMarkManager::loadJournalFile(const QString &journalPath,
-                                       FolderMarks &folderMarks) const
+                                       FolderMarks &folderMarks)
 {
     if (journalPath.isEmpty()) {
         return true;
@@ -581,10 +774,17 @@ QString ImageMarkManager::markForImageKey(const QString &folderPath,
 
     QMutexLocker locker(&m_mutex);
     auto folderIt = m_folderMarks.constFind(normalizedFolder);
-    if (folderIt == m_folderMarks.constEnd() || !folderIt->loaded) {
+    if (folderIt == m_folderMarks.constEnd()) {
         return QString();
     }
 
+    const auto pendingIt = folderIt->pendingOverrides.constFind(key);
+    if (pendingIt != folderIt->pendingOverrides.constEnd()) {
+        return pendingIt->category;
+    }
+    if (!folderIt->loaded) {
+        return QString();
+    }
     const auto markIt = folderIt->marks.constFind(key);
     if (markIt == folderIt->marks.constEnd()) {
         return QString();
@@ -618,16 +818,58 @@ ImageMarkManager::MarkMetadata ImageMarkManager::markMetadataForImageKey(
 
     QMutexLocker locker(&m_mutex);
     auto folderIt = m_folderMarks.constFind(normalizedFolder);
-    if (folderIt == m_folderMarks.constEnd() || !folderIt->loaded) {
+    if (folderIt == m_folderMarks.constEnd()) {
         return {};
     }
 
+    const auto pendingIt = folderIt->pendingOverrides.constFind(key);
+    if (pendingIt != folderIt->pendingOverrides.constEnd()) {
+        return MarkMetadata{pendingIt->category, pendingIt->source, pendingIt->reason};
+    }
+    if (!folderIt->loaded) {
+        return {};
+    }
     const auto markIt = folderIt->marks.constFind(key);
     if (markIt == folderIt->marks.constEnd()) {
         return {};
     }
 
     return MarkMetadata{markIt->category, markIt->source, markIt->reason};
+}
+
+QHash<QString, ImageMarkManager::MarkMetadata>
+ImageMarkManager::markMetadataForFolder(const QString &folderPath) const
+{
+    const QString normalizedFolder = normalizeFolderPath(folderPath);
+    if (normalizedFolder.isEmpty()) {
+        return {};
+    }
+
+    QMutexLocker locker(&m_mutex);
+    const auto folderIt = m_folderMarks.constFind(normalizedFolder);
+    if (folderIt == m_folderMarks.constEnd()) {
+        return {};
+    }
+
+    QHash<QString, MarkMetadata> result;
+    result.reserve(folderIt->marks.size() + folderIt->pendingOverrides.size());
+    if (folderIt->loaded) {
+        for (auto it = folderIt->marks.constBegin(); it != folderIt->marks.constEnd(); ++it) {
+            if (it->category.isEmpty() && it->source.isEmpty() && it->reason.isEmpty()) {
+                continue;
+            }
+            result.insert(it.key(), MarkMetadata{it->category, it->source, it->reason});
+        }
+    }
+    for (auto it = folderIt->pendingOverrides.constBegin();
+         it != folderIt->pendingOverrides.constEnd(); ++it) {
+        if (it->category.isEmpty() && it->source.isEmpty() && it->reason.isEmpty()) {
+            result.remove(it.key());
+        } else {
+            result.insert(it.key(), MarkMetadata{it->category, it->source, it->reason});
+        }
+    }
+    return result;
 }
 
 QHash<QString, QString> ImageMarkManager::marksForFolder(const QString &folderPath) const
@@ -639,13 +881,23 @@ QHash<QString, QString> ImageMarkManager::marksForFolder(const QString &folderPa
 
     QMutexLocker locker(&m_mutex);
     auto folderIt = m_folderMarks.constFind(normalizedFolder);
-    if (folderIt == m_folderMarks.constEnd() || !folderIt->loaded) {
+    if (folderIt == m_folderMarks.constEnd()) {
         return {};
     }
 
     QHash<QString, QString> result;
-    for (auto it = folderIt->marks.constBegin(); it != folderIt->marks.constEnd(); ++it) {
-        if (!it->category.isEmpty()) {
+    if (folderIt->loaded) {
+        for (auto it = folderIt->marks.constBegin(); it != folderIt->marks.constEnd(); ++it) {
+            if (!it->category.isEmpty()) {
+                result.insert(it.key(), it->category);
+            }
+        }
+    }
+    for (auto it = folderIt->pendingOverrides.constBegin();
+         it != folderIt->pendingOverrides.constEnd(); ++it) {
+        if (it->category.isEmpty()) {
+            result.remove(it.key());
+        } else {
             result.insert(it.key(), it->category);
         }
     }
@@ -713,7 +965,9 @@ bool ImageMarkManager::setMarkForImageKeyWithMetadata(const QString &folderPath,
     const QString storedSource = category.isEmpty() ? QString() : source.trimmed();
     const QString storedReason = storedSource.isEmpty() ? QString() : reason;
 
-    loadFolder(normalizedFolder);
+    // Never replay sidecar files on the caller/UI thread. The mutation is kept
+    // as an overlay until local + remote background replay completes.
+    loadFolderAsync(normalizedFolder);
 
     qint64 timestamp = 0;
     qint64 estimatedBytes = 0;
@@ -721,19 +975,26 @@ bool ImageMarkManager::setMarkForImageKeyWithMetadata(const QString &folderPath,
     {
         QMutexLocker locker(&m_mutex);
         FolderMarks &folderMarks = m_folderMarks[normalizedFolder];
-        const auto previousIt = folderMarks.marks.constFind(key);
-        const QString previous = previousIt == folderMarks.marks.constEnd()
-            ? QString()
-            : previousIt->category;
-        const QString previousSource = previousIt == folderMarks.marks.constEnd()
-            ? QString()
-            : previousIt->source;
-        const QString previousReason = previousIt == folderMarks.marks.constEnd()
-            ? QString()
-            : previousIt->reason;
+        const bool storeAsPending = folderMarks.loading || !folderMarks.loaded;
+        const MarkEntry *previousEntry = nullptr;
+        const auto pendingIt = folderMarks.pendingOverrides.constFind(key);
+        if (pendingIt != folderMarks.pendingOverrides.constEnd()) {
+            previousEntry = &pendingIt.value();
+        } else if (folderMarks.loaded) {
+            const auto loadedIt = folderMarks.marks.constFind(key);
+            if (loadedIt != folderMarks.marks.constEnd()) {
+                previousEntry = &loadedIt.value();
+            }
+        }
+        const QString previous = previousEntry ? previousEntry->category : QString();
+        const QString previousSource = previousEntry ? previousEntry->source : QString();
+        const QString previousReason = previousEntry ? previousEntry->reason : QString();
 
         if (category.isEmpty()) {
-            if (previousIt == folderMarks.marks.constEnd() || previous.isEmpty()) {
+            // While replay is pending, an absent previous entry is unknown: keep
+            // an explicit clear tombstone so a persisted mark cannot reappear.
+            if ((previousEntry && previous.isEmpty()) ||
+                (!storeAsPending && !previousEntry)) {
                 return false;
             }
         } else if (previous == category &&
@@ -743,12 +1004,13 @@ bool ImageMarkManager::setMarkForImageKeyWithMetadata(const QString &folderPath,
         }
 
         timestamp = nextJournalTimestamp();
-        if (category.isEmpty()) {
-            folderMarks.marks.insert(key, MarkEntry{QString(), timestamp, QString(), QString()});
+        const MarkEntry updated{category, timestamp, storedSource, storedReason};
+        if (storeAsPending) {
+            folderMarks.pendingOverrides.insert(key, updated);
         } else {
-            folderMarks.marks.insert(key,
-                                     MarkEntry{category, timestamp, storedSource, storedReason});
+            folderMarks.marks.insert(key, updated);
         }
+        folderMarks.localAuthoritativeKeys.insert(key);
 
         // Cheap upper-bound estimate of how much we are about to write. The
         // worker will write the same shape so this is accurate enough for
@@ -760,7 +1022,7 @@ bool ImageMarkManager::setMarkForImageKeyWithMetadata(const QString &folderPath,
                          + 64; // JSON overhead + timestamp + newline.
         qint64 &accum = m_journalBytesSinceCompaction[normalizedFolder];
         accum += estimatedBytes;
-        if (accum >= kJournalCompactBytes) {
+        if (accum >= kJournalCompactBytes && !storeAsPending) {
             shouldCompact = true;
             accum = 0;
         }
@@ -778,41 +1040,6 @@ bool ImageMarkManager::clearMarkForImage(const QString &folderPath,
                                          const QString &imagePath)
 {
     return setMarkForImage(folderPath, imagePath, QString());
-}
-
-// ---------------------------------------------------------------------------
-// Store-target selection
-// ---------------------------------------------------------------------------
-
-ImageMarkManager::StoreTarget ImageMarkManager::chooseStoreTarget(
-    const QString &normalizedFolderPath)
-{
-    {
-        QMutexLocker locker(&m_mutex);
-        auto it = m_storeTargetCache.constFind(normalizedFolderPath);
-        if (it != m_storeTargetCache.constEnd()) {
-            return *it;
-        }
-    }
-
-    // Probe writability by creating and immediately removing a temporary file
-    // inside the folder. Touching the journal file itself could spuriously
-    // create an empty journal on a folder that should be local-only.
-    StoreTarget chosen = StoreTarget::Local;
-    QDir folderDir(normalizedFolderPath);
-    if (folderDir.exists()) {
-        QTemporaryFile probe(folderDir.filePath(QStringLiteral(".imagecompare_probe_XXXXXX")));
-        probe.setAutoRemove(true);
-        if (probe.open()) {
-            chosen = StoreTarget::Folder;
-        }
-    }
-
-    {
-        QMutexLocker locker(&m_mutex);
-        m_storeTargetCache.insert(normalizedFolderPath, chosen);
-    }
-    return chosen;
 }
 
 QString ImageMarkManager::localStoreDir(const QString &normalizedFolderPath,
@@ -873,22 +1100,6 @@ QString ImageMarkManager::localSnapshotPath(const QString &normalizedFolderPath,
     return QDir(storeDir).filePath(kMarkFileName);
 }
 
-QString ImageMarkManager::journalPathForStore(const QString &normalizedFolderPath,
-                                              StoreTarget target) const
-{
-    return target == StoreTarget::Folder
-               ? markJournalPath(normalizedFolderPath)
-               : localMarkJournalPath(normalizedFolderPath, true);
-}
-
-QString ImageMarkManager::snapshotPathForStore(const QString &normalizedFolderPath,
-                                               StoreTarget target) const
-{
-    return target == StoreTarget::Folder
-               ? markFilePath(normalizedFolderPath)
-               : localSnapshotPath(normalizedFolderPath, true);
-}
-
 // ---------------------------------------------------------------------------
 // Scheduling
 // ---------------------------------------------------------------------------
@@ -903,8 +1114,6 @@ void ImageMarkManager::scheduleJournalWrite(const QString &normalizedFolderPath,
     if (!m_worker) {
         return;
     }
-
-    const StoreTarget primary = chooseStoreTarget(normalizedFolderPath);
 
     QJsonObject entry;
     entry.insert(kVersionKey, 2);
@@ -930,16 +1139,21 @@ void ImageMarkManager::scheduleJournalWrite(const QString &normalizedFolderPath,
     line.append(QJsonDocument(entry).toJson(QJsonDocument::Compact));
     line.append('\n');
 
-    WriteTask task;
-    task.kind = TaskKind::AppendJournal;
-    task.primaryPath = journalPathForStore(normalizedFolderPath, primary);
-    if (primary == StoreTarget::Folder) {
-        // Local fallback so that if the folder write fails (e.g. it became
-        // read-only between probe and write) the mark is still durable.
-        task.fallbackPath = localMarkJournalPath(normalizedFolderPath, true);
+    // Canonical local durability and remote sidecar replication have independent
+    // queues. A remote open/fsync can never block subsequent local marks.
+    WriteTask localTask;
+    localTask.kind = TaskKind::AppendJournal;
+    localTask.primaryPath = localMarkJournalPath(normalizedFolderPath, true);
+    localTask.journalLine = line;
+    m_worker->enqueue(std::move(localTask));
+
+    if (m_remoteWorker) {
+        WriteTask remoteTask;
+        remoteTask.kind = TaskKind::AppendJournal;
+        remoteTask.primaryPath = markJournalPath(normalizedFolderPath);
+        remoteTask.journalLine = std::move(line);
+        m_remoteWorker->enqueue(std::move(remoteTask));
     }
-    task.journalLine = std::move(line);
-    m_worker->enqueue(std::move(task));
 }
 
 void ImageMarkManager::scheduleCompaction(const QString &normalizedFolderPath)
@@ -948,32 +1162,43 @@ void ImageMarkManager::scheduleCompaction(const QString &normalizedFolderPath)
         return;
     }
 
-    const StoreTarget primary = chooseStoreTarget(normalizedFolderPath);
-
-    WriteTask task;
-    task.kind = TaskKind::CompactSnapshot;
-    task.snapshotPath = snapshotPathForStore(normalizedFolderPath, primary);
-    task.journalPathToTruncate = journalPathForStore(normalizedFolderPath, primary);
-    if (primary == StoreTarget::Folder) {
-        // Once the folder snapshot is committed, prune any stale local
-        // fallback files so the next replay does not resurrect them.
-        task.fallbackJournalPathToTruncate = localMarkJournalPath(normalizedFolderPath, false);
-        task.fallbackSnapshotPathToTruncate = localSnapshotPath(normalizedFolderPath, false);
-    }
+    QHash<QString, MarkEntry> snapshot;
     {
         QMutexLocker locker(&m_mutex);
         auto it = m_folderMarks.constFind(normalizedFolderPath);
         if (it != m_folderMarks.constEnd()) {
-            task.snapshot = it->marks;
+            snapshot = it->marks;
+            for (auto pending = it->pendingOverrides.constBegin();
+                 pending != it->pendingOverrides.constEnd(); ++pending) {
+                snapshot.insert(pending.key(), pending.value());
+            }
         }
         m_journalBytesSinceCompaction.insert(normalizedFolderPath, 0);
     }
-    m_worker->enqueue(std::move(task));
+
+    WriteTask localTask;
+    localTask.kind = TaskKind::CompactSnapshot;
+    localTask.snapshot = snapshot;
+    localTask.snapshotPath = localSnapshotPath(normalizedFolderPath, true);
+    localTask.journalPathToTruncate = localMarkJournalPath(normalizedFolderPath, false);
+    m_worker->enqueue(std::move(localTask));
+
+    if (m_remoteWorker) {
+        WriteTask remoteTask;
+        remoteTask.kind = TaskKind::CompactSnapshot;
+        remoteTask.snapshot = std::move(snapshot);
+        remoteTask.snapshotPath = markFilePath(normalizedFolderPath);
+        remoteTask.journalPathToTruncate = markJournalPath(normalizedFolderPath);
+        m_remoteWorker->enqueue(std::move(remoteTask));
+    }
 }
 
 qint64 ImageMarkManager::nextJournalTimestamp()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    m_lastJournalTimestamp = qMax(now, m_lastJournalTimestamp + 1);
+    const qint64 incremented = m_lastJournalTimestamp == std::numeric_limits<qint64>::max()
+        ? m_lastJournalTimestamp
+        : m_lastJournalTimestamp + 1;
+    m_lastJournalTimestamp = qMax(now, incremented);
     return m_lastJournalTimestamp;
 }

@@ -2,7 +2,17 @@
 
 #include <QFileInfo>
 #include <QDirIterator>
+#include <QSet>
 #include <algorithm>
+
+namespace
+{
+QString lowerSuffix(const QString &fileName)
+{
+    const int dot = fileName.lastIndexOf(QLatin1Char('.'));
+    return dot >= 0 ? fileName.mid(dot + 1).toLower() : QString();
+}
+}
 
 namespace FileUtils
 {
@@ -13,7 +23,7 @@ bool isImageFile(const QString &filePath, const QStringList &extensions)
     if (!fi.isFile()) {
         return false;
     }
-    const QString suffix = fi.suffix().toLower();
+    const QString suffix = lowerSuffix(fi.fileName());
     return extensions.contains(suffix);
 }
 
@@ -36,9 +46,14 @@ QStringList scanForImages(const QString &dirPath, bool recursive, const QStringL
     // macOS volumes), which would silently skip IMG_0001.JPG / photo.PNG.
     // This mirrors isImageFile() so the scan accepts exactly what it accepts.
     QDirIterator it(dirPath, QDir::Files, flags);
+    QSet<QString> extensionSet;
+    extensionSet.reserve(extensions.size());
+    for (const QString &extension : extensions) {
+        extensionSet.insert(extension.toLower());
+    }
     while (it.hasNext()) {
         it.next();
-        if (!extensions.contains(it.fileInfo().suffix().toLower())) {
+        if (!extensionSet.contains(lowerSuffix(it.fileName()))) {
             continue;
         }
         result << it.filePath();
@@ -60,6 +75,16 @@ void scanForImagesBatched(
         return;
     }
 
+    auto cancelled = [&cancelToken]() {
+        return cancelToken && cancelToken->isCancelled();
+    };
+    // A scan canceled while it was still queued should not touch the target at
+    // all. On a disconnected network mount even the initial exists() probe can
+    // block a worker for a long time.
+    if (cancelled()) {
+        return;
+    }
+
     QDir root(dirPath);
     if (!root.exists()) {
         if (onProgress) {
@@ -74,10 +99,6 @@ void scanForImagesBatched(
         : 0;
     bool initialBatchSent = (initialBatchSize == 0);
     int discoveredCount = 0;
-
-    auto cancelled = [&cancelToken]() {
-        return cancelToken && cancelToken->isCancelled();
-    };
 
     auto emitProgress = [&](bool finished) {
         if (onProgress) {
@@ -111,21 +132,38 @@ void scanForImagesBatched(
     // silently skip uppercase/mixed-case extensions (IMG_0001.JPG, scan.TIFF).
     // This mirrors isImageFile() exactly.
     QDirIterator it(dirPath, QDir::Files | QDir::NoSymLinks, flags);
-    while (it.hasNext()) {
+    QSet<QString> extensionSet;
+    extensionSet.reserve(options.extensions.size());
+    for (const QString &extension : options.extensions) {
+        extensionSet.insert(extension.toLower());
+    }
+    while (true) {
         if (cancelled()) {
             return;
         }
 
-        it.next();
-        // it.fileInfo() reuses the QFileInfo the iterator already materialized to
-        // apply the QDir::Files | NoSymLinks filter, so the suffix check and
-        // reading lastModified() here cost no extra stat. toUTC() matches
-        // ImageLoader::sourceLastModifiedUtc so the disk-cache key is
-        // byte-identical whether the mtime comes from the scan or a fallback stat.
-        if (!options.extensions.contains(it.fileInfo().suffix().toLower())) {
+        if (!it.hasNext()) {
+            break;
+        }
+        // Cancellation can land while hasNext() is enumerating a slow share.
+        // Check again before advancing/processing the entry.
+        if (cancelled()) {
+            return;
+        }
+
+        const QString path = it.next();
+        const QString fileName = it.fileName();
+        // QFileInfo constructed from a bare filename only parses the suffix; it
+        // does not touch the file system. Avoid QDirIterator::fileInfo() entirely
+        // on the fast-list path because lastModified() can otherwise force one
+        // stat per entry on APFS and remote shares.
+        if (!extensionSet.contains(lowerSuffix(fileName))) {
             continue;
         }
-        buffer.push_back({it.filePath(), it.fileInfo().lastModified().toUTC()});
+        const QDateTime modifiedUtc = options.captureLastModified
+            ? QFileInfo(path).lastModified().toUTC()
+            : QDateTime();
+        buffer.push_back({path, fileName, modifiedUtc});
         ++discoveredCount;
         if (!initialBatchSent && buffer.size() >= initialBatchSize) {
             flush(true);
@@ -135,6 +173,9 @@ void scanForImagesBatched(
         }
     }
 
+    if (cancelled()) {
+        return;
+    }
     if (!buffer.isEmpty()) {
         flush(!initialBatchSent);
         initialBatchSent = true;

@@ -1,7 +1,10 @@
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QImage>
+#include <QFile>
 #include <QSignalSpy>
+#include <QElapsedTimer>
+#include <QThreadPool>
 
 #include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
@@ -37,7 +40,9 @@ private slots:
     void testDataMarkRole_loadsExistingJson();
     void testDataVlmMetadataRolesAndTooltip();
     void testFilters_fileNameAndCategory();
+    void testSetFilters_rebuildsOnce();
     void testCategoryFilter_updatesIncrementallyOnMarkChange();
+    void testMarkChangedBeforeScanBatch_initializesLaterRow();
 
     void testSelection();
     void testSelection_outOfRange();
@@ -51,6 +56,8 @@ private slots:
 
     void testHasMoreToLoad_initial();
     void testScanProgressAndIncrementalInsert();
+    void testRapidFolderSwitchAndDestruction_doNotWaitForStaleScan();
+    void testFilteredScan_insertsByBatch();
     void testFolderOrder_sortedAcrossBatches();
     void testLoadNextThumbnailBatch();
     void testLoadNextThumbnailBatch_resetsOnSetFolder();
@@ -391,6 +398,20 @@ void tst_ImageListModel::testFilters_fileNameAndCategory()
     QVERIFY(model.indexOfFileName(QStringLiteral("alpha_dog.png")) >= 0);
 }
 
+void tst_ImageListModel::testSetFilters_rebuildsOnce()
+{
+    ImageListModel model;
+    setFolderAndWait(model, m_testDir);
+
+    QSignalSpy resetSpy(&model, &QAbstractItemModel::modelReset);
+    const QString applePath = QDir(m_testDir).filePath(QStringLiteral("apple.png"));
+    model.setFilters(QStringLiteral("app"), QString(), {applePath}, true);
+
+    QCOMPARE(resetSpy.count(), 1);
+    QCOMPARE(model.imageCount(), 1);
+    QCOMPARE(model.fileNameAt(0), QStringLiteral("apple.png"));
+}
+
 void tst_ImageListModel::testCategoryFilter_updatesIncrementallyOnMarkChange()
 {
     QTemporaryDir dir;
@@ -431,6 +452,32 @@ void tst_ImageListModel::testCategoryFilter_updatesIncrementallyOnMarkChange()
     QCOMPARE(model.fileNameAt(0), QStringLiteral("second.png"));
     QCOMPARE(resetSpy.count(), 0);
     QCOMPARE(insertSpy.count(), 2);
+}
+
+void tst_ImageListModel::testMarkChangedBeforeScanBatch_initializesLaterRow()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("late.png"));
+    QImage image(12, 12, QImage::Format_ARGB32);
+    image.fill(Qt::yellow);
+    QVERIFY(image.save(path));
+
+    ImageMarkManager manager;
+    ImageListModel model;
+    model.setImageMarkManager(&manager);
+    QSignalSpy readySpy(&model, &ImageListModel::folderReady);
+    model.setFolder(dir.path());
+
+    // appendScanBatch is queued back to this thread, so without processing
+    // events this markChanged signal necessarily arrives before the row exists.
+    QVERIFY(manager.setMarkForImage(dir.path(), path, QStringLiteral("C")));
+    QTRY_COMPARE_WITH_TIMEOUT(readySpy.count(), 1, 5000);
+
+    QCOMPARE(model.imageCount(), 1);
+    QCOMPARE(model.markAt(0), QStringLiteral("C"));
+    model.setCategoryFilter(QStringLiteral("C"));
+    QCOMPARE(model.imageCount(), 1);
 }
 
 void tst_ImageListModel::testSelection()
@@ -580,6 +627,87 @@ void tst_ImageListModel::testScanProgressAndIncrementalInsert()
     QCOMPARE(insertSpy.first().at(1).toInt(), 0);
     QCOMPARE(insertSpy.first().at(2).toInt(), 23);
     QVERIFY(progressSpy.count() >= 2);
+}
+
+void tst_ImageListModel::testRapidFolderSwitchAndDestruction_doNotWaitForStaleScan()
+{
+    QTemporaryDir largeDir;
+    QTemporaryDir replacementDir;
+    QVERIFY(largeDir.isValid());
+    QVERIFY(replacementDir.isValid());
+
+    // Empty image-extension files are sufficient for the metadata scan and make
+    // it cheap to create enough work that the first future is normally still
+    // queued/running when the folder is replaced.
+    for (int i = 0; i < 5000; ++i) {
+        QFile file(largeDir.filePath(QStringLiteral("stale_%1.png")
+                                         .arg(i, 5, 10, QLatin1Char('0'))));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+    }
+    const QString replacementPath = replacementDir.filePath(QStringLiteral("current.png"));
+    {
+        QFile file(replacementPath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+    }
+
+    ImageListModel model;
+    QSignalSpy readySpy(&model, &ImageListModel::folderReady);
+    model.setFolder(largeDir.path());
+
+    QElapsedTimer timer;
+    timer.start();
+    model.setFolder(replacementDir.path());
+    QVERIFY2(timer.elapsed() < 1000,
+             "Replacing an in-flight folder scan blocked the GUI thread");
+
+    QTRY_COMPARE_WITH_TIMEOUT(readySpy.count(), 1, 5000);
+    QCOMPARE(model.folderPath(), replacementDir.path());
+    QCOMPARE(model.imageCount(), 1);
+    QCOMPARE(model.imagePathAt(0), replacementPath);
+
+    // Give already-posted callouts from the cancelled scan a chance to run.
+    // Its detached watcher/generation must keep them from repopulating the model
+    // or producing a second folderReady signal.
+    QTest::qWait(100);
+    QCOMPARE(readySpy.count(), 1);
+    QCOMPARE(model.imageCount(), 1);
+    QCOMPARE(model.imagePathAt(0), replacementPath);
+
+    timer.restart();
+    {
+        auto doomed = std::make_unique<ImageListModel>();
+        doomed->setFolder(largeDir.path());
+    }
+    QVERIFY2(timer.elapsed() < 1000,
+             "Destroying a model joined its in-flight directory scan");
+
+    // Let the local cancelled workers observe their tokens before the temporary
+    // directories are removed. This wait is outside the measured GUI teardown
+    // path and keeps the test's filesystem lifetime deterministic.
+    QVERIFY(QThreadPool::globalInstance()->waitForDone(5000));
+}
+
+void tst_ImageListModel::testFilteredScan_insertsByBatch()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (int i = 0; i < 120; ++i) {
+        QFile file(dir.filePath(QStringLiteral("img_%1.png")
+                                    .arg(i, 4, 10, QLatin1Char('0'))));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+    }
+
+    ImageListModel model;
+    model.setFileNameFilter(QStringLiteral("img_"));
+    QSignalSpy readySpy(&model, &ImageListModel::folderReady);
+    QSignalSpy insertSpy(&model, &QAbstractItemModel::rowsInserted);
+    model.setFolder(dir.path());
+    QVERIFY(readySpy.wait(5000));
+
+    QCOMPARE(model.imageCount(), 120);
+    // Initial 24 + subsequent 64-sized scan batches: never one signal per row.
+    QVERIFY(insertSpy.count() <= 3);
+    QVERIFY(insertSpy.count() >= 2);
 }
 
 void tst_ImageListModel::testFolderOrder_sortedAcrossBatches()

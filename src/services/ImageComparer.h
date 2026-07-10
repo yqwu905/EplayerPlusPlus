@@ -4,6 +4,9 @@
 #include <QFuture>
 #include <QImage>
 
+#include <atomic>
+#include <memory>
+
 /**
  * @brief Image comparison algorithm service.
  *
@@ -40,17 +43,23 @@ public:
     /**
      * @brief Async variant of ::generateToleranceMap.
      *
-     * Dispatches the synchronous implementation onto the global thread pool via
-     * QtConcurrent::run, returning immediately. The returned QFuture<QImage> will
+     * Dispatches the synchronous implementation onto a dedicated, serialized
+     * outer-job pool, returning immediately. The returned QFuture<QImage> will
      * be completed with the same image that ::generateToleranceMap would have
      * returned. Use a QFutureWatcher to observe completion without blocking the
      * GUI thread. The underlying task is not cancellable; callers that need to
      * discard stale results should track a generation token and check it inside
-     * the watcher slot.
+     * the watcher slot. Serializing outer jobs bounds full-resolution temporary
+     * buffers; each active job still parallelizes its rows internally.
      */
     static QFuture<QImage> generateToleranceMapAsync(const QImage &imageA,
                                                      const QImage &imageB,
                                                      int threshold = 10);
+    static QFuture<QImage> generateToleranceMapAsync(
+        const QImage &imageA,
+        const QImage &imageB,
+        int threshold,
+        const std::shared_ptr<std::atomic_bool> &cancelFlag);
 
     /**
      * @brief Compute the per-pixel difference value between two colors.
@@ -59,6 +68,13 @@ public:
      * @return Maximum absolute difference across R, G, B channels (0-255).
      */
     static int pixelDifference(QRgb colorA, QRgb colorB);
+
+private:
+    static QImage generateToleranceMapCancellable(
+        const QImage &imageA,
+        const QImage &imageB,
+        int threshold,
+        const std::shared_ptr<std::atomic_bool> &cancelFlag);
 };
 
 #endif // IMAGECOMPARER_H

@@ -5,6 +5,10 @@
 #include <QList>
 #include <QTimer>
 #include <QSet>
+#include <QPointer>
+#include <QHash>
+#include <QStringList>
+#include <QVector>
 
 #include "services/VlmAnnotationService.h"
 
@@ -131,6 +135,31 @@ private:
         FileName
     };
 
+    // Prefix trie used for exact nearest-neighbour Levenshtein lookup. A
+    // dynamic-programming row is shared by every filename with the same prefix,
+    // instead of recomputing the whole row for every anchor x target pair.
+    // terminalRow/minTerminalRow preserve the legacy "first row wins ties"
+    // behaviour, while cachedRows is deliberately capped in the implementation.
+    struct FileNameMatchIndex {
+        struct Edge {
+            QChar character;
+            int child = -1;
+        };
+
+        struct Node {
+            QVector<Edge> children;
+            int terminalRow = -1;
+            int minTerminalRow = -1;
+        };
+
+        QVector<Node> nodes;
+        QStringList rowNames;
+        QHash<QString, int> cachedRows;
+        mutable QVector<QVector<int>> distanceRows;
+        int indexedRowCount = -1;
+        int maxDepth = 0;
+    };
+
     struct ColumnInfo {
         QWidget *columnWidget = nullptr;
         QVBoxLayout *containerLayout = nullptr;
@@ -141,7 +170,10 @@ private:
         int discoveredCount = 0;
         bool scanFinished = false;
         bool thumbnailRequestScheduled = false;
+        bool horizontallyActive = false;
         int pendingAutoSelectRow = -1;
+        mutable FileNameMatchIndex sourceFileNameMatchIndex;
+        mutable FileNameMatchIndex visibleFileNameMatchIndex;
     };
 
     void setupUi();
@@ -173,12 +205,17 @@ private:
     int findFileNameMatchIndex(int column,
                                const QString &targetFileName) const;
     int levenshteinDistance(const QString &a, const QString &b) const;
-    void emitSelectionChanged();
+    void ensureFileNameMatchIndex(int column, bool sourceRows) const;
+    int nearestFileNameMatch(FileNameMatchIndex &index,
+                             const QString &targetFileName) const;
+    void invalidateFileNameMatchIndexes(int column, bool sourceRowsChanged);
+    void emitSelectionChanged(bool force = false);
     void startInterleavedLoading();
     void stopInterleavedLoading();
     void onInterleavedLoadTick();
     QPair<int, int> visibleRangeForColumn(const ColumnInfo &column) const;
     QPair<int, int> prefetchRangeForColumn(const ColumnInfo &column) const;
+    bool isColumnNearHorizontalViewport(const ColumnInfo &column) const;
     void scheduleThumbnailRequest(int columnIndex, int delayMs);
     void requestThumbnailsForColumn(int columnIndex);
     void requestVisibleThumbnailsForAllColumns();
@@ -193,6 +230,8 @@ private:
     void updateGlobalScanStatus();
     void preloadNeighborImagesForSelection();
     void applyCurrentFilters();
+    void scheduleAnchorFilterRefresh(int fallbackColumn = -1,
+                                     int fallbackRow = -1);
     QString currentCategoryFilter() const;
     void updateAllColumnProgressLabels();
     void setCategoryFilterAnchor(int column, FilterMatchMode mode);
@@ -226,6 +265,12 @@ private:
     ThumbMetrics m_metrics;
     // Debounces the higher-resolution re-decode while the splitter is being dragged.
     QTimer *m_decodeReloadTimer = nullptr;
+    QTimer *m_filterDebounceTimer = nullptr;
+    QTimer *m_anchorFilterRefreshTimer = nullptr;
+    QPointer<ImageListModel> m_pendingAnchorFallbackModel;
+    int m_pendingAnchorFallbackRow = -1;
+    QList<QPair<QString, QString>> m_lastEmittedSelection;
+    bool m_suppressSelectionEmission = false;
     SelectionNavigationMode m_selectionNavigationMode = SelectionNavigationMode::Independent;
     int m_navigationAnchorColumn = -1;
     int m_categoryFilterAnchorColumn = -1;

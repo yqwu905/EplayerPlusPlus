@@ -39,6 +39,7 @@ private slots:
     void resizeToFirstImage_toggleResizesOtherCells();
     void resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImageArrives();
     void resizeToFirstImage_scalesPreviewForSwitchedSecondaryImage();
+    void resizeToFirstImage_rapidReferenceChangesKeepLatest();
     void markButton_clickPersistsSingleImage();
     void markButton_ctrlClickMarksAllCurrentImages();
     void markShortcut_marksCurrentCellOnly();
@@ -674,6 +675,19 @@ void tst_ComparePanel::toleranceMode_usesPreviewWhenFullImageIsNotLoaded()
 
     QTest::mouseClick(compareToSecondButton, Qt::LeftButton);
     QTRY_VERIFY(targetImageWidget->image().pixelColor(0, 0) != QColor(Qt::blue));
+
+    // Upgrade the source preview to a full image equal to the target. The
+    // in-flight/visible tolerance map must be invalidated and regenerated from
+    // the new pixels, yielding target-blue luminance (29) rather than leaving the
+    // old red-vs-blue overlay on screen.
+    QImage fullA(32, 32, QImage::Format_ARGB32);
+    fullA.fill(Qt::blue);
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, imageA),
+                                      Q_ARG(QImage, fullA)));
+    QTRY_COMPARE_WITH_TIMEOUT(targetImageWidget->image().pixelColor(0, 0),
+                              QColor(29, 29, 29), 3000);
 }
 
 void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
@@ -770,8 +784,8 @@ void tst_ComparePanel::resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImage
     auto *secondWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
     QVERIFY(firstWidget != nullptr);
     QVERIFY(secondWidget != nullptr);
-    QCOMPARE(firstWidget->image().size(), QSize(20, 20));
-    QCOMPARE(secondWidget->image().size(), QSize(20, 20));
+    QTRY_COMPARE_WITH_TIMEOUT(firstWidget->image().size(), QSize(20, 20), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(20, 20), 2000);
 
     QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
                                       Qt::DirectConnection,
@@ -779,8 +793,8 @@ void tst_ComparePanel::resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImage
                                       Q_ARG(QImage, firstFullImage)));
     QCoreApplication::processEvents();
 
-    QCOMPARE(firstWidget->image().size(), QSize(100, 100));
-    QCOMPARE(secondWidget->image().size(), QSize(100, 100));
+    QTRY_COMPARE_WITH_TIMEOUT(firstWidget->image().size(), QSize(100, 100), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(100, 100), 2000);
 }
 
 void tst_ComparePanel::resizeToFirstImage_scalesPreviewForSwitchedSecondaryImage()
@@ -824,7 +838,7 @@ void tst_ComparePanel::resizeToFirstImage_scalesPreviewForSwitchedSecondaryImage
     QCOMPARE(cells.size(), 2);
     auto *secondWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
     QVERIFY(secondWidget != nullptr);
-    QCOMPARE(secondWidget->image().size(), QSize(120, 80));
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(120, 80), 2000);
 
     const QString switchedSecondPath = folder1 + "/second_switched.png";
     panel.setSelectedImages({{folder0, firstPath}, {folder1, switchedSecondPath}});
@@ -838,7 +852,61 @@ void tst_ComparePanel::resizeToFirstImage_scalesPreviewForSwitchedSecondaryImage
                                       Q_ARG(QImage, switchedPreview)));
     QCoreApplication::processEvents();
 
-    QCOMPARE(secondWidget->image().size(), QSize(120, 80));
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(120, 80), 2000);
+}
+
+void tst_ComparePanel::resizeToFirstImage_rapidReferenceChangesKeepLatest()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr, nullptr);
+    panel.setResizeToFirstImageEnabled(true);
+    panel.resize(1200, 800);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    const QString folder0 = root.filePath(QStringLiteral("folder_0"));
+    const QString folder1 = root.filePath(QStringLiteral("folder_1"));
+    QVERIFY(QDir().mkpath(folder0));
+    QVERIFY(QDir().mkpath(folder1));
+    QVERIFY(session.addFolder(folder0));
+    QVERIFY(session.addFolder(folder1));
+
+    const QString firstPath = folder0 + QStringLiteral("/first.png");
+    const QString secondPath = folder1 + QStringLiteral("/second.png");
+    panel.setSelectedImages({{folder0, firstPath}, {folder1, secondPath}});
+
+    QImage secondary(2200, 1400, QImage::Format_ARGB32);
+    secondary.fill(Qt::green);
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, secondPath),
+                                      Q_ARG(QImage, secondary)));
+
+    QImage obsoleteReference(1800, 1200, QImage::Format_ARGB32);
+    obsoleteReference.fill(Qt::red);
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, firstPath),
+                                      Q_ARG(QImage, obsoleteReference)));
+
+    // Supersede the expensive first resize before its queued/active worker can
+    // land. The per-cell coalescer must publish only this latest geometry.
+    QImage latestReference(640, 480, QImage::Format_ARGB32);
+    latestReference.fill(Qt::blue);
+    QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
+                                      Qt::DirectConnection,
+                                      Q_ARG(QString, firstPath),
+                                      Q_ARG(QImage, latestReference)));
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *secondWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(secondWidget != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(640, 480), 5000);
+    QCOMPARE(secondWidget->image().pixelColor(10, 10), QColor(Qt::green));
 }
 
 void tst_ComparePanel::markButton_clickPersistsSingleImage()

@@ -1,16 +1,28 @@
 #include <QtTest>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QHostAddress>
+#include <QPointer>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 
+#include <chrono>
 #include <memory>
+#include <thread>
+
+#ifdef Q_OS_UNIX
+#  include <cerrno>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#endif
 
 #include "services/ImageMarkManager.h"
 #include "services/VlmAnnotationService.h"
@@ -21,12 +33,19 @@ class tst_VlmAnnotationService : public QObject
 
 private slots:
     void buildPlan_orderUsesCurrentRowsLimitAndSkipMarked();
+    void buildPlan_orderNegativeRowFallsBackToFirstReference();
     void buildPlan_fileNameExactAndFuzzy();
     void parseAnnotationJson_acceptsIdMappingsAndMarkdown();
     void parseAnnotationJson_rejectsSchemaProblems();
     void parseHttpResponse_handlesOpenAiAndHttpErrors();
     void parseStreamingHttpResponse_handlesSseDeltasAndFallback();
     void start_parsesStreamingNetworkResponse();
+    void start_retryKeepsBatchSlotAndCompletes();
+    void start_boundsAsyncPayloadPreparationAndCancelsCleanly();
+    void start_handlesReentrantCancelBeforeDispatchAndAfterPost();
+    void start_usesFreshGenerationAndBatchIdentityAfterCancel();
+    void destruction_withPayloadPreparationInFlightIsSafe();
+    void destruction_detachesBlockedPayloadWorkerWithinDeadline();
     void requestHelpers_buildOpenAiCompatiblePayload();
     void applyAcceptedResult_writesOnlyTarget();
 };
@@ -71,9 +90,12 @@ Service::ColumnSnapshot column(int columnIndex,
     return snapshot;
 }
 
-QString createImage(QTemporaryDir &dir, const QString &name, const QColor &color)
+QString createImage(QTemporaryDir &dir,
+                    const QString &name,
+                    const QColor &color,
+                    const QSize &size = QSize(18, 12))
 {
-    QImage image(18, 12, QImage::Format_ARGB32);
+    QImage image(size, QImage::Format_ARGB32);
     image.fill(color);
     const QString path = dir.filePath(name);
     if (!image.save(path)) {
@@ -127,6 +149,18 @@ void writeStreamingResponse(QTcpSocket *socket, const QString &content)
     socket->write("0\r\n\r\n");
     socket->disconnectFromHost();
 }
+
+void writeJsonResponse(QTcpSocket *socket, const QByteArray &body)
+{
+    socket->write("HTTP/1.1 200 OK\r\n"
+                  "Content-Type: application/json; charset=utf-8\r\n"
+                  "Connection: close\r\n"
+                  "Content-Length: ");
+    socket->write(QByteArray::number(body.size()));
+    socket->write("\r\n\r\n");
+    socket->write(body);
+    socket->disconnectFromHost();
+}
 }
 
 void tst_VlmAnnotationService::buildPlan_orderUsesCurrentRowsLimitAndSkipMarked()
@@ -154,6 +188,31 @@ void tst_VlmAnnotationService::buildPlan_orderUsesCurrentRowsLimitAndSkipMarked(
     QCOMPARE(tasks.first().target.fileName, QStringLiteral("t1.png"));
     QCOMPARE(tasks.first().references.size(), 1);
     QCOMPARE(tasks.first().references.first().image.fileName, QStringLiteral("r1.png"));
+}
+
+void tst_VlmAnnotationService::buildPlan_orderNegativeRowFallsBackToFirstReference()
+{
+    QTemporaryDir refDir;
+    QTemporaryDir targetDir;
+    QVERIFY(refDir.isValid());
+    QVERIFY(targetDir.isValid());
+
+    QList<Service::ColumnSnapshot> columns = {
+        column(0, refDir.path(), {"r0.png", "r1.png"}),
+        column(1, targetDir.path(), {"target.png"})
+    };
+    columns[1].images[0].row = -1;
+
+    Service::PlanningOptions options;
+    options.referenceColumns = {0};
+    options.targetColumn = 1;
+    options.matchRule = Service::MatchRule::Order;
+    options.skipMarked = false;
+
+    const QList<Service::Task> tasks = Service::buildPlan(columns, options);
+    QCOMPARE(tasks.size(), 1);
+    QCOMPARE(tasks.first().references.size(), 1);
+    QCOMPARE(tasks.first().references.first().image.fileName, QStringLiteral("r0.png"));
 }
 
 void tst_VlmAnnotationService::buildPlan_fileNameExactAndFuzzy()
@@ -351,6 +410,332 @@ void tst_VlmAnnotationService::start_parsesStreamingNetworkResponse()
         }
     }
     QVERIFY(sawStreamingStatus);
+}
+
+void tst_VlmAnnotationService::start_retryKeepsBatchSlotAndCompletes()
+{
+    QTemporaryDir targetDir;
+    QVERIFY(targetDir.isValid());
+    QVERIFY(!createImage(targetDir, QStringLiteral("target.png"), Qt::cyan).isEmpty());
+
+    QTcpServer server;
+    if (!server.listen(QHostAddress::LocalHost, 0)) {
+        QSKIP(qPrintable(QStringLiteral("Local TCP listen unavailable: %1")
+                             .arg(server.errorString())),
+              SkipSingle);
+    }
+
+    const QString validContent =
+        QStringLiteral("{\"result\":{\"T0001\":\"C\"},\"reason\":{\"T0001\":\"retry ok\"}}");
+    auto requestCount = std::make_shared<int>(0);
+    connect(&server, &QTcpServer::newConnection, this,
+            [&server, requestCount, validContent]() {
+        QTcpSocket *socket = server.nextPendingConnection();
+        QVERIFY(socket);
+        const int requestNumber = ++(*requestCount);
+
+        auto request = std::make_shared<QByteArray>();
+        auto responded = std::make_shared<bool>(false);
+        connect(socket, &QTcpSocket::readyRead, socket,
+                [socket, request, responded, requestNumber, validContent]() {
+            request->append(socket->readAll());
+            if (*responded) {
+                return;
+            }
+            const int headerEnd = request->indexOf("\r\n\r\n");
+            if (headerEnd < 0) {
+                return;
+            }
+            const int contentLength = requestContentLength(*request);
+            if (request->size() < headerEnd + 4 + contentLength) {
+                return;
+            }
+
+            *responded = true;
+            if (requestNumber == 1) {
+                writeJsonResponse(socket,
+                                  QByteArrayLiteral("{\"choices\":[{\"message\":{\"content\":\"not json\"}}]}"));
+            } else {
+                writeStreamingResponse(socket, validContent);
+            }
+        });
+    });
+
+    Service::Task task;
+    task.id = QStringLiteral("T0001");
+    task.target = item(0, 0, targetDir.path(), QStringLiteral("target.png"));
+
+    Service::ApiConfig config;
+    config.baseUrl = QStringLiteral("http://127.0.0.1:%1/v1").arg(server.serverPort());
+    config.model = QStringLiteral("retry-model");
+    config.userPrompt = QStringLiteral("Classify.");
+    config.concurrency = 1;
+
+    Service service;
+    QSignalSpy succeededSpy(&service, &Service::itemSucceeded);
+    QSignalSpy failedSpy(&service, &Service::itemFailed);
+    QSignalSpy finishedSpy(&service, &Service::finished);
+    int maxActiveBatches = 0;
+    const auto sampleActiveBatches = [&service, &maxActiveBatches]() {
+        maxActiveBatches = qMax(maxActiveBatches, service.activeBatchCount());
+    };
+    connect(&service, &Service::progressChanged, &service,
+            [sampleActiveBatches](int, int, const QString &) { sampleActiveBatches(); });
+    connect(&service, &Service::itemStatusChanged, &service,
+            [sampleActiveBatches](int, const QString &, const QString &) {
+        sampleActiveBatches();
+    });
+
+    service.start(config, {task});
+
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+    QCOMPARE(*requestCount, 2);
+    QCOMPARE(succeededSpy.count(), 1);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(maxActiveBatches, 1);
+    QCOMPARE(service.activeBatchCount(), 0);
+}
+
+void tst_VlmAnnotationService::start_boundsAsyncPayloadPreparationAndCancelsCleanly()
+{
+    QTemporaryDir targetDir;
+    QVERIFY(targetDir.isValid());
+    QVERIFY(!createImage(targetDir, QStringLiteral("target.png"), Qt::red).isEmpty());
+
+    QList<Service::Task> tasks;
+    for (int i = 0; i < 6; ++i) {
+        Service::Task task;
+        task.id = QStringLiteral("T%1").arg(i + 1, 4, 10, QLatin1Char('0'));
+        task.target = item(0, i, targetDir.path(), QStringLiteral("target.png"));
+        tasks.append(task);
+    }
+
+    Service::ApiConfig config;
+    config.baseUrl = QStringLiteral("http://127.0.0.1:1/v1");
+    config.model = QStringLiteral("async-model");
+    config.userPrompt = QStringLiteral("Classify.");
+    config.batchSize = 1;
+    config.concurrency = 3;
+
+    Service service;
+    QSignalSpy succeededSpy(&service, &Service::itemSucceeded);
+    QSignalSpy failedSpy(&service, &Service::itemFailed);
+    QSignalSpy finishedSpy(&service, &Service::finished);
+
+    service.start(config, tasks);
+
+    // start() returns while payload work is still represented by worker
+    // watchers. The pipeline reserves at most `concurrency` combined worker /
+    // network slots, and expensive image work is capped even more tightly.
+    QCOMPARE(service.m_payloadWatchers.size(), config.concurrency);
+    QCOMPARE(service.m_currentReplies.size(), 0);
+    QCOMPARE(service.activeBatchCount(), config.concurrency);
+    QCOMPARE(service.m_payloadPool->maxThreadCount(), 2);
+
+    const QList<quint64> identities = service.m_payloadWatchers.keys();
+    QSet<quint64> uniqueIdentities(identities.cbegin(), identities.cend());
+    QCOMPARE(uniqueIdentities.size(), identities.size());
+
+    service.cancel();
+    QVERIFY(service.m_payloadCancelFlag->load(std::memory_order_relaxed));
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+    QCOMPARE(finishedSpy.first().at(0).toBool(), true);
+    QCOMPARE(service.activeBatchCount(), 0);
+    QCOMPARE(service.m_currentReplies.size(), 0);
+    QCOMPARE(succeededSpy.count(), 0);
+    QCOMPARE(failedSpy.count(), 0);
+}
+
+void tst_VlmAnnotationService::start_handlesReentrantCancelBeforeDispatchAndAfterPost()
+{
+    QTemporaryDir targetDir;
+    QVERIFY(targetDir.isValid());
+    QVERIFY(!createImage(targetDir, QStringLiteral("target.png"), Qt::yellow).isEmpty());
+
+    Service::Task task;
+    task.id = QStringLiteral("T0001");
+    task.target = item(0, 0, targetDir.path(), QStringLiteral("target.png"));
+
+    Service::ApiConfig config;
+    config.baseUrl = QStringLiteral("http://127.0.0.1:1/v1");
+    config.model = QStringLiteral("reentrant-cancel-model");
+    config.userPrompt = QStringLiteral("Classify.");
+
+    {
+        Service service;
+        QSignalSpy finishedSpy(&service, &Service::finished);
+        connect(&service, &Service::itemStatusChanged, &service,
+                [&service](int, const QString &, const QString &) {
+            service.cancel();
+        });
+
+        service.start(config, {task});
+
+        // Cancellation from the first direct status signal happens before a
+        // worker is reserved and must finish synchronously without stale work.
+        QCOMPARE(finishedSpy.count(), 1);
+        QCOMPARE(finishedSpy.first().at(0).toBool(), true);
+        QCOMPARE(service.activeBatchCount(), 0);
+        QVERIFY(!service.isRunning());
+    }
+
+    {
+        Service service;
+        QSignalSpy finishedSpy(&service, &Service::finished);
+        QSignalSpy succeededSpy(&service, &Service::itemSucceeded);
+        QSignalSpy failedSpy(&service, &Service::itemFailed);
+        connect(&service, &Service::progressChanged, &service,
+                [&service](int, int, const QString &) {
+            if (!service.m_currentReplies.isEmpty()) {
+                service.cancel();
+            }
+        });
+
+        service.start(config, {task});
+
+        // The network reply's finished handler must already be installed when
+        // progressChanged exposes the posted request to direct slots.
+        QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+        QCOMPARE(finishedSpy.first().at(0).toBool(), true);
+        QCOMPARE(service.activeBatchCount(), 0);
+        QCOMPARE(succeededSpy.count(), 0);
+        QCOMPARE(failedSpy.count(), 0);
+    }
+}
+
+void tst_VlmAnnotationService::start_usesFreshGenerationAndBatchIdentityAfterCancel()
+{
+    QTemporaryDir targetDir;
+    QVERIFY(targetDir.isValid());
+    QVERIFY(!createImage(targetDir, QStringLiteral("target.png"), Qt::green).isEmpty());
+
+    Service::Task task;
+    task.id = QStringLiteral("T0001");
+    task.target = item(0, 0, targetDir.path(), QStringLiteral("target.png"));
+
+    Service::ApiConfig config;
+    config.baseUrl = QStringLiteral("http://127.0.0.1:1/v1");
+    config.model = QStringLiteral("generation-model");
+    config.userPrompt = QStringLiteral("Classify.");
+
+    Service service;
+    QSignalSpy finishedSpy(&service, &Service::finished);
+
+    service.start(config, {task});
+    const quint64 firstGeneration = service.m_generation;
+    const quint64 firstBatchIdentity = service.m_payloadWatchers.constBegin().key();
+    const auto firstCancelFlag = service.m_payloadCancelFlag;
+    service.cancel();
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+    QCOMPARE(finishedSpy.first().at(0).toBool(), true);
+    QVERIFY(firstCancelFlag->load(std::memory_order_relaxed));
+
+    finishedSpy.clear();
+    service.start(config, {task});
+    QCOMPARE(service.m_generation, firstGeneration + 1);
+    QVERIFY(service.m_payloadWatchers.constBegin().key() > firstBatchIdentity);
+    QVERIFY(service.m_payloadCancelFlag != firstCancelFlag);
+    QVERIFY(!service.m_payloadCancelFlag->load(std::memory_order_relaxed));
+
+    service.cancel();
+    QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 5000);
+    QCOMPARE(finishedSpy.first().at(0).toBool(), true);
+}
+
+void tst_VlmAnnotationService::destruction_withPayloadPreparationInFlightIsSafe()
+{
+    QTemporaryDir targetDir;
+    QVERIFY(targetDir.isValid());
+    QVERIFY(!createImage(targetDir,
+                         QStringLiteral("target.png"),
+                         Qt::blue,
+                         QSize(2048, 1536)).isEmpty());
+
+    QList<Service::Task> tasks;
+    for (int i = 0; i < 4; ++i) {
+        Service::Task task;
+        task.id = QStringLiteral("T%1").arg(i + 1, 4, 10, QLatin1Char('0'));
+        task.target = item(0, i, targetDir.path(), QStringLiteral("target.png"));
+        tasks.append(task);
+    }
+
+    Service::ApiConfig config;
+    config.baseUrl = QStringLiteral("http://127.0.0.1:1/v1");
+    config.model = QStringLiteral("destruction-model");
+    config.userPrompt = QStringLiteral("Classify.");
+    config.batchSize = 1;
+    config.concurrency = 4;
+
+    auto service = std::make_unique<Service>();
+    QPointer<Service> guard(service.get());
+    service->start(config, tasks);
+    QCOMPARE(service->m_payloadWatchers.size(), config.concurrency);
+
+    // The destructor cancels queued work, disconnects completion callbacks and
+    // drains its private pool. Processing events afterwards must not revive a
+    // stale callback that touches the deleted service.
+    service.reset();
+    QVERIFY(guard.isNull());
+    QCoreApplication::processEvents();
+}
+
+void tst_VlmAnnotationService::destruction_detachesBlockedPayloadWorkerWithinDeadline()
+{
+#ifndef Q_OS_UNIX
+    QSKIP("FIFO-backed blocked image reads are only available on Unix");
+#else
+    QTemporaryDir targetDir;
+    QVERIFY(targetDir.isValid());
+    const QString fifoPath = targetDir.filePath(QStringLiteral("blocked.png"));
+    const QByteArray nativePath = QFile::encodeName(fifoPath);
+    QCOMPARE(::mkfifo(nativePath.constData(), 0600), 0);
+
+    Service::Task task;
+    task.id = QStringLiteral("T0001");
+    task.target = item(0, 0, targetDir.path(), QStringLiteral("blocked.png"));
+
+    Service::ApiConfig config;
+    config.baseUrl = QStringLiteral("http://127.0.0.1:1/v1");
+    config.model = QStringLiteral("blocked-read-model");
+    config.userPrompt = QStringLiteral("Classify.");
+
+    auto service = std::make_unique<Service>();
+    service->m_payloadPool->setExpiryTimeout(50);
+    service->start(config, {task});
+    QCOMPARE(service->m_payloadWatchers.size(), 1);
+
+    // Opening a FIFO writer succeeds only after QImage has opened the read end.
+    // Keep the writer open without data so the codec is stuck in an OS read and
+    // cannot observe the cancellation flag during service teardown.
+    int writerFd = -1;
+    QElapsedTimer openDeadline;
+    openDeadline.start();
+    while (writerFd < 0 && openDeadline.elapsed() < 2000) {
+        writerFd = ::open(nativePath.constData(), O_WRONLY | O_NONBLOCK);
+        if (writerFd < 0) {
+            QCOMPARE(errno, ENXIO);
+            QTest::qWait(10);
+        }
+    }
+    QVERIFY2(writerFd >= 0, "payload worker never opened the FIFO image");
+
+    std::thread releaseWriter([writerFd]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+        const char invalidImage[] = "not-a-png";
+        (void)::write(writerFd, invalidImage, sizeof(invalidImage));
+        ::close(writerFd);
+    });
+
+    QElapsedTimer shutdownTimer;
+    shutdownTimer.start();
+    service.reset();
+    const qint64 shutdownMs = shutdownTimer.elapsed();
+    releaseWriter.join();
+    QTest::qWait(100);
+
+    QVERIFY2(shutdownMs < 3000,
+             qPrintable(QStringLiteral("VLM teardown took %1 ms").arg(shutdownMs)));
+#endif
 }
 
 void tst_VlmAnnotationService::requestHelpers_buildOpenAiCompatiblePayload()

@@ -9,7 +9,6 @@
 #include <QSize>
 #include <QSet>
 #include <QVector>
-#include <QFuture>
 #include <list>
 #include <memory>
 
@@ -17,6 +16,8 @@
 
 class ImageLoader;
 class ImageMarkManager;
+template<typename T>
+class QFutureWatcher;
 
 /**
  * @brief List model for images within a single folder.
@@ -105,6 +106,12 @@ public:
      */
     void setCategoryFilter(const QString &category);
     QString categoryFilter() const;
+    // Update every filter dimension with one model reset/rebuild. This is the
+    // preferred UI path when filename/category/path filters change together.
+    void setFilters(const QString &fileNameFilter,
+                    const QString &categoryFilter,
+                    const QSet<QString> &imagePaths = {},
+                    bool imagePathFilterEnabled = false);
     void setImagePathFilter(const QSet<QString> &imagePaths, bool enabled = true);
     void clearImagePathFilter();
     bool hasImagePathFilter() const;
@@ -116,6 +123,7 @@ public:
      * @return Index, or -1 if not found.
      */
     int indexOfFileName(const QString &fileName) const;
+    int sourceIndexOfFileName(const QString &fileName) const;
     int indexOfImagePath(const QString &imagePath) const;
     int sourceRowForRow(int row) const;
     QString imagePathAtSourceRow(int sourceRow) const;
@@ -168,6 +176,16 @@ public:
     void setImageLoader(ImageLoader *loader);
 
     /**
+     * @brief Drop model-owned thumbnail pixels and completion state.
+     *
+     * ImageLoader owns the upstream decode cache, while each folder model keeps
+     * a small display LRU. Call this after a decode-policy change (for example
+     * ICC stripping) before re-requesting the visible range.
+     */
+    void invalidateThumbnailCache();
+    void setThumbnailDeliveryEnabled(bool enabled);
+
+    /**
      * @brief Set the size thumbnails are decoded at.
      *
      * Driven by BrowsePanel as the user resizes the browse column (zoom). The
@@ -215,12 +233,30 @@ signals:
     void scanProgressChanged(int discoveredCount, bool finished);
 
 private slots:
-    void onThumbnailReady(const QString &imagePath, const QImage &thumbnail);
+    void onThumbnailReady(const QString &imagePath,
+                          const QImage &thumbnail,
+                          const QSize &requestedSize,
+                          bool highQuality);
     void onMarkChanged(const QString &folderPath,
                        const QString &imagePath,
                        const QString &category);
 
 private:
+    struct ScanEvent {
+        enum class Kind {
+            Batch,
+            Progress
+        };
+
+        Kind kind = Kind::Progress;
+        // QFuture retains result objects until it finishes. Keep the heavy batch
+        // behind a shared holder so the GUI consumer can move the vector out and
+        // release its storage immediately instead of duplicating the entire
+        // directory listing in the future's result store.
+        std::shared_ptr<QVector<FileUtils::ScannedImage>> batch;
+        FileUtils::ScanProgress progress;
+    };
+
     void startScan(const QString &path);
     void appendScanBatch(const QVector<FileUtils::ScannedImage> &batch, int generation);
     void finalizeScan(int generation);
@@ -239,6 +275,7 @@ private:
     QString markAtSourceIndex(int sourceIndex) const;
     QString markSourceAtSourceIndex(int sourceIndex) const;
     QString markReasonAtSourceIndex(int sourceIndex) const;
+    void refreshMarkSnapshot();
 
     // ---- Thumbnail cache (bounded, access-ordered) ----
     // m_thumbnails grows linearly with the number of distinct images viewed, and
@@ -246,7 +283,10 @@ private:
     // The visible + prefetch set is "touched" every load cycle, so it is never
     // the eviction victim; an evicted-then-revisited path is simply re-requested.
     void touchThumbnail(const QString &path);
-    void storeThumbnail(const QString &path, const QImage &thumbnail);
+    void storeThumbnail(const QString &path,
+                        const QImage &thumbnail,
+                        int completedExtent,
+                        bool highQuality);
     void trimThumbnailCache();
     void clearThumbnailCache();
 
@@ -256,6 +296,13 @@ private:
     QHash<QString, int> m_pathToIndex;   // path -> index for O(1) lookup
     QStringList m_markKeys;
     QHash<QString, int> m_markKeyToIndex;
+    struct CachedMark {
+        QString category;
+        QString source;
+        QString reason;
+    };
+    QVector<CachedMark> m_marks;
+    QHash<QString, CachedMark> m_markSnapshot;
     QStringList m_fileNames;
     QHash<QString, int> m_fileNameToIndex;
     QList<int> m_filteredSourceRows;
@@ -265,26 +312,28 @@ private:
     bool m_imagePathFilterEnabled = false;
     QSet<int> m_selectedIndices;
     QHash<QString, QImage> m_thumbnails;
+    QHash<QString, int> m_thumbnailCompletedExtent;
+    QHash<QString, bool> m_thumbnailHighQuality;
+    QHash<QString, qint64> m_thumbnailRetryAfterMs;
+    qint64 m_thumbnailCacheBytes = 0;
     // LRU bookkeeping for m_thumbnails: MRU at the front, LRU at the back.
     // m_thumbnailLruPos maps a path to its node for O(1) splice-to-front.
     std::list<QString> m_thumbnailLru;
     QHash<QString, std::list<QString>::iterator> m_thumbnailLruPos;
     // Size thumbnails are currently decoded at (the zoom "bucket"). Square.
     QSize m_thumbnailSize = QSize(180, 180);
-    // path -> largest bucket we have already issued a request at, so a zoom-in
-    // upgrades each visible thumbnail at most once per bucket (and tiny source
-    // images are not re-requested forever trying to reach an unreachable size).
-    QHash<QString, int> m_upgradedExtent;
     // path -> source last-modified time captured during the folder scan, passed
     // to ImageLoader so the decode worker can skip a redundant stat() per thumbnail.
     QHash<QString, QDateTime> m_sourceModifiedUtc;
     ImageLoader *m_imageLoader = nullptr;
+    bool m_thumbnailDeliveryEnabled = true;
     ImageMarkManager *m_markManager = nullptr;
     std::shared_ptr<FileUtils::ScanCancelToken> m_scanCancelToken;
-    // Handle to the background scan started in startScan(). Retained so teardown
-    // (cancelPendingScan) can block until the worker has actually returned; a
-    // discarded future would let the worker outlive this model and dereference it.
-    QFuture<void> m_scanFuture;
+    // The worker publishes value-only ScanEvents through its future and never
+    // captures this model. Detaching the watcher therefore makes cancellation,
+    // folder switching and teardown non-blocking even if a network directory
+    // enumeration is stuck inside the OS.
+    QFutureWatcher<ScanEvent> *m_scanWatcher = nullptr;
     bool m_loading = false;
     int m_nextLoadIndex = 0;
     int m_scanGeneration = 0;

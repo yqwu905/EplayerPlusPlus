@@ -10,6 +10,14 @@
 #include <QFuture>
 #include <QElapsedTimer>
 
+#include <memory>
+
+#ifndef Q_OS_WIN
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#endif
+
 #include "services/ImageMarkManager.h"
 
 class tst_ImageMarkManager : public QObject
@@ -26,6 +34,9 @@ private slots:
     void marksForFolder_returnsOnlyClassifiedEntries();
     void setMark_usesRelativePathKeys();
     void loadFolder_appliesLegacyJsonBeforeJournal();
+    void loadFolderAsync_mergesAndSignals();
+    void setMark_duringRemoteReplayDoesNotBlockOrLoseOverride();
+    void setMark_remoteReplayNeverCompletesStillPersistsCanonicalLocal();
     void setMark_persistsWhenFolderJournalCannotBeWritten();
     void snapshot_writtenAfterCompaction();
     void destructor_returnsPromptlyWhenWriteDestinationIsUnusable();
@@ -87,6 +98,160 @@ void tst_ImageMarkManager::categories_areLimitedToABCDEF()
     QVERIFY(ImageMarkManager::isValidCategory("F"));
     QVERIFY(!ImageMarkManager::isValidCategory("G"));
     QVERIFY(!ImageMarkManager::isValidCategory(QString()));
+}
+
+void tst_ImageMarkManager::loadFolderAsync_mergesAndSignals()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("async.png"));
+
+    QJsonObject storedEntry;
+    storedEntry.insert(QStringLiteral("category"), QStringLiteral("E"));
+    storedEntry.insert(QStringLiteral("timestamp"), 42);
+    QJsonObject marks;
+    marks.insert(QStringLiteral("async.png"), storedEntry);
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 2);
+    root.insert(QStringLiteral("marks"), marks);
+    QFile snapshot(dir.filePath(QStringLiteral(".imagecompare_marks.json")));
+    QVERIFY(snapshot.open(QIODevice::WriteOnly));
+    snapshot.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    snapshot.close();
+
+    ImageMarkManager manager;
+    QSignalSpy loadedSpy(&manager, &ImageMarkManager::folderLoaded);
+    manager.loadFolderAsync(dir.path());
+
+    // Reads remain non-blocking and empty until the worker merge is delivered.
+    // The local canonical phase may emit first; the remote sidecar phase then
+    // imports the snapshot independently.
+    QTRY_COMPARE_WITH_TIMEOUT(manager.markForImage(dir.path(), imagePath),
+                              QStringLiteral("E"), 5000);
+    QVERIFY(loadedSpy.count() >= 1);
+    QCOMPARE(loadedSpy.first().at(0).toString(),
+             ImageMarkManager::normalizeFolderPath(dir.path()));
+}
+
+void tst_ImageMarkManager::setMark_duringRemoteReplayDoesNotBlockOrLoseOverride()
+{
+#ifdef Q_OS_WIN
+    QSKIP("Named-pipe blocking replay test is POSIX-only");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("pending.png"));
+    const QString snapshotPath = dir.filePath(QStringLiteral(".imagecompare_marks.json"));
+    QCOMPARE(::mkfifo(QFile::encodeName(snapshotPath).constData(), 0600), 0);
+
+    QJsonObject oldEntry;
+    oldEntry.insert(QStringLiteral("category"), QStringLiteral("A"));
+    oldEntry.insert(QStringLiteral("timestamp"), 9000000000000LL);
+    QJsonObject oldMarks;
+    oldMarks.insert(QStringLiteral("pending.png"), oldEntry);
+    QJsonObject oldRoot;
+    oldRoot.insert(QStringLiteral("version"), 2);
+    oldRoot.insert(QStringLiteral("marks"), oldMarks);
+    const QByteArray oldPayload =
+        QJsonDocument(oldRoot).toJson(QJsonDocument::Compact);
+
+    {
+        ImageMarkManager manager;
+        QSignalSpy loadedSpy(&manager, &ImageMarkManager::folderLoaded);
+        manager.loadFolderAsync(dir.path());
+
+        QElapsedTimer timer;
+        timer.start();
+        QVERIFY(manager.setMarkForImage(dir.path(), imagePath, QStringLiteral("B")));
+        QVERIFY2(timer.elapsed() < 250,
+                 qPrintable(QStringLiteral("setMark blocked for %1 ms").arg(timer.elapsed())));
+        QCOMPARE(manager.markForImage(dir.path(), imagePath), QStringLiteral("B"));
+
+        QFuture<void> feedRemoteSnapshot = QtConcurrent::run([snapshotPath, oldPayload]() {
+            QFile pipe(snapshotPath);
+            if (pipe.open(QIODevice::WriteOnly)) {
+                pipe.write(oldPayload);
+                pipe.close();
+            }
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(loadedSpy.count() >= 2, 5000);
+        feedRemoteSnapshot.waitForFinished();
+
+        // The deliberately future-dated remote value must not overwrite the
+        // user's pending mutation; completion re-stamps B above it.
+        QCOMPARE(manager.markForImage(dir.path(), imagePath), QStringLiteral("B"));
+    }
+
+    // Remove every remote replica. A fresh manager must still recover B from
+    // the independently committed canonical local store.
+    QFile::remove(snapshotPath);
+    QFile::remove(dir.filePath(QStringLiteral(".imagecompare_marks.journal")));
+    QCOMPARE(reloadedMark(dir.path(), imagePath), QStringLiteral("B"));
+#endif
+}
+
+void tst_ImageMarkManager::setMark_remoteReplayNeverCompletesStillPersistsCanonicalLocal()
+{
+#ifdef Q_OS_WIN
+    QSKIP("Named-pipe blocking replay test is POSIX-only");
+#else
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("canonical.png"));
+    const QString snapshotPath = dir.filePath(QStringLiteral(".imagecompare_marks.json"));
+    QCOMPARE(::mkfifo(QFile::encodeName(snapshotPath).constData(), 0600), 0);
+    // Keep a descriptor to the FIFO inode even if shutdown's best-effort remote
+    // compaction atomically replaces its directory entry.
+    const int fifoFd = ::open(QFile::encodeName(snapshotPath).constData(),
+                              O_RDWR | O_NONBLOCK);
+    QVERIFY(fifoFd >= 0);
+
+    {
+        auto manager = std::make_unique<ImageMarkManager>();
+        QSignalSpy loadedSpy(manager.get(), &ImageMarkManager::folderLoaded);
+        manager->loadFolderAsync(dir.path());
+        QVERIFY(manager->setMarkForImage(dir.path(), imagePath, QStringLiteral("B")));
+        QTRY_VERIFY_WITH_TIMEOUT(loadedSpy.count() >= 1, 5000); // local phase
+        QCOMPARE(manager->markForImage(dir.path(), imagePath), QStringLiteral("B"));
+
+        QElapsedTimer timer;
+        timer.start();
+        // Scope exit must not wait for the permanently blocked remote reader.
+        // The canonical local writer receives B on an independent queue.
+        manager.reset();
+        QVERIFY2(timer.elapsed() < 2500,
+                 qPrintable(QStringLiteral("destructor took %1 ms").arg(timer.elapsed())));
+    }
+
+    // Release the orphaned process-lifetime remote reader after its owner and
+    // watcher are gone, then replace the pipe with hostile future-dated state.
+    const QByteArray stalePayload = QByteArrayLiteral(
+        R"({"version":2,"marks":{"canonical.png":{"category":"A","timestamp":9223372036854775807}}})");
+    QCOMPARE(::write(fifoFd, stalePayload.constData(), stalePayload.size()),
+             static_cast<ssize_t>(stalePayload.size()));
+    ::close(fifoFd);
+    QTest::qWait(50);
+    QFile::remove(snapshotPath);
+    QFile remoteSnapshot(snapshotPath);
+    QVERIFY(remoteSnapshot.open(QIODevice::WriteOnly));
+    QCOMPARE(remoteSnapshot.write(stalePayload), stalePayload.size());
+    remoteSnapshot.close();
+    QFile::remove(dir.filePath(QStringLiteral(".imagecompare_marks.journal")));
+
+    {
+        ImageMarkManager reloaded;
+        QVERIFY(reloaded.loadFolder(dir.path()));
+        // Canonical local B wins regardless of the remote wall clock.
+        QCOMPARE(reloaded.markForImage(dir.path(), imagePath), QStringLiteral("B"));
+        // Saturating timestamp arithmetic must not overflow at LLONG_MAX.
+        QVERIFY(reloaded.setMarkForImage(dir.path(), imagePath, QStringLiteral("C")));
+        QCOMPARE(reloaded.markForImage(dir.path(), imagePath), QStringLiteral("C"));
+    }
+
+    QFile::remove(snapshotPath);
+    QFile::remove(dir.filePath(QStringLiteral(".imagecompare_marks.journal")));
+    QCOMPARE(reloadedMark(dir.path(), imagePath), QStringLiteral("C"));
+#endif
 }
 
 void tst_ImageMarkManager::setMark_savesJsonAndReloads()

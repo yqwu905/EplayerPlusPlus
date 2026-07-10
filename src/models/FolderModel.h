@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFutureWatcher>
 #include <QMap>
+#include <QSet>
 
 /**
  * @brief Tree model for managing user-added folders and their subdirectories.
@@ -121,6 +122,8 @@ private:
         QString path;           // Absolute path
         QString displayName;    // Folder name for display
         FolderNode *parent = nullptr;
+        int rowInParent = -1;
+        quint64 generation = 0;
         QList<FolderNode *> children;
         bool fetched = false;   // Whether subdirectories have been loaded
         bool fetching = false;  // Whether an async fetch is in progress
@@ -129,14 +132,17 @@ private:
     };
 
     QList<FolderNode *> m_rootNodes;
+    QSet<FolderNode *> m_liveNodes;
     QFileIconProvider m_iconProvider;
 
     FolderNode *nodeFromIndex(const QModelIndex &index) const;
     QModelIndex indexFromNode(FolderNode *node) const;
     void populateChildren(FolderNode *node, const QStringList &subdirs);
     void clearChildren(FolderNode *node);
+    void unregisterSubtree(FolderNode *node);
 
-    void onFetchFinished(FolderNode *node, const QStringList &subdirs);
+    void onFetchFinished(FolderNode *node, quint64 generation,
+                         const QStringList &subdirs);
     void cancelAllWatchers();
     // Cancel and detach the in-flight fetch watchers for `node` and every
     // descendant, so deleting that subtree can't leave a watcher whose
@@ -145,6 +151,7 @@ private:
 
     // Track active async watchers to prevent leaks and allow cancellation
     QMap<FolderNode *, QFutureWatcher<QStringList> *> m_activeWatchers;
+    quint64 m_nextNodeGeneration = 1;
 };
 
 #endif // FOLDERMODEL_H

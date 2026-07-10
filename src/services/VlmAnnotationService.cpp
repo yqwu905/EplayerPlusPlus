@@ -3,8 +3,7 @@
 
 #include <QBuffer>
 #include <QByteArray>
-#include <QCoreApplication>
-#include <QEventLoop>
+#include <QFutureWatcher>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -13,6 +12,7 @@
 #include <QNetworkReply>
 #include <QSet>
 #include <QVector>
+#include <QtConcurrent>
 
 #include <algorithm>
 #include <limits>
@@ -21,6 +21,8 @@
 
 namespace
 {
+constexpr int kPayloadShutdownWaitMs = 2000;
+
 QJsonObject textContent(const QString &text, VlmAnnotationService::PayloadFormat format)
 {
     QJsonObject object;
@@ -83,13 +85,6 @@ int imageCountForBatch(const QList<VlmAnnotationService::Task> &batch)
         imageCount += 1 + task.references.size();
     }
     return imageCount;
-}
-
-void flushStatusEvents()
-{
-    if (QCoreApplication::instance()) {
-        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    }
 }
 
 struct StreamingReplyState {
@@ -223,16 +218,63 @@ void finalizeStreamingState(StreamingReplyState *state)
     processStreamingLine(state, line);
 }
 
+struct PayloadBuildResult {
+    QByteArray requestBody;
+    QString error;
+    bool cancelled = false;
+};
+
 }
 
 VlmAnnotationService::VlmAnnotationService(QObject *parent)
     : QObject(parent)
+    , m_payloadPool(std::make_unique<QThreadPool>())
 {
+    // Payload preparation temporarily holds decoded images and their encoded
+    // copies. Keep this pool deliberately smaller than the network concurrency
+    // limit so several large batches cannot spike memory at once.
+    m_payloadPool->setMaxThreadCount(1);
+    m_payloadPool->setExpiryTimeout(30000);
 }
 
 VlmAnnotationService::~VlmAnnotationService()
 {
-    cancel();
+    m_shuttingDown = true;
+    m_cancelRequested = true;
+    ++m_generation;
+    if (m_payloadCancelFlag) {
+        m_payloadCancelFlag->store(true, std::memory_order_relaxed);
+    }
+
+    const auto watchers = m_payloadWatchers;
+    for (QFutureWatcherBase *watcher : watchers) {
+        if (watcher) {
+            disconnect(watcher, nullptr, this, nullptr);
+            delete watcher;
+        }
+    }
+    m_payloadWatchers.clear();
+    const auto replies = m_currentReplies.keys();
+    for (QNetworkReply *reply : replies) {
+        if (!reply) {
+            continue;
+        }
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+    }
+    m_currentReplies.clear();
+
+    // Drop queued work, then give an active image read/codec operation a
+    // bounded opportunity to finish. QImage may be blocked inside an OS read
+    // on a disconnected network share and cannot be interrupted. Workers only
+    // capture value types plus the shared cancellation flag, so detaching the
+    // heap-owned pool after the deadline cannot access this service later.
+    if (m_payloadPool) {
+        m_payloadPool->clear();
+        if (!m_payloadPool->waitForDone(kPayloadShutdownWaitMs)) {
+            m_payloadPool.release();
+        }
+    }
 }
 
 bool VlmAnnotationService::isRunning() const
@@ -249,12 +291,16 @@ void VlmAnnotationService::start(const ApiConfig &config, const QList<Task> &tas
     m_config = config;
     m_config.batchSize = qBound(1, m_config.batchSize, 16);
     m_config.concurrency = qBound(1, m_config.concurrency, 16);
+    m_payloadPool->setMaxThreadCount(qMin(2, m_config.concurrency));
     m_tasks = tasks;
     m_nextIndex = 0;
     m_completed = 0;
     m_currentReplies.clear();
+    m_payloadWatchers.clear();
+    m_payloadCancelFlag = std::make_shared<std::atomic_bool>(false);
     m_cancelRequested = false;
     m_running = true;
+    ++m_generation;
 
     emit progressChanged(0, m_tasks.size(), tr("准备 AI 标注"));
 
@@ -269,14 +315,17 @@ void VlmAnnotationService::start(const ApiConfig &config, const QList<Task> &tas
 
 void VlmAnnotationService::cancel()
 {
-    if (!m_running && m_currentReplies.isEmpty()) {
+    if (!m_running && activeBatchCount() == 0) {
         return;
     }
 
     m_cancelRequested = true;
-    const QSet<QNetworkReply *> replies = m_currentReplies;
+    if (m_payloadCancelFlag) {
+        m_payloadCancelFlag->store(true, std::memory_order_relaxed);
+    }
+    const auto replies = m_currentReplies.keys();
     for (QNetworkReply *reply : replies) {
-        if (reply) {
+        if (reply && !reply->isFinished()) {
             reply->abort();
         }
     }
@@ -302,10 +351,25 @@ QList<VlmAnnotationService::Task> VlmAnnotationService::buildPlan(
         }
     }
 
-    QList<ColumnSnapshot> references;
+    struct ReferenceLookup {
+        const ColumnSnapshot *column = nullptr;
+        QHash<QString, int> exactFileNameIndex;
+    };
+    QList<ReferenceLookup> references;
     for (const ColumnSnapshot &column : columns) {
         if (referenceSet.contains(column.columnIndex)) {
-            references.append(column);
+            ReferenceLookup lookup;
+            lookup.column = &column;
+            if (options.matchRule != MatchRule::Order) {
+                lookup.exactFileNameIndex.reserve(column.images.size());
+                for (int i = 0; i < column.images.size(); ++i) {
+                    const QString &fileName = column.images.at(i).fileName;
+                    if (!lookup.exactFileNameIndex.contains(fileName)) {
+                        lookup.exactFileNameIndex.insert(fileName, i);
+                    }
+                }
+            }
+            references.append(std::move(lookup));
         }
     }
 
@@ -321,8 +385,20 @@ QList<VlmAnnotationService::Task> VlmAnnotationService::buildPlan(
         task.id = QStringLiteral("T%1").arg(tasks.size() + 1, 4, 10, QLatin1Char('0'));
         task.target = target;
 
-        for (const ColumnSnapshot &referenceColumn : std::as_const(references)) {
-            const int matchIndex = findMatchIndex(referenceColumn, target, options.matchRule);
+        for (const ReferenceLookup &lookup : std::as_const(references)) {
+            const ColumnSnapshot &referenceColumn = *lookup.column;
+            int matchIndex = -1;
+            if (options.matchRule == MatchRule::Order) {
+                const int targetRow = target.row >= 0 ? target.row : 0;
+                matchIndex = (targetRow < referenceColumn.images.size())
+                    ? targetRow
+                    : -1;
+            } else {
+                matchIndex = lookup.exactFileNameIndex.value(target.fileName, -1);
+                if (matchIndex < 0 && options.matchRule == MatchRule::FileNameFuzzy) {
+                    matchIndex = findMatchIndex(referenceColumn, target, options.matchRule);
+                }
+            }
             if (matchIndex < 0 || matchIndex >= referenceColumn.images.size()) {
                 continue;
             }
@@ -512,6 +588,16 @@ QJsonObject VlmAnnotationService::buildChatCompletionsPayload(const ApiConfig &c
                                                               QString *error,
                                                               PayloadFormat format)
 {
+    return buildChatCompletionsPayloadImpl(config, tasks, error, format, {});
+}
+
+QJsonObject VlmAnnotationService::buildChatCompletionsPayloadImpl(
+    const ApiConfig &config,
+    const QList<Task> &tasks,
+    QString *error,
+    PayloadFormat format,
+    const std::shared_ptr<std::atomic_bool> &cancelFlag)
+{
     if (error) {
         error->clear();
     }
@@ -534,30 +620,38 @@ QJsonObject VlmAnnotationService::buildChatCompletionsPayload(const ApiConfig &c
     content.append(textContent(targetLines.join(QLatin1Char('\n')), format));
 
     for (const Task &task : tasks) {
+        if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+            return {};
+        }
         content.append(textContent(QObject::tr("TARGET %1 / %2 / %3")
                                        .arg(task.id,
                                             task.target.columnName,
                                             task.target.fileName),
                                    format));
-        const QString targetData = imageToDataUrl(task.target.imagePath,
-                                                  config.maxLongSide,
-                                                  config.jpegQuality,
-                                                  error);
+        const QString targetData = imageToDataUrlImpl(task.target.imagePath,
+                                                      config.maxLongSide,
+                                                      config.jpegQuality,
+                                                      error,
+                                                      cancelFlag);
         if (targetData.isEmpty()) {
             return {};
         }
         content.append(imageContent(targetData, format));
 
         for (const ReferenceImage &reference : task.references) {
+            if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+                return {};
+            }
             content.append(textContent(QObject::tr("REFERENCE for %1 / %2 / %3")
                                            .arg(task.id,
                                                 reference.image.columnName,
                                                 reference.image.fileName),
                                        format));
-            const QString refData = imageToDataUrl(reference.image.imagePath,
-                                                   config.maxLongSide,
-                                                   config.jpegQuality,
-                                                   error);
+            const QString refData = imageToDataUrlImpl(reference.image.imagePath,
+                                                       config.maxLongSide,
+                                                       config.jpegQuality,
+                                                       error,
+                                                       cancelFlag);
             if (refData.isEmpty()) {
                 return {};
             }
@@ -608,7 +702,23 @@ QString VlmAnnotationService::imageToDataUrl(const QString &imagePath,
                                              int jpegQuality,
                                              QString *error)
 {
+    return imageToDataUrlImpl(imagePath, maxLongSide, jpegQuality, error, {});
+}
+
+QString VlmAnnotationService::imageToDataUrlImpl(
+    const QString &imagePath,
+    int maxLongSide,
+    int jpegQuality,
+    QString *error,
+    const std::shared_ptr<std::atomic_bool> &cancelFlag)
+{
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return {};
+    }
     QImage image(imagePath);
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return {};
+    }
     if (image.isNull()) {
         if (error) {
             *error = QObject::tr("无法读取图片：%1").arg(imagePath);
@@ -622,6 +732,9 @@ QString VlmAnnotationService::imageToDataUrl(const QString &imagePath,
         image = image.scaled(QSize(boundedLongSide, boundedLongSide),
                              Qt::KeepAspectRatio,
                              Qt::SmoothTransformation);
+        if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+            return {};
+        }
     }
 
     const bool usePng = image.hasAlphaChannel();
@@ -642,10 +755,17 @@ QString VlmAnnotationService::imageToDataUrl(const QString &imagePath,
         }
         return {};
     }
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return {};
+    }
 
+    const QByteArray base64 = bytes.toBase64();
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return {};
+    }
     return QStringLiteral("data:image/%1;base64,%2")
         .arg(usePng ? QStringLiteral("png") : QStringLiteral("jpeg"),
-             QString::fromLatin1(bytes.toBase64()));
+             QString::fromLatin1(base64));
 }
 
 bool VlmAnnotationService::applyAcceptedResult(ImageMarkManager *manager,
@@ -689,7 +809,7 @@ void VlmAnnotationService::startNextBatch()
         return;
     }
     if (m_cancelRequested) {
-        if (m_currentReplies.isEmpty()) {
+        if (activeBatchCount() == 0) {
             m_running = false;
             emit progressChanged(m_completed, m_tasks.size(), tr("已取消"));
             emit finished(true);
@@ -697,14 +817,16 @@ void VlmAnnotationService::startNextBatch()
         return;
     }
 
-    while (m_currentReplies.size() < m_config.concurrency && m_nextIndex < m_tasks.size()) {
+    while (activeBatchCount() < m_config.concurrency && m_nextIndex < m_tasks.size()) {
         const int batchStart = m_nextIndex;
         const int count = qMin(qMax(1, m_config.batchSize), m_tasks.size() - batchStart);
         m_nextIndex += count;
-        sendBatch(batchStart, m_tasks.mid(batchStart, count), 0);
+        if (!sendBatch(batchStart, m_tasks.mid(batchStart, count), 0)) {
+            break;
+        }
     }
 
-    if (m_currentReplies.isEmpty() && m_completed >= m_tasks.size()) {
+    if (activeBatchCount() == 0 && m_completed >= m_tasks.size()) {
         m_running = false;
         emit progressChanged(m_completed, m_tasks.size(), tr("AI 标注完成"));
         emit finished(false);
@@ -712,11 +834,20 @@ void VlmAnnotationService::startNextBatch()
     }
 }
 
+int VlmAnnotationService::activeBatchCount() const
+{
+    return m_payloadWatchers.size() + m_currentReplies.size();
+}
+
 bool VlmAnnotationService::sendBatch(int batchStart,
                                      const QList<Task> &batch,
                                      int retryCount,
                                      PayloadFormat format)
 {
+    if (!m_running || m_cancelRequested || m_shuttingDown) {
+        return false;
+    }
+
     const QString batchLabel = batch.size() == 1
         ? batch.first().id
         : tr("%1-%2").arg(batch.first().id, batch.last().id);
@@ -732,31 +863,132 @@ bool VlmAnnotationService::sendBatch(int batchStart,
         }
     };
 
-    emitBatchStatus(tr("构建请求：批次 %1，目标 %2 张，图片输入 %3 张，格式=%4，重试=%5；正在读取/压缩图片并生成 base64 payload")
+    emitBatchStatus(tr("构建请求：批次 %1，目标 %2 张，图片输入 %3 张，格式=%4，重试=%5；后台读取/压缩图片并生成 base64 payload")
                         .arg(batchLabel)
                         .arg(batch.size())
                         .arg(batchImageCount)
                         .arg(payloadFormatName(format))
                         .arg(retryCount));
-    flushStatusEvents();
 
-    QString payloadError;
-    const QJsonObject payload = buildChatCompletionsPayload(m_config, batch, &payloadError, format);
-    if (!payloadError.isEmpty()) {
-        for (int i = 0; i < batch.size(); ++i) {
-            emit itemFailed(batchStart + i, batch.at(i).id, payloadError);
-        }
-        completeBatch(batchStart, batch);
+    // itemStatusChanged is a direct signal by default. A consumer may cancel
+    // synchronously while handling it, so never reserve a worker slot from a
+    // stale run after returning from the emission.
+    if (!m_running || m_cancelRequested || m_shuttingDown) {
         return false;
     }
 
-    QStringList expectedIds;
-    expectedIds.reserve(batch.size());
-    for (const Task &task : batch) {
-        expectedIds.append(task.id);
+    const quint64 generation = m_generation;
+    const quint64 batchIdentity = ++m_nextBatchIdentity;
+    const ApiConfig config = m_config;
+    const auto cancelFlag = m_payloadCancelFlag;
+    auto *watcher = new QFutureWatcher<PayloadBuildResult>(this);
+    m_payloadWatchers.insert(batchIdentity, watcher);
+    connect(watcher, &QFutureWatcher<PayloadBuildResult>::finished, this,
+            [this,
+             watcher,
+             generation,
+             batchIdentity,
+             batchStart,
+             batch,
+             retryCount,
+             format]() {
+        const PayloadBuildResult result = watcher->result();
+        const auto watcherIt = m_payloadWatchers.constFind(batchIdentity);
+        const bool isCurrentBatch = watcherIt != m_payloadWatchers.cend()
+            && watcherIt.value() == watcher;
+
+        if (!isCurrentBatch || m_shuttingDown || generation != m_generation || !m_running) {
+            if (isCurrentBatch) {
+                m_payloadWatchers.remove(batchIdentity);
+            }
+            watcher->deleteLater();
+            return;
+        }
+        if (m_cancelRequested || result.cancelled) {
+            m_payloadWatchers.remove(batchIdentity);
+            watcher->deleteLater();
+            startNextBatch();
+            return;
+        }
+        if (!result.error.isEmpty() || result.requestBody.isEmpty()) {
+            const QString payloadError = result.error.isEmpty()
+                ? tr("无法构建请求 payload")
+                : result.error;
+            for (int i = 0; i < batch.size(); ++i) {
+                emit itemFailed(batchStart + i, batch.at(i).id, payloadError);
+            }
+            m_payloadWatchers.remove(batchIdentity);
+            watcher->deleteLater();
+            completeBatch(batchStart, batch);
+            startNextBatch();
+            return;
+        }
+
+        postPreparedBatch(batchStart,
+                          batch,
+                          retryCount,
+                          format,
+                          result.requestBody,
+                          generation,
+                          batchIdentity);
+        watcher->deleteLater();
+    });
+
+    watcher->setFuture(QtConcurrent::run(
+        m_payloadPool.get(),
+        [config, batch, format, cancelFlag]() {
+            PayloadBuildResult result;
+            if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+                result.cancelled = true;
+                return result;
+            }
+            const QJsonObject payload = buildChatCompletionsPayloadImpl(
+                config, batch, &result.error, format, cancelFlag);
+            result.cancelled = cancelFlag
+                && cancelFlag->load(std::memory_order_relaxed);
+            if (!result.cancelled && result.error.isEmpty() && !payload.isEmpty()) {
+                result.requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+            }
+            return result;
+        }));
+    return true;
+}
+
+void VlmAnnotationService::postPreparedBatch(int batchStart,
+                                              const QList<Task> &batch,
+                                              int retryCount,
+                                              PayloadFormat format,
+                                              const QByteArray &requestBody,
+                                              quint64 generation,
+                                              quint64 batchIdentity)
+{
+    const auto releasePayloadSlot = [this, batchIdentity]() {
+        m_payloadWatchers.remove(batchIdentity);
+    };
+    if (m_shuttingDown || !m_running || m_cancelRequested || generation != m_generation) {
+        releasePayloadSlot();
+        startNextBatch();
+        return;
     }
 
-    const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    const QString batchLabel = batch.size() == 1
+        ? batch.first().id
+        : tr("%1-%2").arg(batch.first().id, batch.last().id);
+    const int batchImageCount = imageCountForBatch(batch);
+    QStringList batchIds;
+    QStringList expectedIds;
+    batchIds.reserve(batch.size());
+    expectedIds.reserve(batch.size());
+    for (const Task &task : batch) {
+        batchIds.append(task.id);
+        expectedIds.append(task.id);
+    }
+    const auto emitBatchStatus = [this, batchStart, batchIds](const QString &statusText) {
+        for (int i = 0; i < batchIds.size(); ++i) {
+            emit itemStatusChanged(batchStart + i, batchIds.at(i), statusText);
+        }
+    };
+
     const QUrl endpoint = endpointUrl(m_config.baseUrl);
     emitBatchStatus(tr("发送请求：批次 %1，endpoint=%2，payload=%3，图片输入 %4 张；等待上传开始")
                         .arg(batchLabel,
@@ -764,18 +996,18 @@ bool VlmAnnotationService::sendBatch(int batchStart,
                              byteCountText(requestBody.size()))
                         .arg(batchImageCount));
 
+    // A status slot may synchronously cancel the service. Recheck before the
+    // only GUI-thread operation in this phase: creating the network request.
+    if (m_shuttingDown || !m_running || m_cancelRequested || generation != m_generation) {
+        releasePayloadSlot();
+        startNextBatch();
+        return;
+    }
+
     QNetworkReply *reply = m_network.post(buildNetworkRequest(m_config), requestBody);
     auto streamState = std::make_shared<StreamingReplyState>();
-    m_currentReplies.insert(reply);
-    emit progressChanged(m_completed,
-                         m_tasks.size(),
-                         tr("请求 AI 标注：%1-%2（并发 %3/%4）")
-                             .arg(batch.first().id,
-                                  batch.last().id)
-                             .arg(m_currentReplies.size())
-                             .arg(m_config.concurrency));
-    emitBatchStatus(tr("等待响应：批次 %1 已发起，payload=%2；若长时间停在这里，通常卡在网络连接、请求上传或服务端排队/推理")
-                        .arg(batchLabel, byteCountText(requestBody.size())));
+    m_currentReplies.insert(reply, batchIdentity);
+    releasePayloadSlot();
     connect(reply, &QNetworkReply::uploadProgress, this,
             [emitBatchStatus, batchLabel](qint64 bytesSent, qint64 bytesTotal) {
         const QString total = bytesTotal >= 0 ? byteCountText(bytesTotal) : QObject::tr("未知大小");
@@ -800,18 +1032,42 @@ bool VlmAnnotationService::sendBatch(int batchStart,
         }
     });
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, streamState, batchStart, batch, expectedIds, retryCount, format]() {
-        processStreamingChunk(streamState.get(), reply->readAll());
+            [this,
+             reply,
+             streamState,
+             batchStart,
+             batch,
+             expectedIds,
+             retryCount,
+             format,
+             generation,
+             batchIdentity]() {
+        if (reply->isReadable()) {
+            processStreamingChunk(streamState.get(), reply->readAll());
+        }
         finalizeStreamingState(streamState.get());
-        reply->deleteLater();
-        m_currentReplies.remove(reply);
+        const auto replyIt = m_currentReplies.constFind(reply);
+        const bool isCurrentBatch = replyIt != m_currentReplies.cend()
+            && replyIt.value() == batchIdentity;
+
+        if (!isCurrentBatch || m_shuttingDown || generation != m_generation || !m_running) {
+            if (isCurrentBatch) {
+                m_currentReplies.remove(reply);
+            }
+            reply->deleteLater();
+            return;
+        }
 
         if (m_cancelRequested) {
+            m_currentReplies.remove(reply);
+            reply->deleteLater();
             startNextBatch();
             return;
         }
 
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QNetworkReply::NetworkError networkError = reply->error();
+        const QString networkErrorString = reply->errorString();
         const QByteArray body = streamState->rawBody;
         const QString batchLabel = batch.size() == 1
             ? batch.first().id
@@ -832,9 +1088,16 @@ bool VlmAnnotationService::sendBatch(int batchStart,
                                    parseStatus);
         }
 
+        if (m_cancelRequested) {
+            m_currentReplies.remove(reply);
+            reply->deleteLater();
+            startNextBatch();
+            return;
+        }
+
         ParsedResponse parsed;
-        if (reply->error() != QNetworkReply::NoError && statusCode == 0) {
-            parsed.error = reply->errorString();
+        if (networkError != QNetworkReply::NoError && statusCode == 0) {
+            parsed.error = networkErrorString;
         } else if (streamState->sawStreamData) {
             parsed = parseStreamingHttpResponse(statusCode, body, expectedIds);
         } else {
@@ -849,7 +1112,11 @@ bool VlmAnnotationService::sendBatch(int batchStart,
                                        tr("准备重试：OpenAI 标准格式被拒绝，切换 DashScope 兼容格式；原因：%1")
                                            .arg(parsed.error.left(300)));
             }
-            if (!sendBatch(batchStart, batch, retryCount + 1, PayloadFormat::DashScopeContentParts)) {
+            const bool retryScheduled = sendBatch(
+                batchStart, batch, retryCount + 1, PayloadFormat::DashScopeContentParts);
+            m_currentReplies.remove(reply);
+            reply->deleteLater();
+            if (!retryScheduled) {
                 startNextBatch();
             }
             return;
@@ -861,7 +1128,10 @@ bool VlmAnnotationService::sendBatch(int batchStart,
                                        tr("准备重试：HTTP 成功但响应 JSON 不符合预期；原因：%1")
                                            .arg(parsed.error.left(300)));
             }
-            if (!sendBatch(batchStart, batch, retryCount + 1, format)) {
+            const bool retryScheduled = sendBatch(batchStart, batch, retryCount + 1, format);
+            m_currentReplies.remove(reply);
+            reply->deleteLater();
+            if (!retryScheduled) {
                 startNextBatch();
             }
             return;
@@ -871,6 +1141,8 @@ bool VlmAnnotationService::sendBatch(int batchStart,
             for (int i = 0; i < batch.size(); ++i) {
                 emit itemFailed(batchStart + i, batch.at(i).id, parsed.error);
             }
+            m_currentReplies.remove(reply);
+            reply->deleteLater();
             completeBatch(batchStart, batch);
             startNextBatch();
             return;
@@ -883,10 +1155,30 @@ bool VlmAnnotationService::sendBatch(int batchStart,
                                parsed.categories.value(id),
                                parsed.reasons.value(id));
         }
+        m_currentReplies.remove(reply);
+        reply->deleteLater();
         completeBatch(batchStart, batch);
         startNextBatch();
     });
-    return true;
+
+    // Install the finished handler before exposing the reply through signals:
+    // a direct progress/status slot is allowed to cancel immediately.
+    emit progressChanged(m_completed,
+                         m_tasks.size(),
+                         tr("请求 AI 标注：%1-%2（并发 %3/%4）")
+                             .arg(batch.first().id,
+                                  batch.last().id)
+                             .arg(activeBatchCount())
+                             .arg(m_config.concurrency));
+    const auto replyIt = m_currentReplies.constFind(reply);
+    if (m_shuttingDown || !m_running || m_cancelRequested
+        || generation != m_generation
+        || replyIt == m_currentReplies.cend()
+        || replyIt.value() != batchIdentity) {
+        return;
+    }
+    emitBatchStatus(tr("等待响应：批次 %1 已发起，payload=%2；若长时间停在这里，通常卡在网络连接、请求上传或服务端排队/推理")
+                        .arg(batchLabel, byteCountText(requestBody.size())));
 }
 
 void VlmAnnotationService::completeBatch(int batchStart, const QList<Task> &batch)
@@ -996,8 +1288,10 @@ int VlmAnnotationService::levenshteinDistance(const QString &a, const QString &b
         return a.size();
     }
 
-    QVector<int> previous(b.size() + 1);
-    QVector<int> current(b.size() + 1);
+    thread_local QVector<int> previous;
+    thread_local QVector<int> current;
+    previous.resize(b.size() + 1);
+    current.resize(b.size() + 1);
     for (int j = 0; j <= b.size(); ++j) {
         previous[j] = j;
     }

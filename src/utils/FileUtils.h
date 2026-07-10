@@ -31,16 +31,15 @@ struct ScanProgress {
 };
 
 /**
- * @brief A discovered image file plus its last-modified time.
+ * @brief Metadata collected while discovering an image file.
  *
- * The directory scan already materializes a QFileInfo per entry to apply the
- * QDir::Files filter, so capturing the mtime here is essentially free. It is
- * threaded through to the thumbnail loader so the decode worker can skip a
- * redundant stat() (a network round-trip on a share) when keying the disk cache.
- * lastModifiedUtc may be invalid if the filesystem cannot report it.
+ * fileName is captured without extra file-system I/O. lastModifiedUtc is
+ * optional: callers that need maximum list-loading speed can skip the per-entry
+ * stat and let the thumbnail worker query only its visible/prefetch working set.
  */
 struct ScannedImage {
     QString path;
+    QString fileName;
     QDateTime lastModifiedUtc;
 };
 
@@ -57,6 +56,10 @@ inline QStringList supportedImageExtensions()
 
 struct ScanOptions {
     bool recursive = true;
+    // Capturing mtime can force one stat per directory entry on some file
+    // systems. List views can disable it for a fast first paint and let the
+    // thumbnail worker stat only the small visible/prefetch working set.
+    bool captureLastModified = true;
     int batchSize = 1000;
     int initialBatchSize = 300;
     QStringList extensions = supportedImageExtensions();

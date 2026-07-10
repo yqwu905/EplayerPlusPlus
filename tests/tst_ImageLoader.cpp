@@ -22,7 +22,11 @@ private slots:
     void cancelThumbnailRequestsExcept_filtersQueue();
     void visibleRequest_promotesQueuedThumbnail();
     void visibleBatch_emitsSingleFastPreview();
+    void inflightPrefetchPromotion_decodesOnce();
     void requestImageBatch_usesMemoryCacheOnRepeatedLoad();
+    void fullImagePrefetch_isSilentAndWarmsCache();
+    void fullImageInflightPrefetchPromotion_notifiesOnce();
+    void cancelledActiveSameKey_requeuesNewTokens();
     void fastSwitchActivePathSet_cancelsInflightDecodes();
     void cacheEviction_bounded_lruPreservesRecent();
     void getCachedThumbnailNoSize_returnsLargestForPath();
@@ -34,6 +38,7 @@ private slots:
     void ignoreColorProfile_offKeepsTagOnThumbnail();
     void ignoreColorProfile_stripsLoadedFullImage();
     void setIgnoreColorProfile_toggleInvalidatesMemoryCache();
+    void policyToggle_dropsQueuedMemoryHitEmission();
 };
 
 void tst_ImageLoader::diskCacheHit_afterFirstDecode()
@@ -151,6 +156,28 @@ void tst_ImageLoader::visibleBatch_emitsSingleFastPreview()
     QCOMPARE(spy.at(0).at(0).toString(), imagePath);
 }
 
+void tst_ImageLoader::inflightPrefetchPromotion_decodesOnce()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("promote.png"));
+    QImage image(2048, 2048, QImage::Format_ARGB32);
+    image.fill(Qt::darkGreen);
+    QVERIFY(image.save(path));
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    QSignalSpy spy(&loader, &ImageLoader::thumbnailReady);
+    loader.requestThumbnailBatchPrefetch({path}, QSize(256, 256));
+    loader.requestThumbnailBatchVisibleFirst({path}, QSize(256, 256));
+
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+    QTest::qWait(100);
+    const auto metrics = loader.thumbnailMetrics();
+    QCOMPARE(metrics.value(QStringLiteral("decodes")) +
+             metrics.value(QStringLiteral("diskHits")), qint64(1));
+}
+
 void tst_ImageLoader::requestImageBatch_usesMemoryCacheOnRepeatedLoad()
 {
     QTemporaryDir dir;
@@ -179,6 +206,82 @@ void tst_ImageLoader::requestImageBatch_usesMemoryCacheOnRepeatedLoad()
     const QImage secondLoad = args.at(1).value<QImage>();
     QVERIFY(!secondLoad.isNull());
     QCOMPARE(secondLoad.size(), QSize(96, 96));
+}
+
+void tst_ImageLoader::fullImagePrefetch_isSilentAndWarmsCache()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("prefetch.png"));
+    QImage image(128, 96, QImage::Format_ARGB32);
+    image.fill(Qt::yellow);
+    QVERIFY(image.save(path));
+
+    ImageLoader loader;
+    QSignalSpy spy(&loader, &ImageLoader::imageReady);
+    loader.prefetchImages({path});
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.getCachedImage(path).isNull(), 3000);
+    QCOMPARE(spy.count(), 0);
+
+    loader.requestImage(path);
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 1000);
+}
+
+void tst_ImageLoader::fullImageInflightPrefetchPromotion_notifiesOnce()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("inflight_full_promotion.png"));
+    QImage image(2048, 2048, QImage::Format_ARGB32);
+    image.fill(Qt::darkCyan);
+    QVERIFY(image.save(path));
+
+    ImageLoader loader;
+    QSignalSpy spy(&loader, &ImageLoader::imageReady);
+
+    // No event processing occurs between these calls, so the visible request
+    // necessarily promotes the same pending/active token rather than hitting a
+    // completed cache entry.
+    loader.prefetchImages({path});
+    loader.requestImage(path);
+
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
+    QTest::qWait(100);
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.first().at(0).toString(), path);
+    QVERIFY(!spy.first().at(1).value<QImage>().isNull());
+}
+
+void tst_ImageLoader::cancelledActiveSameKey_requeuesNewTokens()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("same_key_requeue.png"));
+    QImage image(2048, 2048, QImage::Format_ARGB32);
+    image.fill(Qt::darkMagenta);
+    QVERIFY(image.save(path));
+
+    ImageLoader loader;
+    loader.setMaxConcurrentLoads(1);
+    QSignalSpy thumbnailSpy(&loader, &ImageLoader::thumbnailReady);
+    loader.requestThumbnailBatchVisibleFirst({path}, QSize(256, 256));
+    loader.cancelAllThumbnailRequests();
+    loader.requestThumbnailBatchVisibleFirst({path}, QSize(256, 256));
+
+    QTRY_COMPARE_WITH_TIMEOUT(thumbnailSpy.count(), 1, 5000);
+    QTest::qWait(100);
+    QCOMPARE(thumbnailSpy.count(), 1);
+    const auto metrics = loader.thumbnailMetrics();
+    QCOMPARE(metrics.value(QStringLiteral("decodes")) +
+             metrics.value(QStringLiteral("diskHits")), qint64(1));
+
+    QSignalSpy imageSpy(&loader, &ImageLoader::imageReady);
+    loader.prefetchImages({path});
+    loader.cancelImageRequestsExcept({});
+    loader.requestImage(path);
+    QTRY_COMPARE_WITH_TIMEOUT(imageSpy.count(), 1, 5000);
+    QTest::qWait(100);
+    QCOMPARE(imageSpy.count(), 1);
 }
 
 void tst_ImageLoader::fastSwitchActivePathSet_cancelsInflightDecodes()
@@ -606,6 +709,33 @@ void tst_ImageLoader::setIgnoreColorProfile_toggleInvalidatesMemoryCache()
     QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 5000);
     QCOMPARE(loader.thumbnailMetrics().value(QStringLiteral("memoryHits")),
              memoryHitsBeforeToggle);
+}
+
+void tst_ImageLoader::policyToggle_dropsQueuedMemoryHitEmission()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("queued_policy_hit.png"));
+    QImage image(96, 96, QImage::Format_ARGB32);
+    image.fill(Qt::blue);
+    image.setColorSpace(QColorSpace(QColorSpace::SRgb));
+    QVERIFY(image.save(path));
+
+    ImageLoader loader;
+    loader.setIgnoreColorProfile(false);
+    QSignalSpy thumbnailSpy(&loader, &ImageLoader::thumbnailReady);
+    loader.requestThumbnail(path, QSize(64, 64));
+    QTRY_COMPARE_WITH_TIMEOUT(thumbnailSpy.count(), 1, 5000);
+
+    thumbnailSpy.clear();
+    loader.requestThumbnail(path, QSize(64, 64)); // queued memory-hit emission
+    loader.setIgnoreColorProfile(true);           // invalidate before delivery
+    QTest::qWait(100);
+    QCOMPARE(thumbnailSpy.count(), 0);
+
+    loader.requestThumbnail(path, QSize(64, 64));
+    QTRY_COMPARE_WITH_TIMEOUT(thumbnailSpy.count(), 1, 5000);
+    QVERIFY(!thumbnailSpy.first().at(1).value<QImage>().colorSpace().isValid());
 }
 
 QTEST_MAIN(tst_ImageLoader)

@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QVector>
 #include <memory>
+#include <utility>
 
 #include "utils/FileUtils.h"
 
@@ -30,7 +31,9 @@ private slots:
     void testScanForImagesBatched_batches();
     void testScanForImagesBatched_initialBatchFlushesEarly();
     void testScanForImagesBatched_cancel();
+    void testScanForImagesBatched_preCancelledSkipsCallbacks();
     void testScanForImagesBatched_deliversValidMtime();
+    void testScanForImagesBatched_fastMetadataSkipsMtime();
     void testScanForImagesBatched_deliversAllAcrossBatches();
     void testScanFindsUppercaseExtensions();
 
@@ -282,6 +285,28 @@ void tst_FileUtils::testScanForImagesBatched_cancel()
     QVERIFY(all.size() < 60);
 }
 
+void tst_FileUtils::testScanForImagesBatched_preCancelledSkipsCallbacks()
+{
+    auto token = std::make_shared<FileUtils::ScanCancelToken>();
+    token->cancel();
+
+    int batchCallbacks = 0;
+    int progressCallbacks = 0;
+    FileUtils::scanForImagesBatched(
+        m_tempDir.path(),
+        FileUtils::ScanOptions{},
+        [&batchCallbacks](const QVector<FileUtils::ScannedImage> &, bool) {
+            ++batchCallbacks;
+        },
+        [&progressCallbacks](const FileUtils::ScanProgress &) {
+            ++progressCallbacks;
+        },
+        token);
+
+    QCOMPARE(batchCallbacks, 0);
+    QCOMPARE(progressCallbacks, 0);
+}
+
 void tst_FileUtils::testScanForImagesBatched_deliversValidMtime()
 {
     QVector<FileUtils::ScannedImage> all;
@@ -307,6 +332,28 @@ void tst_FileUtils::testScanForImagesBatched_deliversValidMtime()
         // (allow a couple of seconds for filesystem timestamp granularity).
         const QDateTime direct = QFileInfo(item.path).lastModified().toUTC();
         QVERIFY(qAbs(item.lastModifiedUtc.secsTo(direct)) <= 2);
+    }
+}
+
+void tst_FileUtils::testScanForImagesBatched_fastMetadataSkipsMtime()
+{
+    QVector<FileUtils::ScannedImage> all;
+    FileUtils::ScanOptions options;
+    options.recursive = false;
+    options.captureLastModified = false;
+    options.batchSize = 8;
+
+    FileUtils::scanForImagesBatched(
+        m_tempDir.path(), options,
+        [&all](const QVector<FileUtils::ScannedImage> &batch, bool) {
+            all.append(batch);
+        });
+
+    QVERIFY(!all.isEmpty());
+    for (const FileUtils::ScannedImage &item : std::as_const(all)) {
+        QVERIFY(!item.fileName.isEmpty());
+        QCOMPARE(QFileInfo(item.path).fileName(), item.fileName);
+        QVERIFY(!item.lastModifiedUtc.isValid());
     }
 }
 

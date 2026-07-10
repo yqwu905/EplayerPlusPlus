@@ -7,8 +7,11 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QLineEdit>
 #include <QListView>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QScrollArea>
@@ -35,9 +38,11 @@ private slots:
     void altClick_exactVsFuzzyFileNameMatch();
     void markButtons_clickPersistsAndCtrlClickMarksSameRow();
     void filters_fileNameAndCategoryLimitVisibleRows();
+    void fileNameFilter_debouncesRapidTyping();
     void categoryFilter_markingSelectedImageSelectsNextVisibleRow();
     void categoryFilter_ctrlClickAnchorsSameIndexRowsAcrossColumns();
     void categoryFilter_altClickAnchorsFuzzyFileNameMatchesAcrossColumns();
+    void categoryFilter_fuzzyLargeListUsesBoundedIndexAndPreservesTies();
     void selection_preloadsPreviousAndNextThreeImages();
     void altMatchedNavigation_advancesAnchorAndRematchesOtherFolders();
     void independentNavigation_movesEachSelectedFolderSeparately();
@@ -452,6 +457,38 @@ void tst_BrowsePanel::filters_fileNameAndCategoryLimitVisibleRows()
     QVERIFY(rowByFileName(views[0], QStringLiteral("alpha_dog.png")) >= 0);
 }
 
+void tst_BrowsePanel::fileNameFilter_debouncesRapidTyping()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage image(12, 12, QImage::Format_ARGB32);
+    image.fill(Qt::green);
+    QVERIFY(image.save(dir.filePath(QStringLiteral("alpha.png"))));
+    QVERIFY(image.save(dir.filePath(QStringLiteral("beta.png"))));
+
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.resize(600, 400);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+    QVERIFY(session.addFolder(dir.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 1), 5000);
+    waitForRows(views[0], 2);
+    auto *filter = panel.findChild<QLineEdit *>(QStringLiteral("fileNameFilterEdit"));
+    QVERIFY(filter != nullptr);
+    QSignalSpy resetSpy(views[0]->model(), &QAbstractItemModel::modelReset);
+
+    filter->setText(QStringLiteral("a"));
+    filter->setText(QStringLiteral("al"));
+    filter->setText(QStringLiteral("alp"));
+    QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 1, 1000);
+    QTest::qWait(160);
+    QCOMPARE(resetSpy.count(), 1);
+}
+
 void tst_BrowsePanel::categoryFilter_markingSelectedImageSelectsNextVisibleRow()
 {
     QTemporaryDir dir;
@@ -610,6 +647,113 @@ void tst_BrowsePanel::categoryFilter_altClickAnchorsFuzzyFileNameMatchesAcrossCo
     QCOMPARE(rowByFileName(views[0], QStringLiteral("dog.png")), -1);
 }
 
+void tst_BrowsePanel::categoryFilter_fuzzyLargeListUsesBoundedIndexAndPreservesTies()
+{
+    QTemporaryDir targetDir;
+    QTemporaryDir markedDir;
+    QVERIFY(targetDir.isValid());
+    QVERIFY(markedDir.isValid());
+
+    // This used to run one full Levenshtein DP for every marked-anchor x target
+    // pair on the GUI thread. Metadata-only files keep this regression focused on
+    // filename matching rather than image encoding/decoding.
+    constexpr int kFileCount = 5000;
+    QJsonObject marksJson;
+    for (int i = 0; i < kFileCount; ++i) {
+        const QString suffix = QStringLiteral("%1.jpg")
+                                   .arg(i, 5, 10, QLatin1Char('0'));
+        const QString anchorName = QStringLiteral("frame_") + suffix;
+        const QString targetName = QStringLiteral("flame_") + suffix;
+
+        QFile anchorFile(markedDir.filePath(anchorName));
+        QVERIFY(anchorFile.open(QIODevice::WriteOnly));
+        anchorFile.close();
+        QFile targetFile(targetDir.filePath(targetName));
+        QVERIFY(targetFile.open(QIODevice::WriteOnly));
+        targetFile.close();
+
+        if ((i % 2) == 0) {
+            QJsonObject mark;
+            mark.insert(QStringLiteral("category"), QStringLiteral("A"));
+            mark.insert(QStringLiteral("timestamp"), i + 1);
+            marksJson.insert(anchorName, mark);
+        }
+    }
+
+    // Both target names are one edit from tie.jpg. Legacy matching chooses the
+    // first source row on equal distance; sorted source order makes tae.jpg win.
+    for (const QString &name : {QStringLiteral("tae.jpg"), QStringLiteral("tbe.jpg")}) {
+        QFile file(targetDir.filePath(name));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.close();
+    }
+    QFile tieAnchor(markedDir.filePath(QStringLiteral("tie.jpg")));
+    QVERIFY(tieAnchor.open(QIODevice::WriteOnly));
+    tieAnchor.close();
+    QJsonObject tieMark;
+    tieMark.insert(QStringLiteral("category"), QStringLiteral("A"));
+    tieMark.insert(QStringLiteral("timestamp"), kFileCount + 1);
+    marksJson.insert(QStringLiteral("tie.jpg"), tieMark);
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 2);
+    root.insert(QStringLiteral("marks"), marksJson);
+    QFile markFile(markedDir.filePath(QStringLiteral(".imagecompare_marks.json")));
+    QVERIFY(markFile.open(QIODevice::WriteOnly));
+    QVERIFY(markFile.write(QJsonDocument(root).toJson(QJsonDocument::Compact)) > 0);
+    markFile.close();
+
+    ImageMarkManager marks;
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.setFuzzyFileNameMatchEnabled(true);
+    panel.resize(900, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(targetDir.path()));
+    QVERIFY(session.addFolder(markedDir.path()));
+
+    QList<QListView *> views;
+    QTRY_VERIFY_WITH_TIMEOUT((views = sortedViews(panel), views.size() == 2), 5000);
+    waitForRows(views[0], kFileCount + 2);
+    waitForRows(views[1], kFileCount + 1);
+
+    auto *categoryFilter = panel.findChild<QComboBox *>("categoryFilterComboBox");
+    QVERIFY(categoryFilter != nullptr);
+    const int categoryAIndex = categoryFilter->findData(QStringLiteral("A"));
+    QVERIFY(categoryAIndex >= 0);
+    categoryFilter->setCurrentIndex(categoryAIndex);
+    QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 0, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(views[1]->model()->rowCount(), kFileCount / 2 + 1, 2000);
+
+    const int tieRow = rowByFileName(views[1], QStringLiteral("tie.jpg"));
+    QVERIFY(tieRow >= 0);
+    const QModelIndex tieIndex = views[1]->model()->index(tieRow, 0);
+    views[1]->scrollTo(tieIndex, QAbstractItemView::PositionAtCenter);
+    QTest::qWait(30);
+    const QRect tieRect = views[1]->visualRect(tieIndex);
+    QVERIFY(tieRect.isValid());
+    QElapsedTimer timer;
+    timer.start();
+    QTest::mouseClick(views[1]->viewport(), Qt::LeftButton,
+                      Qt::AltModifier, tieRect.center());
+    const qint64 elapsedMs = timer.elapsed();
+
+    QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), kFileCount / 2 + 1, 2000);
+    QCOMPARE(rowByFileName(views[0], QStringLiteral("tae.jpg")) >= 0, true);
+    QCOMPARE(rowByFileName(views[0], QStringLiteral("tbe.jpg")), -1);
+    QVERIFY(isRowSelected(views[0], rowByFileName(views[0], QStringLiteral("tae.jpg"))));
+    QVERIFY2(elapsedMs < 500,
+             qPrintable(QStringLiteral("large fuzzy filter blocked GUI for %1 ms")
+                            .arg(elapsedMs)));
+    qDebug() << "[Browse fuzzy index]" << (kFileCount / 2 + 1)
+             << "anchors x" << (kFileCount + 2) << "targets in"
+             << elapsedMs << "ms";
+}
+
 void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()
 {
     QTemporaryDir dir;
@@ -641,19 +785,15 @@ void tst_BrowsePanel::selection_preloadsPreviousAndNextThreeImages()
     QSignalSpy imageSpy(&loader, &ImageLoader::imageReady);
     clickRow(views[0], 4);
 
-    QTRY_VERIFY_WITH_TIMEOUT(imageSpy.count() >= 6, 5000);
+    const QList<int> expectedRows = {1, 2, 3, 5, 6, 7};
+    QTRY_VERIFY_WITH_TIMEOUT(std::all_of(expectedRows.cbegin(), expectedRows.cend(),
+                                        [&loader, &imagePaths](int row) {
+        return !loader.getCachedImage(imagePaths.at(row)).isNull();
+    }), 5000);
 
-    QSet<QString> loadedPaths;
-    for (const auto &call : imageSpy) {
-        loadedPaths.insert(call.at(0).toString());
-    }
-
-    QVERIFY(loadedPaths.contains(imagePaths.at(1)));
-    QVERIFY(loadedPaths.contains(imagePaths.at(2)));
-    QVERIFY(loadedPaths.contains(imagePaths.at(3)));
-    QVERIFY(loadedPaths.contains(imagePaths.at(5)));
-    QVERIFY(loadedPaths.contains(imagePaths.at(6)));
-    QVERIFY(loadedPaths.contains(imagePaths.at(7)));
+    // Neighbor prefetch is deliberately silent: warming the cache must not
+    // drive ComparePanel as though six new visible selections arrived.
+    QCOMPARE(imageSpy.count(), 0);
 }
 
 void tst_BrowsePanel::altMatchedNavigation_advancesAnchorAndRematchesOtherFolders()
@@ -1001,6 +1141,19 @@ void tst_BrowsePanel::moreThanSixFolders_addsAllColumnsWithHorizontalScroll()
     auto *scrollArea = panel.findChild<QScrollArea *>(QStringLiteral("compareColumnsScrollArea"));
     QVERIFY(scrollArea != nullptr);
     QTRY_VERIFY_WITH_TIMEOUT(scrollArea->horizontalScrollBar()->maximum() > 0, 2000);
+
+    auto thumbnailAt = [](QListView *view) {
+        return view->model()->data(view->model()->index(0, 0),
+                                   ImageListModel::ThumbnailRole).value<QImage>();
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(!thumbnailAt(views.first()).isNull(), 5000);
+    QTest::qWait(200);
+    QVERIFY2(thumbnailAt(views.last()).isNull(),
+             "far duplicate-folder column accepted a shared-loader thumbnail");
+
+    scrollArea->horizontalScrollBar()->setValue(
+        scrollArea->horizontalScrollBar()->maximum());
+    QTRY_VERIFY_WITH_TIMEOUT(!thumbnailAt(views.last()).isNull(), 5000);
 }
 
 QTEST_MAIN(tst_BrowsePanel)

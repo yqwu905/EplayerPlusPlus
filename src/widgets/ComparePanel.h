@@ -8,11 +8,16 @@
 #include <QPoint>
 #include <QSize>
 #include <QFutureWatcher>
+#include <QThreadPool>
+
+#include <atomic>
+#include <memory>
 
 class QGridLayout;
 class QSlider;
 class QLabel;
 class QToolBar;
+class QTimer;
 class QAction;
 class QHBoxLayout;
 class QPushButton;
@@ -141,16 +146,26 @@ private:
         QImage previewImage;
         QImage cachedToleranceImage;   // Cached tolerance map (full res)
         int cachedToleranceThreshold = -1;     // Threshold used to build the cache
-        // Cache for imageForCompare()'s resize-to-first scaling. A full-res
-        // SmoothTransformation is otherwise recomputed on every threshold tick
-        // and repaint. Keyed by the source image identity + reference size, so
-        // it self-invalidates when either changes (mutable: imageForCompare is
-        // const). See ComparePanel::imageForCompare.
-        mutable QImage resizedCompareImage;
-        mutable qint64 resizedCompareSrcKey = 0;
-        mutable QSize resizedCompareRefSize;
+        // Cache for imageForCompare()'s resize-to-first scaling. The first smooth
+        // resample runs in m_resizePool so selecting a large image never blocks
+        // the GUI thread; these keys reject stale completions.
+        QImage resizedCompareImage;
+        qint64 resizedCompareSrcKey = 0;
+        QSize resizedCompareRefSize;
+        QFutureWatcher<QImage> *resizeWatcher = nullptr;
+        std::shared_ptr<std::atomic_bool> resizeCancel;
+        quint64 resizeGeneration = 0;
+        qint64 pendingResizeSrcKey = 0;
+        QSize pendingResizeRefSize;
+        bool resizeRerunRequested = false;
         QFutureWatcher<QImage> *toleranceWatcher = nullptr; // In-flight async job
+        std::shared_ptr<std::atomic_bool> toleranceCancel;
         quint64 toleranceGeneration = 0;       // Bumped to invalidate in-flight jobs
+        qint64 pendingToleranceSourceKey = 0;
+        qint64 pendingToleranceTargetKey = 0;
+        int pendingToleranceThreshold = -1;
+        int pendingToleranceSourceIndex = -1;
+        bool toleranceRerunRequested = false;
         bool hasImage = false;
         bool showingPreview = false;
         bool showingToleranceMap = false;
@@ -181,6 +196,16 @@ private:
     void showOriginalImage(int cellIndex, bool resetView = false);
     void showToleranceMap(int sourceIndex, int targetIndex);
     void cancelToleranceWatcher(ImageCell &cell);
+    void markToleranceWorkStale(ImageCell &cell, bool rerunLatest);
+    void cancelToleranceJobsDependingOn(int cellIndex);
+    void refreshToleranceJobsDependingOn(int cellIndex);
+    void cancelResizeWatcher(ImageCell &cell);
+    void markResizeWorkStale(ImageCell &cell);
+    void invalidateResizedCompareImage(ImageCell &cell);
+    void ensureResizedCompareImage(int cellIndex);
+    void scheduleResizedCompareImage(int cellIndex,
+                                     const QImage &baseImage,
+                                     const QSize &referenceSize);
     void showSourceOnTarget(int sourceIndex, int targetIndex);
     void refreshCellsUsingFirstImage();
     void resizeImageCell(int cellIndex);
@@ -220,6 +245,8 @@ private:
     QSlider *m_thresholdSlider = nullptr;
     QLabel *m_thresholdValueLabel = nullptr;
     QWidget *m_thresholdContainer = nullptr; // to show/hide threshold controls
+    QTimer *m_toleranceRefreshTimer = nullptr;
+    std::unique_ptr<QThreadPool> m_resizePool;
     QCheckBox *m_resizeToFirstImageCheckBox = nullptr;
     QWidget *m_gridContainer = nullptr;
     QGridLayout *m_gridLayout = nullptr;

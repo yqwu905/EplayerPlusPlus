@@ -36,6 +36,8 @@ private slots:
     void testFetchMore();
     void testFetchMoreAsync();
     void testFetchMoreNoDuplicate();
+    void testRefreshDuringInflightFetch_dropsStaleResult();
+    void testReplaceRootsDuringInflightFetch_preventsAbaResult();
     void testIndex();
     void testParent();
 
@@ -368,6 +370,41 @@ void tst_FolderModel::testFetchMoreAsync()
 
     // Verify data is populated
     QCOMPARE(model.rowCount(rootIdx), 2);
+}
+
+void tst_FolderModel::testRefreshDuringInflightFetch_dropsStaleResult()
+{
+    FolderModel model;
+    QVERIFY(model.addFolder(m_testDir1));
+    const QModelIndex root = model.index(0, 0);
+    QSignalSpy finishSpy(&model, &FolderModel::fetchFinished);
+
+    model.fetchMore(root);
+    model.refreshFolder(root);
+    QTest::qWait(100);
+
+    QCOMPARE(finishSpy.count(), 0);
+    QCOMPARE(model.rowCount(root), 0);
+    QVERIFY(model.canFetchMore(root));
+}
+
+void tst_FolderModel::testReplaceRootsDuringInflightFetch_preventsAbaResult()
+{
+    FolderModel model;
+    QVERIFY(model.addFolder(m_testDir1));
+    model.fetchMore(model.index(0, 0));
+
+    // Replacing roots can immediately reuse the old node address. The generation
+    // and disconnected watcher must prevent dir1's subdirectories from appearing
+    // beneath the replacement dir2 node.
+    model.setRootFolders({m_testDir2});
+    QTest::qWait(100);
+
+    QCOMPARE(model.rowCount(), 1);
+    const QModelIndex replacement = model.index(0, 0);
+    QCOMPARE(model.filePath(replacement), m_testDir2);
+    QCOMPARE(model.rowCount(replacement), 0);
+    QVERIFY(model.canFetchMore(replacement));
 }
 
 void tst_FolderModel::testFetchMoreNoDuplicate()

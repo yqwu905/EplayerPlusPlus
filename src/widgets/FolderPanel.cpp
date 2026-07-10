@@ -85,6 +85,7 @@ void FolderPanel::setupUi()
     m_treeView->setObjectName(QStringLiteral("folderTreeView"));
     m_treeView->setModel(m_folderModel);
     m_treeView->setHeaderHidden(true);
+    m_treeView->setUniformRowHeights(true);
     m_treeView->setContextMenuPolicy(Qt::CustomContextMenu);
     m_treeView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_treeView->setAnimated(true);
