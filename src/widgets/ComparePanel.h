@@ -153,9 +153,9 @@ private:
         QImage previewImage;
         QImage cachedToleranceImage;   // Cached tolerance map (full res)
         int cachedToleranceThreshold = -1;     // Threshold used to build the cache
-        // Cache for imageForCompare()'s resize-to-first scaling. The first smooth
-        // resample runs in m_resizePool so selecting a large image never blocks
-        // the GUI thread; these keys reject stale completions.
+        // Cache for imageForCompare()'s resize-to-largest scaling. The first
+        // smooth resample runs in m_resizePool so selecting a large image never
+        // blocks the GUI thread; these keys reject stale completions.
         QImage resizedCompareImage;
         qint64 resizedCompareSrcKey = 0;
         QSize resizedCompareRefSize;
@@ -215,7 +215,7 @@ private:
                                      const QSize &referenceSize);
     void showSourceOnTarget(int sourceIndex, int targetIndex);
     int swapPreviewCellIndex(int sourceIndex, int targetIndex) const;
-    void refreshCellsUsingFirstImage();
+    void refreshCellsUsingLargestImage();
     void resizeImageCell(int cellIndex);
     void rebuildCompareButtons();
     int compareTargetIndexForNumberKey(int key) const;
