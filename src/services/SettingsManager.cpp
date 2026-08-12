@@ -12,6 +12,7 @@ const QString SettingsManager::kFolderListKey = QStringLiteral("folders/list");
 const QString SettingsManager::kComparisonThresholdKey = QStringLiteral("comparison/threshold");
 const QString SettingsManager::kResizeToFirstImageKey = QStringLiteral("comparison/resize_to_first_image");
 const QString SettingsManager::kReverseSwapDirectionKey = QStringLiteral("comparison/reverse_swap_direction");
+const QString SettingsManager::kImageNameOverlayKey = QStringLiteral("comparison/show_image_name_overlay");
 const QString SettingsManager::kIgnoreImageColorProfileKey = QStringLiteral("image/ignore_color_profile");
 const QString SettingsManager::kSplitterSizesKey = QStringLiteral("ui/splitter_sizes");
 const QString SettingsManager::kVlmBaseUrlKey = QStringLiteral("vlm/base_url");
@@ -101,6 +102,18 @@ void SettingsManager::setReverseSwapDirectionEnabled(bool enabled)
 {
     QSettings settings;
     settings.setValue(kReverseSwapDirectionKey, enabled);
+}
+
+bool SettingsManager::imageNameOverlayEnabled() const
+{
+    QSettings settings;
+    return settings.value(kImageNameOverlayKey, false).toBool();
+}
+
+void SettingsManager::setImageNameOverlayEnabled(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(kImageNameOverlayKey, enabled);
 }
 
 bool SettingsManager::ignoreImageColorProfile() const

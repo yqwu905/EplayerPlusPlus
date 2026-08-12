@@ -94,6 +94,19 @@ public:
     void setReverseSwapDirectionEnabled(bool enabled);
 
     /**
+     * @brief Whether a prominent source name is overlaid above each compared image.
+     *
+     * Disabled by default so the comparison surface remains unchanged until the
+     * user explicitly enables the annotation aid.
+     */
+    bool imageNameOverlayEnabled() const;
+
+    /**
+     * @brief Enable or disable the prominent image-name overlay.
+     */
+    void setImageNameOverlayEnabled(bool enabled);
+
+    /**
      * @brief Whether embedded ICC / color-profile info on loaded images should be stripped.
      *
      * When enabled, QImage::setColorSpace(QColorSpace()) is applied after decode so two
@@ -161,6 +174,7 @@ private:
     static const QString kComparisonThresholdKey;
     static const QString kResizeToFirstImageKey;
     static const QString kReverseSwapDirectionKey;
+    static const QString kImageNameOverlayKey;
     static const QString kIgnoreImageColorProfileKey;
     static const QString kSplitterSizesKey;
     static const QString kVlmBaseUrlKey;

@@ -30,6 +30,7 @@ private slots:
     void compareHeader_placesTitleAndButtonsInHeaderBlock();
     void layout_imageAreaExpandsToFillAvailableGridHeight();
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
+    void imageNameOverlay_toggleShowsProminentDisplayNames();
     void folderSwap_reordersGridCellsAndImages();
     void layout_shrinksFromManyFoldersToTwo_cellsExpand();
     void numberShortcut_swapModePreviewsTargetUntilRelease();
@@ -381,6 +382,84 @@ void tst_ComparePanel::customGridName_updatesOnlyThatCellAndCompareTooltips()
     QCOMPARE(secondButtons.size(), 1);
     QVERIFY(firstButtons.first()->toolTip().contains(QStringLiteral("Candidate")));
     QVERIFY(secondButtons.first()->toolTip().contains(QStringLiteral("Baseline")));
+}
+
+void tst_ComparePanel::imageNameOverlay_toggleShowsProminentDisplayNames()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (const QString &folderName : {QStringLiteral("Baseline"),
+                                      QStringLiteral("Candidate")}) {
+        const QString folder = root.filePath(folderName);
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(folder, "shared.png", Qt::white);
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    QVERIFY(!panel.imageNameOverlayEnabled());
+
+    for (QWidget *cell : cells) {
+        auto *overlay = cell->findChild<QLabel *>(
+            QStringLiteral("compareImageNameOverlay"));
+        QVERIFY(overlay != nullptr);
+        QVERIFY(overlay->isHidden());
+        QVERIFY(overlay->testAttribute(Qt::WA_TransparentForMouseEvents));
+    }
+
+    panel.setImageNameOverlayEnabled(true);
+    QCoreApplication::processEvents();
+    QVERIFY(panel.imageNameOverlayEnabled());
+
+    for (int i = 0; i < cells.size(); ++i) {
+        auto *overlay = cells[i]->findChild<QLabel *>(
+            QStringLiteral("compareImageNameOverlay"));
+        auto *imageWidget = cells[i]->findChild<ZoomableImageWidget *>();
+        QVERIFY(overlay != nullptr);
+        QVERIFY(imageWidget != nullptr);
+        QVERIFY(overlay->isVisible());
+        QCOMPARE(overlay->text(), i == 0 ? QStringLiteral("Baseline")
+                                         : QStringLiteral("Candidate"));
+        QVERIFY(overlay->font().bold());
+        QVERIFY(overlay->font().pixelSize() >= 28);
+        QVERIFY(overlay->styleSheet().contains(QStringLiteral("#C50F1F")));
+
+        QCOMPARE(overlay->parentWidget(), imageWidget->parentWidget());
+        QVERIFY(overlay->geometry().top() >= 0);
+        QVERIFY(overlay->geometry().top() <= 20);
+    }
+
+    auto *firstRename = cells[0]->findChild<QPushButton *>(
+        QStringLiteral("compareCellRenameButton"));
+    QVERIFY(firstRename != nullptr);
+    acceptNextRenameDialog(QStringLiteral("Reference"));
+    QTest::mouseClick(firstRename, Qt::LeftButton);
+    QCoreApplication::processEvents();
+
+    auto *firstOverlay = cells[0]->findChild<QLabel *>(
+        QStringLiteral("compareImageNameOverlay"));
+    auto *secondOverlay = cells[1]->findChild<QLabel *>(
+        QStringLiteral("compareImageNameOverlay"));
+    QCOMPARE(firstOverlay->text(), QStringLiteral("Reference"));
+    QCOMPARE(secondOverlay->text(), QStringLiteral("Candidate"));
+
+    panel.setImageNameOverlayEnabled(false);
+    QVERIFY(firstOverlay->isHidden());
+    QVERIFY(secondOverlay->isHidden());
 }
 
 void tst_ComparePanel::folderSwap_reordersGridCellsAndImages()

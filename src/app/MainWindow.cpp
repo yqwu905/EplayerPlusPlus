@@ -297,6 +297,16 @@ QWidget *MainWindow::createCommandBar()
             m_comparePanel, &ComparePanel::setResizeToFirstImageEnabled);
     addButton(m_resizeToFirstAction);
 
+    m_imageNameOverlayAction = new QAction(QStringLiteral("名称标注"), bar);
+    m_imageNameOverlayAction->setCheckable(true);
+    m_imageNameOverlayAction->setChecked(
+        m_comparePanel ? m_comparePanel->imageNameOverlayEnabled() : false);
+    m_imageNameOverlayAction->setToolTip(
+        tr("开启后，在每张对比图片顶部用红色大字显示文件夹或自定义名称。"));
+    connect(m_imageNameOverlayAction, &QAction::toggled,
+            m_comparePanel, &ComparePanel::setImageNameOverlayEnabled);
+    addButton(m_imageNameOverlayAction);
+
     m_ignoreColorProfileAction = new QAction(QStringLiteral("忽略 ICC"), bar);
     m_ignoreColorProfileAction->setCheckable(true);
     m_ignoreColorProfileAction->setChecked(m_settingsManager->ignoreImageColorProfile());
@@ -412,6 +422,13 @@ void MainWindow::setupConnections()
         if (m_reverseSwapDirectionAction &&
             m_reverseSwapDirectionAction->isChecked() != enabled) {
             m_reverseSwapDirectionAction->setChecked(enabled);
+        }
+    });
+    connect(m_comparePanel, &ComparePanel::imageNameOverlayChanged,
+            this, [this](bool enabled) {
+        if (m_imageNameOverlayAction &&
+            m_imageNameOverlayAction->isChecked() != enabled) {
+            m_imageNameOverlayAction->setChecked(enabled);
         }
     });
 }

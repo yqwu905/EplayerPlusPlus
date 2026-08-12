@@ -38,6 +38,7 @@
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QFutureWatcher>
+#include <QFont>
 #include <QPointer>
 #include <QtConcurrent>
 #include <cmath>
@@ -110,6 +111,7 @@ ComparePanel::ComparePanel(CompareSession *session,
         m_threshold = m_settingsManager->comparisonThreshold();
         m_resizeToFirstImageEnabled = m_settingsManager->resizeToFirstImageEnabled();
         m_reverseSwapDirectionEnabled = m_settingsManager->reverseSwapDirectionEnabled();
+        m_imageNameOverlayEnabled = m_settingsManager->imageNameOverlayEnabled();
     }
     setupUi();
 
@@ -329,6 +331,36 @@ void ComparePanel::setReverseSwapDirectionEnabled(bool enabled)
     emit reverseSwapDirectionChanged(enabled);
 }
 
+void ComparePanel::setImageNameOverlayEnabled(bool enabled)
+{
+    if (m_imageNameOverlayEnabled == enabled) {
+        if (m_imageNameOverlayCheckBox &&
+            m_imageNameOverlayCheckBox->isChecked() != enabled) {
+            const QSignalBlocker blocker(m_imageNameOverlayCheckBox);
+            m_imageNameOverlayCheckBox->setChecked(enabled);
+        }
+        return;
+    }
+
+    m_imageNameOverlayEnabled = enabled;
+
+    if (m_imageNameOverlayCheckBox &&
+        m_imageNameOverlayCheckBox->isChecked() != enabled) {
+        const QSignalBlocker blocker(m_imageNameOverlayCheckBox);
+        m_imageNameOverlayCheckBox->setChecked(enabled);
+    }
+
+    if (m_settingsManager) {
+        m_settingsManager->setImageNameOverlayEnabled(enabled);
+    }
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        updateImageNameOverlay(i);
+    }
+
+    emit imageNameOverlayChanged(enabled);
+}
+
 void ComparePanel::setupUi()
 {
     setObjectName(QStringLiteral("comparePanelRoot"));
@@ -367,6 +399,15 @@ void ComparePanel::setupUi()
     connect(m_resizeToFirstImageCheckBox, &QCheckBox::toggled,
             this, &ComparePanel::onResizeToFirstImageToggled);
     m_toolBar->addWidget(m_resizeToFirstImageCheckBox);
+
+    m_imageNameOverlayCheckBox = new QCheckBox(tr("名称标注"), m_toolBar);
+    m_imageNameOverlayCheckBox->setObjectName(QStringLiteral("imageNameOverlayCheckBox"));
+    m_imageNameOverlayCheckBox->setChecked(m_imageNameOverlayEnabled);
+    m_imageNameOverlayCheckBox->setToolTip(
+        tr("开启后，在每张对比图片顶部用红色大字显示文件夹或自定义名称"));
+    connect(m_imageNameOverlayCheckBox, &QCheckBox::toggled,
+            this, &ComparePanel::setImageNameOverlayEnabled);
+    m_toolBar->addWidget(m_imageNameOverlayCheckBox);
 
     m_toolBar->addSeparator();
 
@@ -931,6 +972,22 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.imageWidget->setText(tr("点击缩略图\n开始对比"));
     cell.imageWidget->setContextMenuPolicy(Qt::CustomContextMenu);
     cell.imageWidget->setAcceptDrops(true);
+
+    cell.nameOverlayLabel = new QLabel(folderName, cell.imageContainer);
+    cell.nameOverlayLabel->setObjectName(QStringLiteral("compareImageNameOverlay"));
+    cell.nameOverlayLabel->setAlignment(Qt::AlignCenter);
+    cell.nameOverlayLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    cell.nameOverlayLabel->setTextInteractionFlags(Qt::NoTextInteraction);
+    QFont overlayFont = cell.nameOverlayLabel->font();
+    overlayFont.setPixelSize(28);
+    overlayFont.setBold(true);
+    cell.nameOverlayLabel->setFont(overlayFont);
+    cell.nameOverlayLabel->setStyleSheet(
+        "QLabel#compareImageNameOverlay { color: #C50F1F; "
+        "background-color: rgba(255, 255, 255, 215); "
+        "border: 1px solid rgba(197, 15, 31, 120); border-radius: 6px; "
+        "padding: 4px 10px; }");
+    cell.nameOverlayLabel->hide();
 
     cellLayout->addWidget(cell.imageContainer, 1);
     cell.imageContainer->installEventFilter(this);
@@ -1497,6 +1554,7 @@ void ComparePanel::loadImage(int cellIndex)
     // Update geometry
     QRect r = cell.imageContainer->rect();
     cell.imageWidget->setGeometry(r);
+    positionImageNameOverlay(cellIndex);
 
     showOriginalImage(cellIndex, true);  // resetView on initial load
     if (cellIndex == 0) {
@@ -1576,6 +1634,7 @@ void ComparePanel::resizeImageCell(int cellIndex)
 
     QRect r = cell.imageContainer->rect();
     cell.imageWidget->setGeometry(r);
+    positionImageNameOverlay(cellIndex);
     positionMarkButtonsForCell(cellIndex);
 
     // ZoomableImageWidget handles redraw internally on resize
@@ -2136,6 +2195,7 @@ void ComparePanel::updateCellHeader(int cellIndex)
 
     ImageCell &cell = m_cells[cellIndex];
     if (!cell.headerLabel) {
+        updateImageNameOverlay(cellIndex);
         return;
     }
 
@@ -2145,6 +2205,7 @@ void ComparePanel::updateCellHeader(int cellIndex)
             QStringLiteral("%1\n%2").arg(tr("未选择图片"), displayName));
         cell.headerLabel->setToolTip(QStringLiteral("%1\n%2")
                                          .arg(displayName, cell.folderPath));
+        updateImageNameOverlay(cellIndex);
         return;
     }
 
@@ -2152,6 +2213,45 @@ void ComparePanel::updateCellHeader(int cellIndex)
     cell.headerLabel->setText(QStringLiteral("%1\n%2").arg(fileName, displayName));
     cell.headerLabel->setToolTip(QStringLiteral("%1\n%2\n%3")
                                      .arg(displayName, fileName, cell.imagePath));
+    updateImageNameOverlay(cellIndex);
+}
+
+void ComparePanel::updateImageNameOverlay(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) {
+        return;
+    }
+
+    ImageCell &cell = m_cells[cellIndex];
+    if (!cell.nameOverlayLabel) {
+        return;
+    }
+
+    const QString displayName = cellDisplayName(cellIndex);
+    cell.nameOverlayLabel->setText(displayName);
+    cell.nameOverlayLabel->setToolTip(
+        QStringLiteral("%1\n%2").arg(displayName, cell.folderPath));
+    cell.nameOverlayLabel->setVisible(
+        m_imageNameOverlayEnabled && !cell.imagePath.isEmpty());
+    positionImageNameOverlay(cellIndex);
+}
+
+void ComparePanel::positionImageNameOverlay(int cellIndex)
+{
+    if (cellIndex < 0 || cellIndex >= m_cells.size()) {
+        return;
+    }
+
+    ImageCell &cell = m_cells[cellIndex];
+    if (!cell.imageContainer || !cell.nameOverlayLabel) {
+        return;
+    }
+
+    constexpr int margin = 12;
+    constexpr int overlayHeight = 52;
+    const int width = qMax(0, cell.imageContainer->width() - margin * 2);
+    cell.nameOverlayLabel->setGeometry(margin, margin, width, overlayHeight);
+    cell.nameOverlayLabel->raise();
 }
 
 QString ComparePanel::cellDisplayName(int cellIndex) const

@@ -78,10 +78,12 @@ public:
     int comparisonThreshold() const { return m_threshold; }
     bool resizeToFirstImageEnabled() const { return m_resizeToFirstImageEnabled; }
     bool reverseSwapDirectionEnabled() const { return m_reverseSwapDirectionEnabled; }
+    bool imageNameOverlayEnabled() const { return m_imageNameOverlayEnabled; }
     void setCompareMode(CompareMode mode);
     void setComparisonThreshold(int value);
     void setResizeToFirstImageEnabled(bool enabled);
     void setReverseSwapDirectionEnabled(bool enabled);
+    void setImageNameOverlayEnabled(bool enabled);
     void setControlsVisible(bool visible);
 
 signals:
@@ -99,6 +101,7 @@ signals:
     void comparisonThresholdChanged(int value);
     void resizeToFirstImageChanged(bool enabled);
     void reverseSwapDirectionChanged(bool enabled);
+    void imageNameOverlayChanged(bool enabled);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -132,6 +135,7 @@ private:
         QWidget *container = nullptr;
         QWidget *headerWidget = nullptr;
         QWidget *imageContainer = nullptr;
+        QLabel *nameOverlayLabel = nullptr;
         QLabel *indexBadge = nullptr;
         QLabel *headerLabel = nullptr;
         QWidget *markButtonsContainer = nullptr;
@@ -221,6 +225,8 @@ private:
     void finishKeyboardComparePreview();
     void renameCell(int cellIndex);
     void updateCellHeader(int cellIndex);
+    void updateImageNameOverlay(int cellIndex);
+    void positionImageNameOverlay(int cellIndex);
     QString cellDisplayName(int cellIndex) const;
     QImage baseImageForCell(int cellIndex) const;
     QSize resizeReferenceSize() const;
@@ -252,6 +258,7 @@ private:
     QTimer *m_toleranceRefreshTimer = nullptr;
     std::unique_ptr<QThreadPool> m_resizePool;
     QCheckBox *m_resizeToFirstImageCheckBox = nullptr;
+    QCheckBox *m_imageNameOverlayCheckBox = nullptr;
     QWidget *m_gridContainer = nullptr;
     QGridLayout *m_gridLayout = nullptr;
     QList<ImageCell> m_cells;
@@ -259,6 +266,7 @@ private:
     int m_threshold = 10;
     bool m_resizeToFirstImageEnabled = false;
     bool m_reverseSwapDirectionEnabled = false;
+    bool m_imageNameOverlayEnabled = false;
     bool m_syncingViews = false; ///< Guard to prevent recursive sync loops
     QPoint m_cellDragStartPos;
     QObject *m_cellDragSourceObject = nullptr;

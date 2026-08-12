@@ -68,6 +68,7 @@ private:
     QAction *m_toleranceModeAction = nullptr;
     QAction *m_reverseSwapDirectionAction = nullptr;
     QAction *m_resizeToFirstAction = nullptr;
+    QAction *m_imageNameOverlayAction = nullptr;
     QAction *m_ignoreColorProfileAction = nullptr;
     QAction *m_settingsAction = nullptr;
     QAction *m_vlmAnnotationAction = nullptr;

@@ -16,6 +16,7 @@ Cross-platform desktop application for browsing and **visually diffing image fol
   - **Ctrl + click** — select the image and the same-index image in every other column.
   - **Alt + click** — select the image and the same-filename image in every other column.
 - **Per-pixel tolerance diff overlay** — for any pair of selected images, replace one with a colorized diff: red where the channel delta exceeds the threshold, blue where it is below, desaturated where they match exactly. The threshold is adjustable from a slider in the toolbar.
+- **Prominent source-name labels** — enable “名称标注” in the toolbar to show each folder or custom comparison name in large red text above its image. The toggle is remembered across launches.
 - **A / B / C / D / E / F marks** persisted **outside** the source folders so read-only or shared folders work, with an automatic journal + snapshot so marks survive crashes.
 - **Folder list persistence** — the folders you added are restored on next launch via `QSettings`.
 - **Fluent 2 styling** — a custom stylesheet applied globally for a consistent look across Windows, macOS, and Linux.

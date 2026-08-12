@@ -25,6 +25,8 @@ private slots:
     void testResizeToFirstImage_setAndRead();
     void testReverseSwapDirection_defaultOff();
     void testReverseSwapDirection_setAndRead();
+    void testImageNameOverlay_defaultOff();
+    void testImageNameOverlay_setAndRead();
 
     void testIgnoreImageColorProfile_defaultOn();
     void testSetIgnoreImageColorProfile();
@@ -162,6 +164,20 @@ void tst_SettingsManager::testReverseSwapDirection_setAndRead()
 
     m_manager->setReverseSwapDirectionEnabled(false);
     QCOMPARE(m_manager->reverseSwapDirectionEnabled(), false);
+}
+
+void tst_SettingsManager::testImageNameOverlay_defaultOff()
+{
+    QCOMPARE(m_manager->imageNameOverlayEnabled(), false);
+}
+
+void tst_SettingsManager::testImageNameOverlay_setAndRead()
+{
+    m_manager->setImageNameOverlayEnabled(true);
+    QCOMPARE(m_manager->imageNameOverlayEnabled(), true);
+
+    m_manager->setImageNameOverlayEnabled(false);
+    QCOMPARE(m_manager->imageNameOverlayEnabled(), false);
 }
 
 void tst_SettingsManager::testIgnoreImageColorProfile_defaultOn()

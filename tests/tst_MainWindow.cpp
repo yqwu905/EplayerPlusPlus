@@ -26,6 +26,7 @@ private slots:
     void vlmAnnotationDialog_opensModelessAndReusesWindow();
     void commandBar_compareModeButtonsControlComparePanel();
     void commandBar_reverseSwapDirectionControlsComparePanel();
+    void commandBar_imageNameOverlayControlsComparePanel();
     void directionKeys_navigateBrowseSelection();
     void browsePanel_notCollapsibleButHidableByToggle();
 
@@ -207,6 +208,33 @@ void tst_MainWindow::commandBar_reverseSwapDirectionControlsComparePanel()
     QTest::mouseClick(reverseButton, Qt::LeftButton);
     QCOMPARE(comparePanel->reverseSwapDirectionEnabled(), !originalDirection);
     QCOMPARE(reverseButton->isChecked(), !originalDirection);
+}
+
+void tst_MainWindow::commandBar_imageNameOverlayControlsComparePanel()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *comparePanel = window.findChild<ComparePanel *>();
+    QVERIFY(comparePanel != nullptr);
+
+    QToolButton *overlayButton = nullptr;
+    const auto buttons = window.findChildren<QToolButton *>(
+        QStringLiteral("commandButton"));
+    for (QToolButton *button : buttons) {
+        if (button->text() == QStringLiteral("名称标注")) {
+            overlayButton = button;
+            break;
+        }
+    }
+    QVERIFY(overlayButton != nullptr);
+    QCOMPARE(overlayButton->isChecked(), comparePanel->imageNameOverlayEnabled());
+
+    const bool originallyEnabled = comparePanel->imageNameOverlayEnabled();
+    QTest::mouseClick(overlayButton, Qt::LeftButton);
+    QCOMPARE(comparePanel->imageNameOverlayEnabled(), !originallyEnabled);
+    QCOMPARE(overlayButton->isChecked(), !originallyEnabled);
 }
 
 void tst_MainWindow::directionKeys_navigateBrowseSelection()
