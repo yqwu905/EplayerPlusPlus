@@ -290,8 +290,10 @@ QWidget *MainWindow::createCommandBar()
     addButton(addCommandAction(QStringLiteral("↓  下一张"), tr("下一张"),
                                m_browsePanel, SLOT(navigateNext())));
 
-    m_resizeToFirstAction = new QAction(QStringLiteral("同步尺寸"), bar);
+    m_resizeToFirstAction = new QAction(QStringLiteral("同步最大尺寸"), bar);
     m_resizeToFirstAction->setCheckable(true);
+    m_resizeToFirstAction->setToolTip(
+        tr("将所有对比图片平滑缩放到当前最大图片的尺寸"));
     m_resizeToFirstAction->setChecked(m_comparePanel ? m_comparePanel->resizeToFirstImageEnabled() : false);
     connect(m_resizeToFirstAction, &QAction::toggled,
             m_comparePanel, &ComparePanel::setResizeToFirstImageEnabled);

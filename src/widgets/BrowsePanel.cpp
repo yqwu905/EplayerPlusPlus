@@ -795,7 +795,7 @@ void BrowsePanel::setupUi()
     // collapse back to one row as soon as more folders widen the panel. Labels
     // are omitted — the placeholder text and the combo's default entry already
     // tell the user what each control filters. "模糊匹配" lives in the top
-    // command bar (next to "同步尺寸") so it never crowds this row.
+    // command bar (next to "同步最大尺寸") so it never crowds this row.
     auto *optionsRow = new FlowLayout(0, kFilterRowSpacing, 6);
 
     m_fileNameFilterEdit = new QLineEdit(this);

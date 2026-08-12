@@ -37,10 +37,10 @@ private slots:
     void numberShortcut_toleranceModeTogglesTargetImage();
     void toleranceMode_compareButtonTogglesTargetImage();
     void toleranceMode_usesPreviewWhenFullImageIsNotLoaded();
-    void resizeToFirstImage_toggleResizesOtherCells();
-    void resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImageArrives();
-    void resizeToFirstImage_scalesPreviewForSwitchedSecondaryImage();
-    void resizeToFirstImage_rapidReferenceChangesKeepLatest();
+    void resizeToLargestImage_toggleResizesAllCells();
+    void resizeToLargestImage_refreshesLoadedCellsWhenLargestFullImageArrives();
+    void resizeToLargestImage_scalesPreviewForSwitchedImage();
+    void resizeToLargestImage_rapidReferenceChangesKeepLatest();
     void markButton_clickPersistsSingleImage();
     void markButton_ctrlClickMarksAllCurrentImages();
     void markShortcut_marksCurrentCellOnly();
@@ -749,7 +749,7 @@ void tst_ComparePanel::toleranceMode_usesPreviewWhenFullImageIsNotLoaded()
                               QColor(29, 29, 29), 3000);
 }
 
-void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
+void tst_ComparePanel::resizeToLargestImage_toggleResizesAllCells()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -766,10 +766,14 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
     QVERIFY(QDir().mkpath(folder0));
     QVERIFY(QDir().mkpath(folder1));
 
-    const QString image0Path = createImageInFolder(folder0, "img.png", Qt::red);
-    QVERIFY(!image0Path.isEmpty());
+    QImage image0(20, 10, QImage::Format_ARGB32);
+    image0.fill(Qt::red);
+    const QString image0Path = folder0 + "/img.png";
+    QVERIFY(image0.save(image0Path));
 
-    QImage image1(20, 10, QImage::Format_ARGB32);
+    // The largest image deliberately lives in the second cell. This verifies
+    // that the alignment reference is selected by pixel area, not cell order.
+    QImage image1(32, 32, QImage::Format_ARGB32);
     image1.fill(Qt::green);
     const QString image1Path = folder1 + "/img.png";
     QVERIFY(image1.save(image1Path));
@@ -779,10 +783,14 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
     panel.setSelectedImages({{folder0, image0Path}, {folder1, image1Path}});
     QCoreApplication::processEvents();
 
-    const auto widgets = panel.findChildren<ZoomableImageWidget *>();
-    QCOMPARE(widgets.size(), 2);
-    QTRY_COMPARE_WITH_TIMEOUT(widgets[0]->image().size(), QSize(32, 32), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(widgets[1]->image().size(), QSize(20, 10), 2000);
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *firstWidget = cells.at(0)->findChild<ZoomableImageWidget *>();
+    auto *secondWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(firstWidget != nullptr);
+    QVERIFY(secondWidget != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(firstWidget->image().size(), QSize(20, 10), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(32, 32), 2000);
 
     auto *resizeCheckBox = panel.findChild<QCheckBox *>();
     QVERIFY(resizeCheckBox != nullptr);
@@ -791,11 +799,11 @@ void tst_ComparePanel::resizeToFirstImage_toggleResizesOtherCells()
     resizeCheckBox->setChecked(true);
     QCoreApplication::processEvents();
 
-    QTRY_COMPARE_WITH_TIMEOUT(widgets[0]->image().size(), QSize(32, 32), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(widgets[1]->image().size(), QSize(32, 32), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(firstWidget->image().size(), QSize(32, 32), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(32, 32), 2000);
 }
 
-void tst_ComparePanel::resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImageArrives()
+void tst_ComparePanel::resizeToLargestImage_refreshesLoadedCellsWhenLargestFullImageArrives()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -843,8 +851,8 @@ void tst_ComparePanel::resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImage
     auto *secondWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
     QVERIFY(firstWidget != nullptr);
     QVERIFY(secondWidget != nullptr);
-    QTRY_COMPARE_WITH_TIMEOUT(firstWidget->image().size(), QSize(20, 20), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(20, 20), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(firstWidget->image().size(), QSize(80, 60), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(80, 60), 2000);
 
     QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
                                       Qt::DirectConnection,
@@ -856,7 +864,7 @@ void tst_ComparePanel::resizeToFirstImage_refreshesLoadedCellsWhenFirstFullImage
     QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(100, 100), 2000);
 }
 
-void tst_ComparePanel::resizeToFirstImage_scalesPreviewForSwitchedSecondaryImage()
+void tst_ComparePanel::resizeToLargestImage_scalesPreviewForSwitchedImage()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -914,7 +922,7 @@ void tst_ComparePanel::resizeToFirstImage_scalesPreviewForSwitchedSecondaryImage
     QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(120, 80), 2000);
 }
 
-void tst_ComparePanel::resizeToFirstImage_rapidReferenceChangesKeepLatest()
+void tst_ComparePanel::resizeToLargestImage_rapidReferenceChangesKeepLatest()
 {
     QTemporaryDir root;
     QVERIFY(root.isValid());
@@ -944,15 +952,16 @@ void tst_ComparePanel::resizeToFirstImage_rapidReferenceChangesKeepLatest()
                                       Q_ARG(QString, secondPath),
                                       Q_ARG(QImage, secondary)));
 
-    QImage obsoleteReference(1800, 1200, QImage::Format_ARGB32);
+    QImage obsoleteReference(2400, 1600, QImage::Format_ARGB32);
     obsoleteReference.fill(Qt::red);
     QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
                                       Qt::DirectConnection,
                                       Q_ARG(QString, firstPath),
                                       Q_ARG(QImage, obsoleteReference)));
 
-    // Supersede the expensive first resize before its queued/active worker can
-    // land. The per-cell coalescer must publish only this latest geometry.
+    // Replace the temporary largest image before its queued/active resize can
+    // land. The second image becomes the largest again, so the coalescer must
+    // publish only that latest reference geometry.
     QImage latestReference(640, 480, QImage::Format_ARGB32);
     latestReference.fill(Qt::blue);
     QVERIFY(QMetaObject::invokeMethod(&panel, "onImageReady",
@@ -962,9 +971,13 @@ void tst_ComparePanel::resizeToFirstImage_rapidReferenceChangesKeepLatest()
 
     const auto cells = sortedCells(panel);
     QCOMPARE(cells.size(), 2);
+    auto *firstWidget = cells.at(0)->findChild<ZoomableImageWidget *>();
     auto *secondWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(firstWidget != nullptr);
     QVERIFY(secondWidget != nullptr);
-    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(640, 480), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(firstWidget->image().size(), QSize(2200, 1400), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(secondWidget->image().size(), QSize(2200, 1400), 5000);
+    QCOMPARE(firstWidget->image().pixelColor(10, 10), QColor(Qt::blue));
     QCOMPARE(secondWidget->image().pixelColor(10, 10), QColor(Qt::green));
 }
 

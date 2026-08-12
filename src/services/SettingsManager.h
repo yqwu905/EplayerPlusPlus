@@ -69,13 +69,13 @@ public:
     void setComparisonThreshold(int threshold);
 
     /**
-     * @brief Whether non-primary compare images should be resized to the first image size.
+     * @brief Whether compare images should be resized to the largest image size.
      * @return True if resize alignment is enabled.
      */
     bool resizeToFirstImageEnabled() const;
 
     /**
-     * @brief Enable or disable resizing non-primary compare images to the first image size.
+     * @brief Enable or disable resizing compare images to the largest image size.
      * @param enabled True to enable.
      */
     void setResizeToFirstImageEnabled(bool enabled);
