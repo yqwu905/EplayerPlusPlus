@@ -66,6 +66,7 @@ private:
     QAction *m_toggleBrowsePanelAction = nullptr;
     QAction *m_swapModeAction = nullptr;
     QAction *m_toleranceModeAction = nullptr;
+    QAction *m_reverseSwapDirectionAction = nullptr;
     QAction *m_resizeToFirstAction = nullptr;
     QAction *m_ignoreColorProfileAction = nullptr;
     QAction *m_settingsAction = nullptr;

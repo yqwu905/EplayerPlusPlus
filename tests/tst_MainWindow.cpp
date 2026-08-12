@@ -25,6 +25,7 @@ private slots:
     void commandBar_includesAiAnnotationButton();
     void vlmAnnotationDialog_opensModelessAndReusesWindow();
     void commandBar_compareModeButtonsControlComparePanel();
+    void commandBar_reverseSwapDirectionControlsComparePanel();
     void directionKeys_navigateBrowseSelection();
     void browsePanel_notCollapsibleButHidableByToggle();
 
@@ -179,6 +180,33 @@ void tst_MainWindow::commandBar_compareModeButtonsControlComparePanel()
 
     QTest::mouseClick(swapButton, Qt::LeftButton);
     QCOMPARE(comparePanel->compareMode(), ComparePanel::SwapMode);
+}
+
+void tst_MainWindow::commandBar_reverseSwapDirectionControlsComparePanel()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    auto *comparePanel = window.findChild<ComparePanel *>();
+    QVERIFY(comparePanel != nullptr);
+
+    QToolButton *reverseButton = nullptr;
+    const auto buttons = window.findChildren<QToolButton *>(
+        QStringLiteral("commandButton"));
+    for (QToolButton *button : buttons) {
+        if (button->text() == QStringLiteral("反向交换")) {
+            reverseButton = button;
+            break;
+        }
+    }
+    QVERIFY(reverseButton != nullptr);
+    QCOMPARE(reverseButton->isChecked(), comparePanel->reverseSwapDirectionEnabled());
+
+    const bool originalDirection = comparePanel->reverseSwapDirectionEnabled();
+    QTest::mouseClick(reverseButton, Qt::LeftButton);
+    QCOMPARE(comparePanel->reverseSwapDirectionEnabled(), !originalDirection);
+    QCOMPARE(reverseButton->isChecked(), !originalDirection);
 }
 
 void tst_MainWindow::directionKeys_navigateBrowseSelection()

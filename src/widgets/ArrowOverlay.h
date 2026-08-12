@@ -11,7 +11,7 @@
  *
  * Placed on top of an image in the ComparePanel. Draws arrow buttons pointing
  * toward other images. Supports two interaction modes:
- *   - Press and hold: temporarily replace target image with source image
+ *   - Press and hold: temporarily preview one image on the other
  *   - Click: toggle between target original and tolerance map
  */
 class ArrowOverlay : public QWidget

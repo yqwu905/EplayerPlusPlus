@@ -243,6 +243,16 @@ QWidget *MainWindow::createCommandBar()
     addButton(m_swapModeAction);
     addButton(m_toleranceModeAction);
 
+    m_reverseSwapDirectionAction = new QAction(QStringLiteral("反向交换"), bar);
+    m_reverseSwapDirectionAction->setCheckable(true);
+    m_reverseSwapDirectionAction->setChecked(
+        m_comparePanel ? m_comparePanel->reverseSwapDirectionEnabled() : false);
+    m_reverseSwapDirectionAction->setToolTip(
+        tr("开启后，按住交换按钮时将目标图片显示到当前图片；关闭时将当前图片显示到目标图片。"));
+    connect(m_reverseSwapDirectionAction, &QAction::toggled,
+            m_comparePanel, &ComparePanel::setReverseSwapDirectionEnabled);
+    addButton(m_reverseSwapDirectionAction);
+
     layout->addWidget(separator());
 
     auto *thresholdLabel = new QLabel(tr("阈值"), bar);
@@ -395,6 +405,13 @@ void MainWindow::setupConnections()
             this, [this](bool enabled) {
         if (m_resizeToFirstAction && m_resizeToFirstAction->isChecked() != enabled) {
             m_resizeToFirstAction->setChecked(enabled);
+        }
+    });
+    connect(m_comparePanel, &ComparePanel::reverseSwapDirectionChanged,
+            this, [this](bool enabled) {
+        if (m_reverseSwapDirectionAction &&
+            m_reverseSwapDirectionAction->isChecked() != enabled) {
+            m_reverseSwapDirectionAction->setChecked(enabled);
         }
     });
 }

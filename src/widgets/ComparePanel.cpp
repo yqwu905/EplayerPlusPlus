@@ -109,6 +109,7 @@ ComparePanel::ComparePanel(CompareSession *session,
     if (m_settingsManager) {
         m_threshold = m_settingsManager->comparisonThreshold();
         m_resizeToFirstImageEnabled = m_settingsManager->resizeToFirstImageEnabled();
+        m_reverseSwapDirectionEnabled = m_settingsManager->reverseSwapDirectionEnabled();
     }
     setupUi();
 
@@ -310,6 +311,22 @@ void ComparePanel::setResizeToFirstImageEnabled(bool enabled)
     }
 
     emit resizeToFirstImageChanged(enabled);
+}
+
+void ComparePanel::setReverseSwapDirectionEnabled(bool enabled)
+{
+    if (m_reverseSwapDirectionEnabled == enabled) {
+        return;
+    }
+
+    finishKeyboardComparePreview();
+    m_reverseSwapDirectionEnabled = enabled;
+
+    if (m_settingsManager) {
+        m_settingsManager->setReverseSwapDirectionEnabled(enabled);
+    }
+
+    emit reverseSwapDirectionChanged(enabled);
 }
 
 void ComparePanel::setupUi()
@@ -946,7 +963,7 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
 void ComparePanel::clearCells()
 {
-    m_keyboardCompareTargetIndex = -1;
+    m_keyboardComparePreviewIndex = -1;
     m_keyboardCompareKey = 0;
 
     for (auto &cell : m_cells) {
@@ -1088,7 +1105,7 @@ bool ComparePanel::handleNumberCompareKeyPress(QKeyEvent *event)
 
     if (m_compareMode == SwapMode) {
         finishKeyboardComparePreview();
-        m_keyboardCompareTargetIndex = targetIndex;
+        m_keyboardComparePreviewIndex = swapPreviewCellIndex(sourceIndex, targetIndex);
         m_keyboardCompareKey = event->key();
         onComparePressed(sourceIndex, targetIndex);
     } else {
@@ -1120,12 +1137,12 @@ bool ComparePanel::handleNumberCompareKeyRelease(QKeyEvent *event)
 
 void ComparePanel::finishKeyboardComparePreview()
 {
-    if (m_keyboardCompareTargetIndex >= 0 &&
-        m_keyboardCompareTargetIndex < m_cells.size()) {
-        showOriginalImage(m_keyboardCompareTargetIndex);
+    if (m_keyboardComparePreviewIndex >= 0 &&
+        m_keyboardComparePreviewIndex < m_cells.size()) {
+        showOriginalImage(m_keyboardComparePreviewIndex);
     }
 
-    m_keyboardCompareTargetIndex = -1;
+    m_keyboardComparePreviewIndex = -1;
     m_keyboardCompareKey = 0;
 }
 
@@ -1990,6 +2007,11 @@ void ComparePanel::showSourceOnTarget(int sourceIndex, int targetIndex)
     m_cells[targetIndex].imageWidget->setImage(sourceImage, false);
 }
 
+int ComparePanel::swapPreviewCellIndex(int sourceIndex, int targetIndex) const
+{
+    return m_reverseSwapDirectionEnabled ? sourceIndex : targetIndex;
+}
+
 void ComparePanel::refreshCellsUsingFirstImage()
 {
     if (!m_resizeToFirstImageEnabled || m_cells.isEmpty()) {
@@ -2037,19 +2059,21 @@ void ComparePanel::refreshCellsUsingFirstImage()
 void ComparePanel::onComparePressed(int sourceIndex, int targetIndex)
 {
     if (m_compareMode == SwapMode) {
-        showSourceOnTarget(sourceIndex, targetIndex);
+        if (m_reverseSwapDirectionEnabled) {
+            showSourceOnTarget(targetIndex, sourceIndex);
+        } else {
+            showSourceOnTarget(sourceIndex, targetIndex);
+        }
     }
     // In ToleranceMode, press does nothing
 }
 
 void ComparePanel::onCompareReleased(int sourceIndex, int targetIndex)
 {
-    Q_UNUSED(sourceIndex);
-
     if (m_compareMode == SwapMode) {
-        // Restore target to original
-        if (targetIndex >= 0 && targetIndex < m_cells.size()) {
-            showOriginalImage(targetIndex);
+        const int previewIndex = swapPreviewCellIndex(sourceIndex, targetIndex);
+        if (previewIndex >= 0 && previewIndex < m_cells.size()) {
+            showOriginalImage(previewIndex);
         }
     }
     // In ToleranceMode, release does nothing

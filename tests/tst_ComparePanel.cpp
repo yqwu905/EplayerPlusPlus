@@ -33,6 +33,7 @@ private slots:
     void folderSwap_reordersGridCellsAndImages();
     void layout_shrinksFromManyFoldersToTwo_cellsExpand();
     void numberShortcut_swapModePreviewsTargetUntilRelease();
+    void reverseSwapMode_keyboardAndButtonPreviewCurrentUntilRelease();
     void numberShortcut_toleranceModeTogglesTargetImage();
     void toleranceMode_compareButtonTogglesTargetImage();
     void toleranceMode_usesPreviewWhenFullImageIsNotLoaded();
@@ -531,6 +532,64 @@ void tst_ComparePanel::numberShortcut_swapModePreviewsTargetUntilRelease()
 
     QTest::keyRelease(&panel, Qt::Key_2);
     QTRY_COMPARE(targetWidget->image().pixelColor(0, 0), QColor(Qt::green));
+}
+
+void tst_ComparePanel::reverseSwapMode_keyboardAndButtonPreviewCurrentUntilRelease()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr, nullptr);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    const QList<QColor> colors = {Qt::red, Qt::green};
+    for (int i = 0; i < colors.size(); ++i) {
+        const QString folder = root.filePath(QString("folder_%1").arg(i));
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            QString("image_%1.png").arg(i),
+            colors.at(i));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+    panel.setSelectedImages(selected);
+    panel.setReverseSwapDirectionEnabled(true);
+    panel.setFocus();
+    QCoreApplication::processEvents();
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *currentWidget = cells.at(0)->findChild<ZoomableImageWidget *>();
+    auto *targetWidget = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(currentWidget != nullptr);
+    QVERIFY(targetWidget != nullptr);
+    QCOMPARE(currentWidget->image().pixelColor(0, 0), QColor(Qt::red));
+    QCOMPARE(targetWidget->image().pixelColor(0, 0), QColor(Qt::green));
+
+    QTest::keyPress(&panel, Qt::Key_2);
+    QTRY_COMPARE(currentWidget->image().pixelColor(0, 0), QColor(Qt::green));
+    QCOMPARE(targetWidget->image().pixelColor(0, 0), QColor(Qt::green));
+
+    QTest::keyRelease(&panel, Qt::Key_2);
+    QTRY_COMPARE(currentWidget->image().pixelColor(0, 0), QColor(Qt::red));
+
+    auto *targetButton = cells.at(0)->findChild<QPushButton *>(
+        QStringLiteral("compareTargetButton"));
+    QVERIFY(targetButton != nullptr);
+    QCOMPARE(targetButton->text(), QStringLiteral("2"));
+
+    QTest::mousePress(targetButton, Qt::LeftButton);
+    QTRY_COMPARE(currentWidget->image().pixelColor(0, 0), QColor(Qt::green));
+    QCOMPARE(targetWidget->image().pixelColor(0, 0), QColor(Qt::green));
+
+    QTest::mouseRelease(targetButton, Qt::LeftButton);
+    QTRY_COMPARE(currentWidget->image().pixelColor(0, 0), QColor(Qt::red));
 }
 
 void tst_ComparePanel::numberShortcut_toleranceModeTogglesTargetImage()

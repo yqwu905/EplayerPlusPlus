@@ -81,6 +81,19 @@ public:
     void setResizeToFirstImageEnabled(bool enabled);
 
     /**
+     * @brief Whether swap previews should copy the target image onto the current image.
+     *
+     * Disabled by default, preserving the original current-to-target behavior.
+     */
+    bool reverseSwapDirectionEnabled() const;
+
+    /**
+     * @brief Set the swap preview direction.
+     * @param enabled True for target-to-current; false for current-to-target.
+     */
+    void setReverseSwapDirectionEnabled(bool enabled);
+
+    /**
      * @brief Whether embedded ICC / color-profile info on loaded images should be stripped.
      *
      * When enabled, QImage::setColorSpace(QColorSpace()) is applied after decode so two
@@ -147,6 +160,7 @@ private:
     static const QString kFolderListKey;
     static const QString kComparisonThresholdKey;
     static const QString kResizeToFirstImageKey;
+    static const QString kReverseSwapDirectionKey;
     static const QString kIgnoreImageColorProfileKey;
     static const QString kSplitterSizesKey;
     static const QString kVlmBaseUrlKey;

@@ -50,7 +50,7 @@ class ComparePanel : public QWidget
 
 public:
     enum CompareMode {
-        SwapMode,       ///< Press-hold to preview source image on target
+        SwapMode,       ///< Press-hold to preview one image on the other (direction configurable)
         ToleranceMode   ///< Click to toggle tolerance map
     };
 
@@ -77,9 +77,11 @@ public:
     CompareMode compareMode() const { return m_compareMode; }
     int comparisonThreshold() const { return m_threshold; }
     bool resizeToFirstImageEnabled() const { return m_resizeToFirstImageEnabled; }
+    bool reverseSwapDirectionEnabled() const { return m_reverseSwapDirectionEnabled; }
     void setCompareMode(CompareMode mode);
     void setComparisonThreshold(int value);
     void setResizeToFirstImageEnabled(bool enabled);
+    void setReverseSwapDirectionEnabled(bool enabled);
     void setControlsVisible(bool visible);
 
 signals:
@@ -96,6 +98,7 @@ signals:
     void compareModeChanged(CompareMode mode);
     void comparisonThresholdChanged(int value);
     void resizeToFirstImageChanged(bool enabled);
+    void reverseSwapDirectionChanged(bool enabled);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -207,6 +210,7 @@ private:
                                      const QImage &baseImage,
                                      const QSize &referenceSize);
     void showSourceOnTarget(int sourceIndex, int targetIndex);
+    int swapPreviewCellIndex(int sourceIndex, int targetIndex) const;
     void refreshCellsUsingFirstImage();
     void resizeImageCell(int cellIndex);
     void rebuildCompareButtons();
@@ -254,12 +258,13 @@ private:
     SettingsManager *m_settingsManager = nullptr;
     int m_threshold = 10;
     bool m_resizeToFirstImageEnabled = false;
+    bool m_reverseSwapDirectionEnabled = false;
     bool m_syncingViews = false; ///< Guard to prevent recursive sync loops
     QPoint m_cellDragStartPos;
     QObject *m_cellDragSourceObject = nullptr;
     int m_cellDragSourceIndex = -1;
     int m_currentCellIndex = -1;
-    int m_keyboardCompareTargetIndex = -1;
+    int m_keyboardComparePreviewIndex = -1;
     int m_keyboardCompareKey = 0;
 };
 
