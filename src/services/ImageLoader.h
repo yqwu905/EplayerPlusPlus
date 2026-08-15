@@ -92,6 +92,7 @@ public:
      */
     void setMaxCacheSize(int maxSize);
     void setMaxConcurrentLoads(int maxConcurrentLoads);
+    void setWindowsNetworkConstrainedPrefetchEnabled(bool enabled);
     void cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths);
     void cancelAllThumbnailRequests();
     void cancelImageRequestsExcept(const QSet<QString> &keepPaths);
@@ -155,6 +156,9 @@ private:
         QSize thumbnailSize;
         int priority = 0;
         bool highQuality = true;
+        // Network prefetch work is capped separately so it cannot occupy all
+        // decode slots ahead of newly-visible thumbnails.
+        bool constrainedNetworkPrefetch = false;
         // Snapshotted at enqueue time so a runtime toggle does not race the
         // decoder vs. the cache-key write: both use this captured value.
         bool ignoreColorProfile = false;
@@ -237,6 +241,7 @@ private:
     qint64 m_currentImageCacheBytes = 0;
     int m_maxConcurrentLoads = 8;
     int m_activeLoads = 0;
+    int m_activeConstrainedNetworkPrefetchLoads = 0;
     int m_maxConcurrentImageLoads = 3;
     int m_maxConcurrentImagePrefetchLoads = 1;
     int m_activeImageLoads = 0;
@@ -245,6 +250,7 @@ private:
     // Strip ICC profile from decoded images. Atomic so the enqueue path can
     // snapshot it lock-free without taking m_cacheMutex.
     std::atomic<bool> m_ignoreColorProfile{true};
+    std::atomic<bool> m_windowsNetworkConstrainedPrefetch{false};
     qint64 m_metricRequests = 0;
     qint64 m_metricMemoryHits = 0;
     qint64 m_metricDiskHits = 0;

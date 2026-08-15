@@ -52,7 +52,11 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::setupUi()
 {
+#ifdef IMAGECOMPARE_NIGHTLY_BUILD
+    setWindowTitle(tr("图像对比 · Windows SMB Nightly"));
+#else
     setWindowTitle(tr("图像对比"));
+#endif
     // Roomy enough that FolderPanel(280) + a usable BrowsePanel + ComparePanel(650)
     // plus splitter handles all fit without squeezing the compare area.
     setMinimumSize(1280, 800);
@@ -83,6 +87,8 @@ void MainWindow::setupUi()
     m_comparePanel->setImageMarkManager(m_imageMarkManager);
     m_comparePanel->setControlsVisible(false);
     m_comparePanel->setMinimumWidth(650);
+
+    applyWindowsNetworkOptimizationSettings();
 
     rootLayout->addWidget(createCommandBar());
 
@@ -511,8 +517,37 @@ void MainWindow::showSettingsDialog()
     }
 
     SettingsDialog dialog(m_settingsManager, this);
-    dialog.setCurrentTab(SettingsDialog::Tab::Vlm);
-    dialog.exec();
+    dialog.setCurrentTab(SettingsDialog::Tab::Performance);
+    if (dialog.exec() == QDialog::Accepted) {
+        applyWindowsNetworkOptimizationSettings();
+    }
+}
+
+void MainWindow::applyWindowsNetworkOptimizationSettings()
+{
+    if (!m_settingsManager) {
+        return;
+    }
+
+    const bool enabled = m_settingsManager->windowsNetworkOptimizationsEnabled();
+    const bool fastEnumeration =
+        m_settingsManager->windowsNetworkFastEnumerationEnabled();
+    const bool constrainedPrefetch =
+        m_settingsManager->windowsNetworkConstrainedPrefetchEnabled();
+    const bool deferredValidation =
+        m_settingsManager->windowsNetworkDeferredFolderValidationEnabled();
+
+    if (m_folderPanel) {
+        m_folderPanel->setWindowsNetworkDeferredValidationEnabled(
+            enabled && deferredValidation);
+    }
+    if (m_browsePanel) {
+        m_browsePanel->setWindowsNetworkOptimizationOptions(
+            enabled, fastEnumeration, constrainedPrefetch);
+    } else if (m_imageLoader) {
+        m_imageLoader->setWindowsNetworkConstrainedPrefetchEnabled(
+            enabled && constrainedPrefetch);
+    }
 }
 
 void MainWindow::togglePanel(int panelIndex)

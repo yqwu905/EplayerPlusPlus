@@ -60,6 +60,11 @@ struct ScanOptions {
     // systems. List views can disable it for a fast first paint and let the
     // thumbnail worker stat only the small visible/prefetch working set.
     bool captureLastModified = true;
+    // On Windows, enumerate with FindFirstFileExW/FindNextFileW. WIN32_FIND_DATA
+    // already carries the file timestamp, avoiding a separate SMB metadata
+    // request for each thumbnail-cache lookup. Callers enable this only for
+    // network paths; it remains opt-in for deterministic A/B comparison.
+    bool useWindowsNativeEnumeration = false;
     int batchSize = 1000;
     int initialBatchSize = 300;
     QStringList extensions = supportedImageExtensions();
@@ -73,6 +78,14 @@ struct ScanOptions {
  */
 bool isImageFile(const QString &filePath,
                  const QStringList &extensions = supportedImageExtensions());
+
+/**
+ * @brief Whether a path is a Windows UNC share or mapped remote drive.
+ *
+ * Returns false on non-Windows platforms. The check performs no share access;
+ * GetDriveTypeW only classifies the drive root for drive-letter paths.
+ */
+bool isWindowsNetworkPath(const QString &path);
 
 /**
  * @brief Scan a directory for image files.

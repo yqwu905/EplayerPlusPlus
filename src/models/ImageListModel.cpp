@@ -460,6 +460,17 @@ void ImageListModel::setImageLoader(ImageLoader *loader)
     }
 }
 
+void ImageListModel::setWindowsNetworkFastEnumerationEnabled(bool enabled)
+{
+    if (m_windowsNetworkFastEnumerationEnabled == enabled) {
+        return;
+    }
+    m_windowsNetworkFastEnumerationEnabled = enabled;
+    if (!m_folderPath.isEmpty() && FileUtils::isWindowsNetworkPath(m_folderPath)) {
+        refresh();
+    }
+}
+
 void ImageListModel::invalidateThumbnailCache()
 {
     clearThumbnailCache();
@@ -779,10 +790,19 @@ void ImageListModel::startScan(const QString &path)
     emit scanProgressChanged(0, false);
 
     auto cancelToken = m_scanCancelToken;
-    QFuture<ScanEvent> future = QtConcurrent::run([path, cancelToken](QPromise<ScanEvent> &promise) {
+    const bool useWindowsNativeEnumeration =
+        m_windowsNetworkFastEnumerationEnabled &&
+        FileUtils::isWindowsNetworkPath(path);
+    QFuture<ScanEvent> future = QtConcurrent::run(
+        [path, cancelToken, useWindowsNativeEnumeration](QPromise<ScanEvent> &promise) {
         FileUtils::ScanOptions options;
         options.recursive = false;
-        options.captureLastModified = false;
+        // Native WIN32_FIND_DATA already contains last-write time, so retaining
+        // it is free and lets ImageLoader avoid one QFileInfo/stat round-trip
+        // per visible or prefetched SMB thumbnail. The legacy path keeps the
+        // old fast-list behaviour for an exact A/B baseline.
+        options.captureLastModified = useWindowsNativeEnumeration;
+        options.useWindowsNativeEnumeration = useWindowsNativeEnumeration;
         options.batchSize = 64;
         options.initialBatchSize = 24;
 

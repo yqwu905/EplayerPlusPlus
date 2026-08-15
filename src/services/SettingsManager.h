@@ -123,6 +123,27 @@ public:
     void setIgnoreImageColorProfile(bool enabled);
 
     /**
+     * @brief Master switch for experimental Windows network-folder optimizations.
+     *
+     * Disabled by default so existing installations keep their current loading
+     * behaviour until the user explicitly opts into the A/B test.
+     */
+    bool windowsNetworkOptimizationsEnabled() const;
+    void setWindowsNetworkOptimizationsEnabled(bool enabled);
+
+    /** @brief Reuse metadata returned by native Windows directory enumeration. */
+    bool windowsNetworkFastEnumerationEnabled() const;
+    void setWindowsNetworkFastEnumerationEnabled(bool enabled);
+
+    /** @brief Keep network-share prefetch windows and concurrency bounded. */
+    bool windowsNetworkConstrainedPrefetchEnabled() const;
+    void setWindowsNetworkConstrainedPrefetchEnabled(bool enabled);
+
+    /** @brief Avoid synchronous existence checks while restoring network roots. */
+    bool windowsNetworkDeferredFolderValidationEnabled() const;
+    void setWindowsNetworkDeferredFolderValidationEnabled(bool enabled);
+
+    /**
      * @brief The persisted main-splitter panel widths (folder / browse / compare).
      *
      * Persisting the browse-panel width makes the user's chosen thumbnail zoom
@@ -176,6 +197,10 @@ private:
     static const QString kReverseSwapDirectionKey;
     static const QString kImageNameOverlayKey;
     static const QString kIgnoreImageColorProfileKey;
+    static const QString kWindowsNetworkOptimizationsKey;
+    static const QString kWindowsNetworkFastEnumerationKey;
+    static const QString kWindowsNetworkConstrainedPrefetchKey;
+    static const QString kWindowsNetworkDeferredFolderValidationKey;
     static const QString kSplitterSizesKey;
     static const QString kVlmBaseUrlKey;
     static const QString kVlmModelKey;

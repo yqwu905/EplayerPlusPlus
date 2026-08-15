@@ -54,6 +54,11 @@ public:
      */
     void setFuzzyFileNameMatchEnabled(bool enabled);
 
+    /** @brief Apply the persisted Windows network-folder A/B options. */
+    void setWindowsNetworkOptimizationOptions(bool enabled,
+                                              bool fastEnumeration,
+                                              bool constrainedPrefetch);
+
     /**
      * @brief Live thumbnail geometry, derived from the current browse-column width.
      *
@@ -251,6 +256,9 @@ private:
     QVBoxLayout *m_rootLayout = nullptr;
     QLabel *m_scanStatusLabel = nullptr;
     bool m_fuzzyFileNameMatch = false;
+    bool m_windowsNetworkOptimizationsEnabled = false;
+    bool m_windowsNetworkFastEnumerationEnabled = true;
+    bool m_windowsNetworkConstrainedPrefetchEnabled = true;
     QLineEdit *m_fileNameFilterEdit = nullptr;
     QComboBox *m_categoryFilterCombo = nullptr;
     QScrollArea *m_columnsScrollArea = nullptr;

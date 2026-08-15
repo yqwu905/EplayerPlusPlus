@@ -6,6 +6,8 @@ project(ImageCompare
     DESCRIPTION "Cross-platform image comparison tool"
 )
 
+option(IMAGECOMPARE_NIGHTLY_BUILD "Mark this binary as an experimental nightly build" OFF)
+
 # ---- C++ Standard ----
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

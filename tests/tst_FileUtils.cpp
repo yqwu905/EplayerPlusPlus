@@ -36,6 +36,8 @@ private slots:
     void testScanForImagesBatched_fastMetadataSkipsMtime();
     void testScanForImagesBatched_deliversAllAcrossBatches();
     void testScanFindsUppercaseExtensions();
+    void testWindowsNetworkPathClassification();
+    void testWindowsNativeEnumeration();
 
     void testGetSubdirectories();
     void testGetSubdirectories_empty();
@@ -458,6 +460,51 @@ void tst_FileUtils::testScanFindsUppercaseExtensions()
         QVERIFY2(batched.contains(dir.filePath(name)),
                  qPrintable(QStringLiteral("scanForImagesBatched missed %1").arg(name)));
     }
+}
+
+void tst_FileUtils::testWindowsNetworkPathClassification()
+{
+#ifdef Q_OS_WIN
+    QVERIFY(FileUtils::isWindowsNetworkPath(
+        QStringLiteral("\\\\server\\share\\images")));
+    QVERIFY(FileUtils::isWindowsNetworkPath(
+        QStringLiteral("\\\\?\\UNC\\server\\share\\images")));
+    QVERIFY(!FileUtils::isWindowsNetworkPath(QStringLiteral("C:\\images")));
+    QVERIFY(!FileUtils::isWindowsNetworkPath(
+        QStringLiteral("\\\\?\\C:\\images")));
+#else
+    QVERIFY(!FileUtils::isWindowsNetworkPath(
+        QStringLiteral("//server/share/images")));
+#endif
+}
+
+void tst_FileUtils::testWindowsNativeEnumeration()
+{
+#ifdef Q_OS_WIN
+    QVector<FileUtils::ScannedImage> all;
+    FileUtils::ScanOptions options;
+    options.recursive = false;
+    options.captureLastModified = true;
+    options.useWindowsNativeEnumeration = true;
+    options.batchSize = 3;
+    options.initialBatchSize = 2;
+
+    FileUtils::scanForImagesBatched(
+        m_tempDir.path(), options,
+        [&all](const QVector<FileUtils::ScannedImage> &batch, bool) {
+            all.append(batch);
+        });
+
+    QVERIFY(!all.isEmpty());
+    for (const FileUtils::ScannedImage &item : std::as_const(all)) {
+        QVERIFY(!item.fileName.isEmpty());
+        QVERIFY2(item.lastModifiedUtc.isValid(), qPrintable(item.path));
+        QCOMPARE(item.lastModifiedUtc.timeSpec(), Qt::UTC);
+    }
+#else
+    QTest::qSkip("Native Windows enumeration is only available on Windows",
+                 __FILE__, __LINE__);
+#endif
 }
 
 void tst_FileUtils::testGetSubdirectories()

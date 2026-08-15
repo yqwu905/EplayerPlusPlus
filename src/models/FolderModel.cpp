@@ -7,6 +7,20 @@
 
 #include <utility>
 
+namespace
+{
+QString normalizedPathWithoutFileSystemAccess(const QString &path)
+{
+    return QDir::cleanPath(QDir::fromNativeSeparators(path.trimmed()));
+}
+
+QString folderDisplayName(const QString &path)
+{
+    const QString displayName = QDir(path).dirName();
+    return displayName.isEmpty() ? QDir::toNativeSeparators(path) : displayName;
+}
+}
+
 FolderModel::FolderModel(QObject *parent)
     : QAbstractItemModel(parent)
 {
@@ -190,12 +204,20 @@ void FolderModel::fetchMore(const QModelIndex &parent)
 
 bool FolderModel::addFolder(const QString &path)
 {
-    QFileInfo fi(path);
-    if (!fi.exists() || !fi.isDir()) {
-        return false;
+    QString absPath;
+    if (m_windowsNetworkDeferredValidationEnabled &&
+        FileUtils::isWindowsNetworkPath(path)) {
+        absPath = normalizedPathWithoutFileSystemAccess(path);
+        if (absPath.isEmpty()) {
+            return false;
+        }
+    } else {
+        QFileInfo fi(path);
+        if (!fi.exists() || !fi.isDir()) {
+            return false;
+        }
+        absPath = fi.absoluteFilePath();
     }
-
-    QString absPath = fi.absoluteFilePath();
 
     // Check for duplicates
     for (const FolderNode *node : m_rootNodes) {
@@ -209,7 +231,7 @@ bool FolderModel::addFolder(const QString &path)
 
     auto *node = new FolderNode();
     node->path = absPath;
-    node->displayName = QDir(absPath).dirName();
+    node->displayName = folderDisplayName(absPath);
     node->parent = nullptr;
     node->rowInParent = row;
     node->generation = m_nextNodeGeneration++;
@@ -343,11 +365,20 @@ void FolderModel::setRootFolders(const QStringList &paths)
     m_rootNodes.clear();
 
     for (const QString &path : paths) {
-        QFileInfo fi(path);
-        if (fi.exists() && fi.isDir()) {
+        QString resolvedPath;
+        if (m_windowsNetworkDeferredValidationEnabled &&
+            FileUtils::isWindowsNetworkPath(path)) {
+            resolvedPath = normalizedPathWithoutFileSystemAccess(path);
+        } else {
+            QFileInfo fi(path);
+            if (fi.exists() && fi.isDir()) {
+                resolvedPath = fi.absoluteFilePath();
+            }
+        }
+        if (!resolvedPath.isEmpty()) {
             auto *node = new FolderNode();
-            node->path = fi.absoluteFilePath();
-            node->displayName = QDir(node->path).dirName();
+            node->path = resolvedPath;
+            node->displayName = folderDisplayName(node->path);
             node->parent = nullptr;
             node->rowInParent = m_rootNodes.size();
             node->generation = m_nextNodeGeneration++;
@@ -357,6 +388,11 @@ void FolderModel::setRootFolders(const QStringList &paths)
     }
 
     endResetModel();
+}
+
+void FolderModel::setWindowsNetworkDeferredValidationEnabled(bool enabled)
+{
+    m_windowsNetworkDeferredValidationEnabled = enabled;
 }
 
 // ---- Private helpers ----

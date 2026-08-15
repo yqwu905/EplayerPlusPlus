@@ -2,6 +2,7 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QSignalSpy>
+#include <QElapsedTimer>
 
 #include "models/FolderModel.h"
 
@@ -40,6 +41,7 @@ private slots:
     void testReplaceRootsDuringInflightFetch_preventsAbaResult();
     void testIndex();
     void testParent();
+    void testDeferredWindowsNetworkRootSkipsBlockingValidation();
 
 private:
     /**
@@ -89,6 +91,24 @@ bool tst_FolderModel::fetchMoreAndWait(FolderModel &model, const QModelIndex &in
     QSignalSpy spy(&model, &FolderModel::fetchFinished);
     model.fetchMore(index);
     return spy.wait(timeoutMs);
+}
+
+void tst_FolderModel::testDeferredWindowsNetworkRootSkipsBlockingValidation()
+{
+#ifdef Q_OS_WIN
+    FolderModel model;
+    model.setWindowsNetworkDeferredValidationEnabled(true);
+    QElapsedTimer timer;
+    timer.start();
+    QVERIFY(model.addFolder(
+        QStringLiteral("\\\\nonexistent.invalid\\imagecompare-nightly\\images")));
+    QVERIFY2(timer.elapsed() < 500,
+             "deferred network-root insertion unexpectedly performed blocking I/O");
+    QCOMPARE(model.rowCount(), 1);
+#else
+    QTest::qSkip("Windows network-root handling is only active on Windows",
+                 __FILE__, __LINE__);
+#endif
 }
 
 void tst_FolderModel::testInitialState()

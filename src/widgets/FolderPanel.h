@@ -29,6 +29,7 @@ public:
      * @brief Get the folder model.
      */
     FolderModel *folderModel() const { return m_folderModel; }
+    void setWindowsNetworkDeferredValidationEnabled(bool enabled);
 
 public slots:
     void addFolderViaDialog();

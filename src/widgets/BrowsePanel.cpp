@@ -5,6 +5,7 @@
 #include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
 #include "services/ImageMarkManager.h"
+#include "utils/FileUtils.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -77,6 +78,7 @@ constexpr int kFilterEditWidth = 120;
 constexpr int kFilterComboWidth = 110;
 constexpr int kFilterRowSpacing = 8;
 constexpr int kPrefetchMinimumRows = 32;
+constexpr int kNetworkPrefetchMinimumRows = 6;
 constexpr int kMarkButtonSize = 18;
 constexpr int kMarkButtonGap = 3;
 constexpr int kMarkButtonTopMargin = 10;
@@ -738,6 +740,36 @@ void BrowsePanel::setFuzzyFileNameMatchEnabled(bool enabled)
     m_fuzzyFileNameMatch = enabled;
 }
 
+void BrowsePanel::setWindowsNetworkOptimizationOptions(bool enabled,
+                                                       bool fastEnumeration,
+                                                       bool constrainedPrefetch)
+{
+    const bool effectiveFastEnumeration = enabled && fastEnumeration;
+    const bool optionsChanged =
+        m_windowsNetworkOptimizationsEnabled != enabled ||
+        m_windowsNetworkFastEnumerationEnabled != fastEnumeration ||
+        m_windowsNetworkConstrainedPrefetchEnabled != constrainedPrefetch;
+
+    m_windowsNetworkOptimizationsEnabled = enabled;
+    m_windowsNetworkFastEnumerationEnabled = fastEnumeration;
+    m_windowsNetworkConstrainedPrefetchEnabled = constrainedPrefetch;
+
+    if (m_imageLoader) {
+        m_imageLoader->setWindowsNetworkConstrainedPrefetchEnabled(
+            enabled && constrainedPrefetch);
+    }
+    for (auto &column : m_columns) {
+        if (column.model) {
+            column.model->setWindowsNetworkFastEnumerationEnabled(
+                effectiveFastEnumeration);
+        }
+    }
+    if (optionsChanged) {
+        m_lastCancelKeepSet.clear();
+        requestVisibleThumbnailsForAllColumns();
+    }
+}
+
 QList<VlmAnnotationService::ColumnSnapshot> BrowsePanel::currentColumnSnapshots() const
 {
     QList<VlmAnnotationService::ColumnSnapshot> snapshots;
@@ -887,6 +919,9 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     ColumnInfo col;
     col.model = new ImageListModel(this);
     col.model->setImageLoader(m_imageLoader);
+    col.model->setWindowsNetworkFastEnumerationEnabled(
+        m_windowsNetworkOptimizationsEnabled &&
+        m_windowsNetworkFastEnumerationEnabled);
     col.model->setImageMarkManager(m_markManager);
     if (m_fileNameFilterEdit) {
         col.model->setFileNameFilter(m_fileNameFilterEdit->text());
@@ -2468,7 +2503,13 @@ QPair<int, int> BrowsePanel::prefetchRangeForColumn(const ColumnInfo &column) co
     }
 
     const int visibleRows = lastVisible - firstVisible + 1;
-    const int margin = qMax(kPrefetchMinimumRows, visibleRows * 3);
+    const bool constrainNetworkPrefetch =
+        m_windowsNetworkOptimizationsEnabled &&
+        m_windowsNetworkConstrainedPrefetchEnabled &&
+        FileUtils::isWindowsNetworkPath(column.model->folderPath());
+    const int margin = constrainNetworkPrefetch
+        ? qMax(kNetworkPrefetchMinimumRows, visibleRows)
+        : qMax(kPrefetchMinimumRows, visibleRows * 3);
     return {
         qMax(0, firstVisible - margin),
         qMin(column.model->imageCount() - 1, lastVisible + margin)

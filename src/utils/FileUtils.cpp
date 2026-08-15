@@ -5,6 +5,13 @@
 #include <QSet>
 #include <algorithm>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace
 {
 QString lowerSuffix(const QString &fileName)
@@ -12,6 +19,144 @@ QString lowerSuffix(const QString &fileName)
     const int dot = fileName.lastIndexOf(QLatin1Char('.'));
     return dot >= 0 ? fileName.mid(dot + 1).toLower() : QString();
 }
+
+#ifdef Q_OS_WIN
+QDateTime fileTimeToUtc(const FILETIME &fileTime)
+{
+    ULARGE_INTEGER ticks;
+    ticks.LowPart = fileTime.dwLowDateTime;
+    ticks.HighPart = fileTime.dwHighDateTime;
+    constexpr quint64 kWindowsToUnixEpoch100ns = 116444736000000000ULL;
+    if (ticks.QuadPart < kWindowsToUnixEpoch100ns) {
+        return {};
+    }
+    const qint64 unixMilliseconds = static_cast<qint64>(
+        (ticks.QuadPart - kWindowsToUnixEpoch100ns) / 10000ULL);
+    return QDateTime::fromMSecsSinceEpoch(unixMilliseconds, Qt::UTC);
+}
+
+QString extendedWindowsPath(const QString &path)
+{
+    QString native = QDir::toNativeSeparators(QDir::cleanPath(path));
+    if (native.startsWith(QStringLiteral("\\\\?\\"))) {
+        return native;
+    }
+    if (native.startsWith(QStringLiteral("\\\\"))) {
+        return QStringLiteral("\\\\?\\UNC\\") + native.mid(2);
+    }
+    if (native.size() >= 3 && native.at(1) == QLatin1Char(':')) {
+        return QStringLiteral("\\\\?\\") + native;
+    }
+    return native;
+}
+
+void scanWindowsDirectoryBatched(
+    const QString &dirPath,
+    const FileUtils::ScanOptions &options,
+    const std::function<void(const QVector<FileUtils::ScannedImage> &, bool)> &onBatch,
+    const std::function<void(const FileUtils::ScanProgress &)> &onProgress,
+    const std::shared_ptr<FileUtils::ScanCancelToken> &cancelToken)
+{
+    auto cancelled = [&cancelToken]() {
+        return cancelToken && cancelToken->isCancelled();
+    };
+    if (cancelled()) {
+        return;
+    }
+
+    const int batchSize = qBound(1, options.batchSize, 5000);
+    const int initialBatchSize = options.initialBatchSize > 0
+        ? qMin(options.initialBatchSize, batchSize)
+        : 0;
+    bool initialBatchSent = (initialBatchSize == 0);
+    int discoveredCount = 0;
+    QSet<QString> extensionSet;
+    extensionSet.reserve(options.extensions.size());
+    for (const QString &extension : options.extensions) {
+        extensionSet.insert(extension.toLower());
+    }
+
+    QVector<FileUtils::ScannedImage> buffer;
+    buffer.reserve(batchSize);
+    auto emitProgress = [&](bool finished) {
+        if (onProgress) {
+            onProgress({discoveredCount, finished});
+        }
+    };
+    auto flush = [&](bool initialBatch) {
+        if (buffer.isEmpty()) {
+            return;
+        }
+        onBatch(buffer, initialBatch);
+        buffer.clear();
+        emitProgress(false);
+    };
+
+    QString pattern = extendedWindowsPath(dirPath);
+    if (!pattern.endsWith(QLatin1Char('\\'))) {
+        pattern.append(QLatin1Char('\\'));
+    }
+    pattern.append(QLatin1Char('*'));
+
+    WIN32_FIND_DATAW findData{};
+    HANDLE handle = FindFirstFileExW(
+        reinterpret_cast<LPCWSTR>(pattern.utf16()),
+        FindExInfoBasic,
+        &findData,
+        FindExSearchNameMatch,
+        nullptr,
+        FIND_FIRST_EX_LARGE_FETCH);
+    if (handle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_INVALID_PARAMETER) {
+        handle = FindFirstFileExW(
+            reinterpret_cast<LPCWSTR>(pattern.utf16()),
+            FindExInfoBasic,
+            &findData,
+            FindExSearchNameMatch,
+            nullptr,
+            0);
+    }
+    if (handle == INVALID_HANDLE_VALUE) {
+        emitProgress(true);
+        return;
+    }
+
+    do {
+        if (cancelled()) {
+            FindClose(handle);
+            return;
+        }
+        if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+            (findData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            continue;
+        }
+
+        const QString fileName = QString::fromWCharArray(findData.cFileName);
+        if (!extensionSet.contains(lowerSuffix(fileName))) {
+            continue;
+        }
+        const QDateTime modifiedUtc = options.captureLastModified
+            ? fileTimeToUtc(findData.ftLastWriteTime)
+            : QDateTime();
+        buffer.push_back({QDir(dirPath).filePath(fileName), fileName, modifiedUtc});
+        ++discoveredCount;
+        if (!initialBatchSent && buffer.size() >= initialBatchSize) {
+            flush(true);
+            initialBatchSent = true;
+        } else if (buffer.size() >= batchSize) {
+            flush(false);
+        }
+    } while (FindNextFileW(handle, &findData));
+
+    FindClose(handle);
+    if (cancelled()) {
+        return;
+    }
+    if (!buffer.isEmpty()) {
+        flush(!initialBatchSent);
+    }
+    emitProgress(true);
+}
+#endif
 }
 
 namespace FileUtils
@@ -25,6 +170,32 @@ bool isImageFile(const QString &filePath, const QStringList &extensions)
     }
     const QString suffix = lowerSuffix(fi.fileName());
     return extensions.contains(suffix);
+}
+
+bool isWindowsNetworkPath(const QString &path)
+{
+#ifdef Q_OS_WIN
+    QString native = QDir::toNativeSeparators(path.trimmed());
+    if (native.startsWith(QStringLiteral("\\\\?\\UNC\\"),
+                          Qt::CaseInsensitive)) {
+        return true;
+    }
+    if (native.startsWith(QStringLiteral("\\\\?\\"))) {
+        native.remove(0, 4);
+    } else if (native.startsWith(QStringLiteral("\\\\"))) {
+        return true;
+    }
+    if (native.size() >= 2 && native.at(1) == QLatin1Char(':')) {
+        wchar_t root[] = {
+            static_cast<wchar_t>(native.at(0).toUpper().unicode()),
+            L':', L'\\', L'\0'
+        };
+        return GetDriveTypeW(root) == DRIVE_REMOTE;
+    }
+#else
+    Q_UNUSED(path);
+#endif
+    return false;
 }
 
 QStringList scanForImages(const QString &dirPath, bool recursive, const QStringList &extensions)
@@ -84,6 +255,13 @@ void scanForImagesBatched(
     if (cancelled()) {
         return;
     }
+
+#ifdef Q_OS_WIN
+    if (options.useWindowsNativeEnumeration && !options.recursive) {
+        scanWindowsDirectoryBatched(dirPath, options, onBatch, onProgress, cancelToken);
+        return;
+    }
+#endif
 
     QDir root(dirPath);
     if (!root.exists()) {

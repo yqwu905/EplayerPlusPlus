@@ -98,6 +98,14 @@ public:
      */
     void setRootFolders(const QStringList &paths);
 
+    /**
+     * @brief Defer network-root existence checks to existing background scans.
+     *
+     * This prevents an offline UNC/mapped share from blocking the GUI while a
+     * saved folder list is restored or a path is entered manually.
+     */
+    void setWindowsNetworkDeferredValidationEnabled(bool enabled);
+
 signals:
     /**
      * @brief Emitted when a folder is requested to be added to comparison.
@@ -152,6 +160,7 @@ private:
     // Track active async watchers to prevent leaks and allow cancellation
     QMap<FolderNode *, QFutureWatcher<QStringList> *> m_activeWatchers;
     quint64 m_nextNodeGeneration = 1;
+    bool m_windowsNetworkDeferredValidationEnabled = false;
 };
 
 #endif // FOLDERMODEL_H

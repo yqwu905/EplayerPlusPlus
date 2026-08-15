@@ -104,6 +104,10 @@ set(LIB_SOURCES
 
 add_library(ImageCompareLib STATIC ${LIB_SOURCES})
 
+if(IMAGECOMPARE_NIGHTLY_BUILD)
+    target_compile_definitions(ImageCompareLib PUBLIC IMAGECOMPARE_NIGHTLY_BUILD=1)
+endif()
+
 target_include_directories(ImageCompareLib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )

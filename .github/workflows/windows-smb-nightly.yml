@@ -1,0 +1,123 @@
+name: Windows SMB Nightly
+
+on:
+  push:
+    branches:
+      - codex/windows-smb-nightly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUILD_TYPE: Release
+  QT_VERSION: '6.7.2'
+
+jobs:
+  build-windows-smb-nightly:
+    name: Build and test Windows x64 nightly
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          modules: 'qtimageformats'
+
+      - name: Configure nightly build
+        run: >-
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+          -DIMAGECOMPARE_NIGHTLY_BUILD=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Run complete test suite
+        working-directory: build
+        run: ctest -C ${{ env.BUILD_TYPE }} --output-on-failure --timeout 120
+
+      - name: Deploy portable application
+        shell: pwsh
+        run: |
+          $exePath = "build/src/${{ env.BUILD_TYPE }}/ImageCompare.exe"
+          if (-not (Test-Path $exePath)) {
+            $exePath = "build/src/ImageCompare.exe"
+          }
+          New-Item -ItemType Directory -Force -Path "deploy"
+          Copy-Item $exePath "deploy/"
+          windeployqt --release --no-translations --no-opengl-sw "deploy/ImageCompare.exe"
+
+          @"
+          ImageCompare Windows SMB Nightly
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+          Run: ${{ github.run_number }}
+          Master optimization switch defaults to OFF for A/B comparison.
+          Open Settings > Performance to enable it.
+          "@ | Set-Content -Encoding UTF8 "deploy/nightly-info.txt"
+          Copy-Item "docs/WINDOWS_SMB_NIGHTLY_TEST.md" "deploy/"
+
+          Compress-Archive -Path "deploy/*" -DestinationPath "ImageCompare-windows-smb-nightly-x64.zip"
+
+      - name: Build side-by-side nightly installer
+        shell: pwsh
+        run: |
+          $runNumber = "${{ github.run_number }}"
+          $appVersion = "1.7.15-nightly.$runNumber"
+          $versionInfo = "1.7.15.$runNumber"
+          $issContent = @"
+          [Setup]
+          AppId={{70F84291-9132-4C63-A94E-D2989D6D70F8}
+          AppName=ImageCompare SMB Nightly
+          AppVersion=$appVersion
+          AppPublisher=wuyuanqing
+          AppPublisherURL=https://github.com/yqwu905/EplayerPlusPlus
+          AppSupportURL=https://github.com/yqwu905/EplayerPlusPlus/issues
+          VersionInfoVersion=$versionInfo
+          VersionInfoCompany=wuyuanqing
+          VersionInfoProductName=ImageCompare SMB Nightly
+          VersionInfoDescription=ImageCompare Windows SMB Nightly Setup
+          DefaultDirName={autopf}\ImageCompare SMB Nightly
+          DefaultGroupName=ImageCompare SMB Nightly
+          OutputDir=.
+          OutputBaseFilename=ImageCompare-windows-smb-nightly-x64-installer
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+          WizardStyle=modern
+          SetupIconFile=resources\icons\app.ico
+          UninstallDisplayIcon={app}\ImageCompare.exe
+          UninstallDisplayName=ImageCompare SMB Nightly
+
+          [Files]
+          Source: "deploy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\ImageCompare SMB Nightly"; Filename: "{app}\ImageCompare.exe"
+          Name: "{autodesktop}\ImageCompare SMB Nightly"; Filename: "{app}\ImageCompare.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
+          "@
+          Set-Content -Path "nightly-installer.iss" -Value $issContent
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "nightly-installer.iss"
+
+      - name: Upload Windows nightly artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageCompare-windows-smb-nightly-${{ github.run_number }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            ImageCompare-windows-smb-nightly-x64.zip
+            ImageCompare-windows-smb-nightly-x64-installer.exe

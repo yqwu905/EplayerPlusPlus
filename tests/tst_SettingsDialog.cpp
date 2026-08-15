@@ -1,5 +1,6 @@
 #include <QTest>
 #include <QLineEdit>
+#include <QCheckBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QTabWidget>
@@ -15,6 +16,7 @@ private slots:
     void init();
     void containsVlmSettingsTab();
     void savePersistsVlmProviders();
+    void performanceTabPersistsWindowsNetworkOptions();
 };
 
 void tst_SettingsDialog::init()
@@ -40,13 +42,51 @@ void tst_SettingsDialog::containsVlmSettingsTab()
     QVERIFY(test != nullptr);
     QVERIFY(save != nullptr);
 
-    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(tabs->count(), 2);
     QCOMPARE(tabs->tabText(0), QStringLiteral("VLM"));
+    QCOMPARE(tabs->tabText(1), QStringLiteral("性能"));
     QCOMPARE(baseUrl->text(), QStringLiteral("https://api.openai.com/v1"));
     QVERIFY(!save->isEnabled());
 
     model->setText(QStringLiteral("vision-model"));
     QTRY_VERIFY(save->isEnabled());
+}
+
+void tst_SettingsDialog::performanceTabPersistsWindowsNetworkOptions()
+{
+    SettingsManager settings;
+    SettingsDialog dialog(&settings);
+
+    auto *tabs = dialog.findChild<QTabWidget *>(QStringLiteral("settingsTabWidget"));
+    auto *master = dialog.findChild<QCheckBox *>(
+        QStringLiteral("windowsNetworkOptimizationsCheckBox"));
+    auto *fast = dialog.findChild<QCheckBox *>(
+        QStringLiteral("windowsNetworkFastEnumerationCheckBox"));
+    auto *prefetch = dialog.findChild<QCheckBox *>(
+        QStringLiteral("windowsNetworkConstrainedPrefetchCheckBox"));
+    auto *deferred = dialog.findChild<QCheckBox *>(
+        QStringLiteral("windowsNetworkDeferredValidationCheckBox"));
+    auto *save = dialog.findChild<QPushButton *>(QStringLiteral("settingsSaveButton"));
+    QVERIFY(tabs != nullptr);
+    QVERIFY(master != nullptr);
+    QVERIFY(fast != nullptr);
+    QVERIFY(prefetch != nullptr);
+    QVERIFY(deferred != nullptr);
+    QVERIFY(save != nullptr);
+
+    tabs->setCurrentIndex(static_cast<int>(SettingsDialog::Tab::Performance));
+    QVERIFY(save->isEnabled());
+    QTest::mouseClick(master, Qt::LeftButton);
+    QVERIFY(fast->isEnabled());
+    QTest::mouseClick(fast, Qt::LeftButton);
+    QVERIFY(prefetch->isChecked());
+    QVERIFY(deferred->isChecked());
+    QTest::mouseClick(save, Qt::LeftButton);
+
+    QCOMPARE(settings.windowsNetworkOptimizationsEnabled(), true);
+    QCOMPARE(settings.windowsNetworkFastEnumerationEnabled(), false);
+    QCOMPARE(settings.windowsNetworkConstrainedPrefetchEnabled(), true);
+    QCOMPARE(settings.windowsNetworkDeferredFolderValidationEnabled(), true);
 }
 
 void tst_SettingsDialog::savePersistsVlmProviders()

@@ -1,5 +1,6 @@
 #include "ImageLoader.h"
 #include "utils/ImageUtils.h"
+#include "utils/FileUtils.h"
 
 #include <QtConcurrent>
 #include <QMutexLocker>
@@ -23,6 +24,7 @@ constexpr int kPriorityBackground = 0;
 constexpr int kPriorityPrefetch = 1;
 constexpr int kPriorityVisible = 2;
 constexpr int kMaxPendingDiskWrites = 16;
+constexpr int kMaxConcurrentNetworkPrefetchLoads = 2;
 constexpr qint64 kMaxPendingDiskWriteBytes = 32LL * 1024LL * 1024LL;
 constexpr qint64 kDiskCacheBudgetBytes = 512LL * 1024LL * 1024LL;
 }
@@ -163,6 +165,10 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
     // Snapshot the strip-profile flag now so a runtime toggle can't make the
     // decode and the cache key disagree about whether the result is stripped.
     const bool ignoreColorProfile = m_ignoreColorProfile.load(std::memory_order_acquire);
+    const bool constrainedNetworkPrefetch =
+        priority < kPriorityVisible &&
+        m_windowsNetworkConstrainedPrefetch.load(std::memory_order_acquire) &&
+        FileUtils::isWindowsNetworkPath(imagePath);
 
     const QString key = memoryCacheKey(imagePath, thumbnailSize, highQuality, ignoreColorProfile);
     const QString highQualityKey = memoryCacheKey(imagePath, thumbnailSize, true, ignoreColorProfile);
@@ -190,7 +196,8 @@ void ImageLoader::enqueueThumbnailRequest(const QString &imagePath,
 
         if (!hasCached) {
             ThumbnailRequest request{key, imagePath, thumbnailSize, priority, highQuality,
-                                     ignoreColorProfile, sourceModifiedUtc, 0};
+                                     constrainedNetworkPrefetch, ignoreColorProfile,
+                                     sourceModifiedUtc, 0};
             auto pendingIt = m_pendingRequests.find(key);
             if (pendingIt != m_pendingRequests.end()) {
                 if (priority > pendingIt->priority) {
@@ -260,8 +267,11 @@ void ImageLoader::processQueue()
                 return;
             }
 
-            auto tryDequeue = [this, &request, &hasRequest](QQueue<ThumbnailRequest> &queue) {
-                while (!queue.isEmpty()) {
+            auto tryDequeue = [this, &request, &hasRequest](
+                                  QQueue<ThumbnailRequest> &queue,
+                                  bool applyNetworkPrefetchLimit) {
+                int candidatesRemaining = queue.size();
+                while (!queue.isEmpty() && candidatesRemaining-- > 0) {
                     ThumbnailRequest candidate = queue.dequeue();
                     auto pendingIt = m_pendingRequests.constFind(candidate.key);
                     if (pendingIt == m_pendingRequests.constEnd()) {
@@ -271,24 +281,36 @@ void ImageLoader::processQueue()
                         pendingIt->token != candidate.token) {
                         continue;
                     }
+                    if (applyNetworkPrefetchLimit &&
+                        candidate.constrainedNetworkPrefetch &&
+                        m_activeConstrainedNetworkPrefetchLoads >=
+                            kMaxConcurrentNetworkPrefetchLoads) {
+                        // Preserve the valid request but inspect later entries;
+                        // a local-disk item behind it need not wait for SMB.
+                        queue.enqueue(candidate);
+                        continue;
+                    }
                     request = candidate;
                     hasRequest = true;
                     return;
                 }
             };
 
-            tryDequeue(m_highPriorityQueue);
+            tryDequeue(m_highPriorityQueue, false);
             if (!hasRequest) {
-                tryDequeue(m_normalPriorityQueue);
+                tryDequeue(m_normalPriorityQueue, true);
             }
             if (!hasRequest) {
-                tryDequeue(m_backgroundPriorityQueue);
+                tryDequeue(m_backgroundPriorityQueue, true);
             }
             if (!hasRequest) {
                 return;
             }
 
             ++m_activeLoads;
+            if (request.constrainedNetworkPrefetch) {
+                ++m_activeConstrainedNetworkPrefetchLoads;
+            }
             m_activeThumbnailRequests.insert(request.key, request.token);
             capturedGeneration = m_thumbnailCancel->generation.load(std::memory_order_acquire);
         }
@@ -313,6 +335,7 @@ void ImageLoader::processQueue()
                                        request.ignoreColorProfile,
                                        fromDisk,
                                        cancelled,
+                                       request.constrainedNetworkPrefetch,
                                        request.token);
             };
 
@@ -367,13 +390,13 @@ void ImageLoader::processQueue()
         });
 
         using ResultTuple = std::tuple<QString, QString, QSize, QImage, QDateTime,
-                                       bool, bool, bool, bool, quint64>;
+                                       bool, bool, bool, bool, bool, quint64>;
         auto *watcher = new QFutureWatcher<ResultTuple>(this);
         connect(watcher, &QFutureWatcher<ResultTuple>::finished, this,
                 [this, watcher]() {
                     auto [key, imagePath, thumbnailSize, thumbnail, modifiedUtc,
                           highQuality, ignoreColorProfile, fromDisk, workerCancelled,
-                          completedToken] = watcher->result();
+                          constrainedNetworkPrefetch, completedToken] = watcher->result();
                     watcher->deleteLater();
 
                     bool cancelledBeforeEmit = false;
@@ -409,6 +432,10 @@ void ImageLoader::processQueue()
 
                         if (ownsActive) {
                             m_activeThumbnailRequests.remove(key);
+                            if (constrainedNetworkPrefetch) {
+                                m_activeConstrainedNetworkPrefetchLoads = qMax(
+                                    0, m_activeConstrainedNetworkPrefetchLoads - 1);
+                            }
                         }
                         m_activeLoads = qMax(0, m_activeLoads - 1);
                         auto currentIt = m_pendingRequests.constFind(key);
@@ -839,6 +866,11 @@ void ImageLoader::setMaxConcurrentLoads(int maxConcurrentLoads)
         m_decodePool->setMaxThreadCount(desired);
     }
     processQueue();
+}
+
+void ImageLoader::setWindowsNetworkConstrainedPrefetchEnabled(bool enabled)
+{
+    m_windowsNetworkConstrainedPrefetch.store(enabled, std::memory_order_release);
 }
 
 void ImageLoader::cancelThumbnailRequestsExcept(const QSet<QString> &keepPaths)

@@ -48,6 +48,7 @@ private:
     void togglePanel(int panelIndex);
     void saveSplitterSizes();
     void updateCompareModeActions();
+    void applyWindowsNetworkOptimizationSettings();
 
     QSplitter *m_mainSplitter = nullptr;
 

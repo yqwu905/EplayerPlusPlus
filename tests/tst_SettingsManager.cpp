@@ -30,6 +30,8 @@ private slots:
 
     void testIgnoreImageColorProfile_defaultOn();
     void testSetIgnoreImageColorProfile();
+    void testWindowsNetworkOptimizationDefaults();
+    void testWindowsNetworkOptimizationSettingsPersist();
     void testVlmDefaults();
     void testVlmSettingsPersist();
     void testVlmApiKeyOnlyReadWhenRemembered();
@@ -194,6 +196,28 @@ void tst_SettingsManager::testSetIgnoreImageColorProfile()
 
     m_manager->setIgnoreImageColorProfile(true);
     QCOMPARE(m_manager->ignoreImageColorProfile(), true);
+}
+
+void tst_SettingsManager::testWindowsNetworkOptimizationDefaults()
+{
+    QCOMPARE(m_manager->windowsNetworkOptimizationsEnabled(), false);
+    QCOMPARE(m_manager->windowsNetworkFastEnumerationEnabled(), true);
+    QCOMPARE(m_manager->windowsNetworkConstrainedPrefetchEnabled(), true);
+    QCOMPARE(m_manager->windowsNetworkDeferredFolderValidationEnabled(), true);
+}
+
+void tst_SettingsManager::testWindowsNetworkOptimizationSettingsPersist()
+{
+    m_manager->setWindowsNetworkOptimizationsEnabled(true);
+    m_manager->setWindowsNetworkFastEnumerationEnabled(false);
+    m_manager->setWindowsNetworkConstrainedPrefetchEnabled(false);
+    m_manager->setWindowsNetworkDeferredFolderValidationEnabled(false);
+
+    SettingsManager reloaded;
+    QCOMPARE(reloaded.windowsNetworkOptimizationsEnabled(), true);
+    QCOMPARE(reloaded.windowsNetworkFastEnumerationEnabled(), false);
+    QCOMPARE(reloaded.windowsNetworkConstrainedPrefetchEnabled(), false);
+    QCOMPARE(reloaded.windowsNetworkDeferredFolderValidationEnabled(), false);
 }
 
 void tst_SettingsManager::testVlmDefaults()

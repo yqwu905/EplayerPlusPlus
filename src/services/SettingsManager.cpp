@@ -14,6 +14,10 @@ const QString SettingsManager::kResizeToFirstImageKey = QStringLiteral("comparis
 const QString SettingsManager::kReverseSwapDirectionKey = QStringLiteral("comparison/reverse_swap_direction");
 const QString SettingsManager::kImageNameOverlayKey = QStringLiteral("comparison/show_image_name_overlay");
 const QString SettingsManager::kIgnoreImageColorProfileKey = QStringLiteral("image/ignore_color_profile");
+const QString SettingsManager::kWindowsNetworkOptimizationsKey = QStringLiteral("performance/windows_network_optimizations");
+const QString SettingsManager::kWindowsNetworkFastEnumerationKey = QStringLiteral("performance/windows_network_fast_enumeration");
+const QString SettingsManager::kWindowsNetworkConstrainedPrefetchKey = QStringLiteral("performance/windows_network_constrained_prefetch");
+const QString SettingsManager::kWindowsNetworkDeferredFolderValidationKey = QStringLiteral("performance/windows_network_deferred_folder_validation");
 const QString SettingsManager::kSplitterSizesKey = QStringLiteral("ui/splitter_sizes");
 const QString SettingsManager::kVlmBaseUrlKey = QStringLiteral("vlm/base_url");
 const QString SettingsManager::kVlmModelKey = QStringLiteral("vlm/model");
@@ -129,6 +133,54 @@ void SettingsManager::setIgnoreImageColorProfile(bool enabled)
 {
     QSettings settings;
     settings.setValue(kIgnoreImageColorProfileKey, enabled);
+}
+
+bool SettingsManager::windowsNetworkOptimizationsEnabled() const
+{
+    QSettings settings;
+    return settings.value(kWindowsNetworkOptimizationsKey, false).toBool();
+}
+
+void SettingsManager::setWindowsNetworkOptimizationsEnabled(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(kWindowsNetworkOptimizationsKey, enabled);
+}
+
+bool SettingsManager::windowsNetworkFastEnumerationEnabled() const
+{
+    QSettings settings;
+    return settings.value(kWindowsNetworkFastEnumerationKey, true).toBool();
+}
+
+void SettingsManager::setWindowsNetworkFastEnumerationEnabled(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(kWindowsNetworkFastEnumerationKey, enabled);
+}
+
+bool SettingsManager::windowsNetworkConstrainedPrefetchEnabled() const
+{
+    QSettings settings;
+    return settings.value(kWindowsNetworkConstrainedPrefetchKey, true).toBool();
+}
+
+void SettingsManager::setWindowsNetworkConstrainedPrefetchEnabled(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(kWindowsNetworkConstrainedPrefetchKey, enabled);
+}
+
+bool SettingsManager::windowsNetworkDeferredFolderValidationEnabled() const
+{
+    QSettings settings;
+    return settings.value(kWindowsNetworkDeferredFolderValidationKey, true).toBool();
+}
+
+void SettingsManager::setWindowsNetworkDeferredFolderValidationEnabled(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(kWindowsNetworkDeferredFolderValidationKey, enabled);
 }
 
 QList<int> SettingsManager::splitterSizes() const

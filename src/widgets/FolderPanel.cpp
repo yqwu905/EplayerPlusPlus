@@ -21,6 +21,11 @@ FolderPanel::FolderPanel(SettingsManager *settingsManager, QWidget *parent)
     , m_settingsManager(settingsManager)
 {
     m_folderModel = new FolderModel(this);
+    if (m_settingsManager) {
+        m_folderModel->setWindowsNetworkDeferredValidationEnabled(
+            m_settingsManager->windowsNetworkOptimizationsEnabled() &&
+            m_settingsManager->windowsNetworkDeferredFolderValidationEnabled());
+    }
 
     setupUi();
     setupConnections();
@@ -28,6 +33,13 @@ FolderPanel::FolderPanel(SettingsManager *settingsManager, QWidget *parent)
 }
 
 FolderPanel::~FolderPanel() = default;
+
+void FolderPanel::setWindowsNetworkDeferredValidationEnabled(bool enabled)
+{
+    if (m_folderModel) {
+        m_folderModel->setWindowsNetworkDeferredValidationEnabled(enabled);
+    }
+}
 
 void FolderPanel::setupUi()
 {

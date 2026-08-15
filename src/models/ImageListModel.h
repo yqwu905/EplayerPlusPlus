@@ -176,6 +176,14 @@ public:
     void setImageLoader(ImageLoader *loader);
 
     /**
+     * @brief Enable native Windows enumeration for network folders.
+     *
+     * Changing the value re-scans an already-open network folder so an A/B
+     * switch takes effect without restarting the application.
+     */
+    void setWindowsNetworkFastEnumerationEnabled(bool enabled);
+
+    /**
      * @brief Drop model-owned thumbnail pixels and completion state.
      *
      * ImageLoader owns the upstream decode cache, while each folder model keeps
@@ -327,6 +335,7 @@ private:
     QHash<QString, QDateTime> m_sourceModifiedUtc;
     ImageLoader *m_imageLoader = nullptr;
     bool m_thumbnailDeliveryEnabled = true;
+    bool m_windowsNetworkFastEnumerationEnabled = false;
     ImageMarkManager *m_markManager = nullptr;
     std::shared_ptr<FileUtils::ScanCancelToken> m_scanCancelToken;
     // The worker publishes value-only ScanEvents through its future and never
