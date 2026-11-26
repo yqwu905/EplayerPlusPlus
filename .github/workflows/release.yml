@@ -286,7 +286,9 @@ jobs:
   # Build for Linux
   # ============================================================
   build-linux:
-    runs-on: ubuntu-latest
+    # Qt 6.7.2's qcomparehelpers.h lacks inline on IsFloatType_v<_Float16>,
+    # which fails to link with GCC 15 on ubuntu-26.04 (ubuntu-latest).
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -300,7 +302,7 @@ jobs:
             libxkbcommon-x11-0 \
             libxcb-xinerama0 \
             libxcb-cursor0 \
-            libfuse2 \
+            libfuse2t64 \
             file
 
       - name: Install Qt

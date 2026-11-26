@@ -92,6 +92,7 @@ private:
     QMenu *m_commandOverflowMenu = nullptr;
     QWidget *m_optionsEndSeparator = nullptr;
     QList<CommandOverflowItem> m_overflowCommandItems;
+    bool m_updatingCommandBarOverflow = false;
     QLabel *m_thresholdValueLabel = nullptr;
     QSlider *m_thresholdSlider = nullptr;
     VlmAnnotationDialog *m_vlmAnnotationDialog = nullptr;

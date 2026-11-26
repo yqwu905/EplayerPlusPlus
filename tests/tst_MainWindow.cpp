@@ -2,6 +2,8 @@
 #include <QAbstractItemView>
 #include <QAction>
 #include <QClipboard>
+#include <QEvent>
+#include <QFont>
 #include <QGuiApplication>
 #include <QImage>
 #include <QLabel>
@@ -9,6 +11,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QSlider>
 #include <QSplitter>
 #include <QTemporaryDir>
@@ -22,6 +25,34 @@
 #include "widgets/ComparePanel.h"
 #include "widgets/VlmAnnotationDialog.h"
 
+namespace
+{
+
+bool ensureCommandBarFitsAll(MainWindow &window, int headroom = 0)
+{
+    auto *bar = window.findChild<QWidget *>(QStringLiteral("commandBar"));
+    if (!bar) {
+        return false;
+    }
+    auto *overflowButton = bar->findChild<QToolButton *>(QStringLiteral("commandOverflowButton"));
+    auto *slider = bar->findChild<QSlider *>();
+    if (!overflowButton || !slider) {
+        return false;
+    }
+
+    for (int width = qMax(2400, window.width()); width <= 19200; width *= 2) {
+        window.resize(width, qMax(940, window.height()));
+        QCoreApplication::processEvents();
+        if (!overflowButton->isVisible() && slider->width() == 150
+            && bar->contentsRect().width() - bar->layout()->sizeHint().width() >= headroom) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 class tst_MainWindow : public QObject
 {
     Q_OBJECT
@@ -29,6 +60,7 @@ class tst_MainWindow : public QObject
 private slots:
     void commandBar_removesDeadMenuAndBrowseButtons();
     void commandBar_usesVectorIconsAndCleanThresholdReadout();
+    void commandBar_overflowsCleanlyAtMinimumWindowWidth_data();
     void commandBar_overflowsCleanlyAtMinimumWindowWidth();
     void commandBar_includesAiAnnotationButton();
     void vlmAnnotationDialog_opensModelessAndReusesWindow();
@@ -161,13 +193,20 @@ void tst_MainWindow::commandBar_usesVectorIconsAndCleanThresholdReadout()
     QCOMPARE(valuePill->text(), QStringLiteral("128"));
 }
 
+void tst_MainWindow::commandBar_overflowsCleanlyAtMinimumWindowWidth_data()
+{
+    QTest::addColumn<bool>("wideFont");
+    QTest::newRow("default-font") << false;
+    QTest::newRow("wide-font") << true;
+}
+
 void tst_MainWindow::commandBar_overflowsCleanlyAtMinimumWindowWidth()
 {
+    QFETCH(bool, wideFont);
     MainWindow window;
-    window.resize(1680, 940);
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
-    QCoreApplication::processEvents();
+    QVERIFY(ensureCommandBarFitsAll(window));
 
     auto *commandBar = window.findChild<QWidget *>(QStringLiteral("commandBar"));
     QVERIFY(commandBar != nullptr);
@@ -178,6 +217,42 @@ void tst_MainWindow::commandBar_overflowsCleanlyAtMinimumWindowWidth()
     auto *slider = commandBar->findChild<QSlider *>();
     QVERIFY(slider != nullptr);
     const auto buttons = commandBar->findChildren<QToolButton *>(QStringLiteral("commandButton"));
+
+    const int frameWidth = commandBar->width() - commandBar->contentsRect().width();
+    if (wideFont) {
+        const int normalFitWidth = commandBar->layout()->sizeHint().width() + frameWidth;
+        commandBar->setMaximumWidth(normalFitWidth);
+        QTRY_COMPARE(commandBar->width(), normalFitWidth);
+        QVERIFY(!overflowButton->isVisible());
+        // Widen the text-only commands with per-button font changes only (no
+        // command-bar stylesheet change) to verify child LayoutRequest events
+        // trigger overflow recalculation at a fixed toolbar width, and that
+        // restoring a hidden overflowed button's font restores it to the bar.
+        QList<QPair<QToolButton *, QFont>> originalFonts;
+        for (QToolButton *button : buttons) {
+            if (button->icon().isNull()) {
+                QFont font = button->font();
+                originalFonts.append({button, font});
+                font.setLetterSpacing(QFont::AbsoluteSpacing, 36);
+                button->setFont(font);
+            }
+        }
+        QTRY_VERIFY(overflowButton->isVisible());
+        QCOMPARE(commandBar->width(), normalFitWidth);
+        for (const auto &entry : originalFonts) {
+            entry.first->setFont(entry.second);
+        }
+        QTRY_VERIFY(!overflowButton->isVisible());
+        for (const auto &entry : originalFonts) {
+            QFont font = entry.second;
+            font.setLetterSpacing(QFont::AbsoluteSpacing, 36);
+            entry.first->setFont(font);
+        }
+        QTRY_VERIFY(overflowButton->isVisible());
+        commandBar->setMaximumWidth(QWIDGETSIZE_MAX);
+        QVERIFY(ensureCommandBarFitsAll(window));
+        QVERIFY(commandBar->layout()->sizeHint().width() + frameWidth > 1680);
+    }
 
     auto verifyNoSqueezedButtons = [&]() {
         const QRect barRect = commandBar->rect();
@@ -209,32 +284,28 @@ void tst_MainWindow::commandBar_overflowsCleanlyAtMinimumWindowWidth()
     // buttons with zero overflow while 1px narrower triggers overflow.
     QVERIFY(!overflowButton->isVisible());
     QCOMPARE(slider->width(), 150);
-    const int frameWidth = commandBar->width() - commandBar->contentsRect().width();
-    const int expectedExactFitWidth =
-        commandBar->layout()->sizeHint().width() - (150 - 88) + frameWidth;
+    const auto minimumWidthForVisibleItems = [&]() {
+        return commandBar->layout()->sizeHint().width() + frameWidth - (slider->width() - 88);
+    };
+    const int expectedExactFitWidth = minimumWidthForVisibleItems();
 
     commandBar->setMaximumWidth(expectedExactFitWidth);
-    QCoreApplication::processEvents();
+    QTRY_COMPARE(commandBar->width(), expectedExactFitWidth);
+    QCOMPARE(slider->width(), 88);
     QVERIFY(!overflowButton->isVisible());
     QVERIFY(optionsEndSeparator->isVisible());
+    for (QToolButton *button : buttons) {
+        QVERIFY(button->isVisible());
+    }
     verifyNoSqueezedButtons();
 
     const int firstOverflowWidth = expectedExactFitWidth - 1;
     commandBar->setMaximumWidth(firstOverflowWidth);
-    QCoreApplication::processEvents();
+    QTRY_COMPARE(commandBar->width(), firstOverflowWidth);
     QVERIFY(overflowButton->isVisible());
+    QVERIFY(optionsEndSeparator->isVisible());
     verifyNoSqueezedButtons();
 
-    // Narrow enough to collapse the entire options group and verify the trailing
-    // options separator hides so no two separators sit adjacent.
-    commandBar->setMaximumWidth(820);
-    QCoreApplication::processEvents();
-    QVERIFY(overflowButton->isVisible());
-    QVERIFY(!optionsEndSeparator->isVisible());
-
-    // Return to firstOverflowWidth to test keyboard interaction and menu closing.
-    commandBar->setMaximumWidth(firstOverflowWidth);
-    QCoreApplication::processEvents();
     QMenu *overflowMenu = overflowButton->menu();
     QVERIFY(overflowMenu != nullptr);
     QVERIFY(!overflowMenu->actions().isEmpty());
@@ -248,40 +319,77 @@ void tst_MainWindow::commandBar_overflowsCleanlyAtMinimumWindowWidth()
     }
     QVERIFY(targetAction != nullptr);
     const bool initialChecked = targetAction->isChecked();
+    QSignalSpy popupHidden(overflowMenu, &QMenu::aboutToHide);
+    QSignalSpy actionTriggered(targetAction, &QAction::triggered);
+    struct HideCounter final : QObject {
+        int count = 0;
+
+        bool eventFilter(QObject *, QEvent *event) override
+        {
+            if (event->type() == QEvent::Hide) {
+                ++count;
+            }
+            return false;
+        }
+    } overflowButtonHidden;
+    overflowButton->installEventFilter(&overflowButtonHidden);
 
     overflowMenu->popup(overflowButton->mapToGlobal(QPoint(0, overflowButton->height())));
-    QCoreApplication::processEvents();
+    QTRY_VERIFY(overflowMenu->isVisible());
     overflowMenu->setActiveAction(targetAction);
     QCOMPARE(overflowMenu->activeAction(), targetAction);
 
-    // A tiny resize that keeps the exact same overflow set must not clear keyboard focus.
-    const QList<QAction *> beforeActions = overflowMenu->actions();
-    commandBar->setMaximumWidth(firstOverflowWidth - 2);
-    QCoreApplication::processEvents();
-    if (overflowMenu->actions() == beforeActions) {
-        QCOMPARE(overflowMenu->activeAction(), targetAction);
+    // Cross each exact cutoff until the options group has fully overflowed.
+    // The list grows on each resize and the selected action stays active.
+    while (optionsEndSeparator->isVisible()) {
+        const int nextOverflowWidth = minimumWidthForVisibleItems() - 1;
+        QVERIFY(nextOverflowWidth < commandBar->width());
+        const qsizetype beforeCount = overflowMenu->actions().size();
+        commandBar->setMaximumWidth(nextOverflowWidth);
+        QTRY_COMPARE(commandBar->width(), nextOverflowWidth);
+        QVERIFY(overflowMenu->actions().size() > beforeCount);
+        QVERIFY(overflowMenu->actions().contains(targetAction));
+        QVERIFY(overflowMenu->isVisible());
+        QCOMPARE(popupHidden.count(), 0);
+        QTRY_COMPARE(overflowMenu->activeAction(), targetAction);
     }
+    QVERIFY(overflowButton->isVisible());
+    QVERIFY(!optionsEndSeparator->isVisible());
+    verifyNoSqueezedButtons();
+
+    // The current actions also stay selected when the resize only shrinks the slider.
+    const QList<QAction *> beforeActions = overflowMenu->actions();
+    const int sameActionsWidth = minimumWidthForVisibleItems();
+    QVERIFY(sameActionsWidth < commandBar->width());
+    commandBar->setMaximumWidth(sameActionsWidth);
+    QTRY_COMPARE(commandBar->width(), sameActionsWidth);
+    QCOMPARE(slider->width(), 88);
+    QCOMPARE(overflowMenu->actions(), beforeActions);
+    QVERIFY(overflowMenu->isVisible());
+    QCOMPARE(popupHidden.count(), 0);
+    QCOMPARE(overflowButtonHidden.count, 0);
+    QTRY_COMPARE(overflowMenu->activeAction(), targetAction);
+    verifyNoSqueezedButtons();
 
     QTest::keyClick(overflowMenu, Qt::Key_Return);
-    QCoreApplication::processEvents();
-    QCOMPARE(targetAction->isChecked(), !initialChecked);
+    QTRY_COMPARE(actionTriggered.count(), 1);
+    QTRY_COMPARE(targetAction->isChecked(), !initialChecked);
+    QTRY_VERIFY(!overflowMenu->isVisible());
 
-    // Re-open the popup menu and widen past the overflow threshold while the menu
-    // is still open; widening must proactively close the popup menu before hiding
-    // the overflow trigger.
+    // Widen to the exact fit from the overflow state with the popup still open.
     overflowMenu->popup(overflowButton->mapToGlobal(QPoint(0, overflowButton->height())));
-    QCoreApplication::processEvents();
-    QVERIFY(overflowMenu->isVisible());
+    QTRY_VERIFY(overflowMenu->isVisible());
 
-    commandBar->setMaximumWidth(QWIDGETSIZE_MAX);
-    window.resize(1680, 940);
-    QCoreApplication::processEvents();
-    QVERIFY(!overflowMenu->isVisible());
+    commandBar->setMaximumWidth(expectedExactFitWidth);
+    QTRY_COMPARE(commandBar->width(), expectedExactFitWidth);
+    QTRY_VERIFY(!overflowMenu->isVisible());
     for (QToolButton *button : buttons) {
         QTRY_VERIFY_WITH_TIMEOUT(button->isVisible(), 1000);
     }
     QTRY_VERIFY_WITH_TIMEOUT(!overflowButton->isVisible(), 1000);
-    QVERIFY(optionsEndSeparator->isVisible());
+    QTRY_VERIFY(optionsEndSeparator->isVisible());
+    QCOMPARE(slider->width(), 88);
+    verifyNoSqueezedButtons();
 
     QToolButton *restoredButton = nullptr;
     for (QToolButton *button : buttons) {
@@ -291,10 +399,12 @@ void tst_MainWindow::commandBar_overflowsCleanlyAtMinimumWindowWidth()
         }
     }
     QVERIFY(restoredButton != nullptr);
-    QCOMPARE(restoredButton->isChecked(), !initialChecked);
+    QTRY_COMPARE(restoredButton->isChecked(), !initialChecked);
 
     // Also verify minimum window width (1280x800) with no artificial commandBar cap.
+    commandBar->setMaximumWidth(QWIDGETSIZE_MAX);
     window.resize(1280, 800);
+    QTRY_COMPARE(window.size(), QSize(1280, 800));
     QCoreApplication::processEvents();
     verifyNoSqueezedButtons();
 }
@@ -406,6 +516,8 @@ void tst_MainWindow::commandBar_reverseSwapDirectionControlsComparePanel()
     QCOMPARE(reverseButton->isChecked(), comparePanel->reverseSwapDirectionEnabled());
 
     const bool originalDirection = comparePanel->reverseSwapDirectionEnabled();
+    QVERIFY(ensureCommandBarFitsAll(window));
+    QVERIFY(reverseButton->isVisible());
     QTest::mouseClick(reverseButton, Qt::LeftButton);
     QCOMPARE(comparePanel->reverseSwapDirectionEnabled(), !originalDirection);
     QCOMPARE(reverseButton->isChecked(), !originalDirection);
@@ -433,6 +545,8 @@ void tst_MainWindow::commandBar_imageNameOverlayControlsComparePanel()
     QCOMPARE(overlayButton->isChecked(), comparePanel->imageNameOverlayEnabled());
 
     const bool originallyEnabled = comparePanel->imageNameOverlayEnabled();
+    QVERIFY(ensureCommandBarFitsAll(window));
+    QVERIFY(overlayButton->isVisible());
     QTest::mouseClick(overlayButton, Qt::LeftButton);
     QCOMPARE(comparePanel->imageNameOverlayEnabled(), !originallyEnabled);
     QCOMPARE(overlayButton->isChecked(), !originallyEnabled);
@@ -548,9 +662,12 @@ void tst_MainWindow::commandBar_copyComparisonImageButtonCopiesToClipboard()
         }
     }
     QVERIFY(copyButton != nullptr);
+    const int feedbackWidth = copyButton->fontMetrics().horizontalAdvance(QStringLiteral("无可复制图片"));
+    QVERIFY(ensureCommandBarFitsAll(window, feedbackWidth));
 
     // Clicking when no images are compared should show non-blocking feedback and not copy.
     QGuiApplication::clipboard()->clear();
+    QVERIFY(copyButton->isVisible());
     QTest::mouseClick(copyButton, Qt::LeftButton);
     QCOMPARE(copyButton->text(), QStringLiteral("无可复制图片"));
     QVERIFY(QGuiApplication::clipboard()->image().isNull());
@@ -565,6 +682,7 @@ void tst_MainWindow::commandBar_copyComparisonImageButtonCopiesToClipboard()
     comparePanel->setSelectedImages({{folderA, pathA}, {folderB, pathB}});
     QTRY_VERIFY_WITH_TIMEOUT(!comparePanel->buildComparisonImage().isNull(), 3000);
 
+    QVERIFY(copyButton->isVisible());
     QTest::mouseClick(copyButton, Qt::LeftButton);
     QCOMPARE(copyButton->text(), QStringLiteral("✓ 已复制"));
 

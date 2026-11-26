@@ -9,6 +9,10 @@ function(add_unit_test TEST_NAME TEST_SOURCE)
     set_tests_properties(${TEST_NAME} PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
+    if(WIN32)
+        set_property(TEST ${TEST_NAME} APPEND PROPERTY
+            ENVIRONMENT "QT_FORCE_STDERR_LOGGING=1")
+    endif()
 endfunction()
 
 # ---- Unit tests ----

@@ -19,6 +19,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QDir>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
@@ -29,6 +30,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSaveFile>
+#include <QScopedValueRollback>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSlider>
@@ -36,6 +38,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <functional>
 
 namespace
@@ -76,8 +79,62 @@ protected:
         }
     }
 
+    void changeEvent(QEvent *event) override
+    {
+        QWidget::changeEvent(event);
+        if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange) {
+            updateAfterStyleChange();
+        }
+    }
+
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange) {
+            updateAfterStyleChange();
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+    bool event(QEvent *event) override
+    {
+        const bool handled = QWidget::event(event);
+        // QWidget handles Polish and child geometry updates (LayoutRequest) in
+        // event() without forwarding them to changeEvent().
+        if (event->type() == QEvent::Polish) {
+            updateAfterStyleChange();
+        } else if (event->type() == QEvent::LayoutRequest && isVisible() && m_onResize) {
+            m_onResize();
+        }
+        return handled;
+    }
+
 private:
+    void updateAfterStyleChange()
+    {
+        if (m_styleUpdateScheduled || !isVisible() || !m_onResize) {
+            return;
+        }
+        m_styleUpdateScheduled = true;
+        // The child controls can receive their style and font changes after the bar.
+        QTimer::singleShot(0, this, [this]() {
+            m_styleUpdateScheduled = false;
+            if (isVisible() && m_onResize) {
+                m_onResize();
+            }
+        });
+    }
+
     std::function<void()> m_onResize;
+    bool m_styleUpdateScheduled = false;
+};
+
+class CommandBarMeasureItem final : public QWidgetItem
+{
+public:
+    using QWidgetItem::QWidgetItem;
+
+    // Use Qt's constrained, style-adjusted hint even for hidden commands.
+    bool isEmpty() const override { return false; }
 };
 
 constexpr int kSliderMinWidth = 88;
@@ -280,6 +337,7 @@ QWidget *MainWindow::createCommandBar()
         button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         layout->addWidget(button);
         if (collapsible) {
+            button->installEventFilter(bar);
             m_overflowCommandItems.append(CommandOverflowItem{button, action, inOptionsGroup});
         }
         return button;
@@ -471,9 +529,11 @@ QWidget *MainWindow::createCommandBar()
 
 void MainWindow::updateCommandBarOverflow()
 {
-    if (!m_commandBar || !m_thresholdSlider || !m_commandOverflowButton || !m_commandOverflowMenu) {
+    if (m_updatingCommandBarOverflow || !m_commandBar || !m_thresholdSlider
+        || !m_commandOverflowButton || !m_commandOverflowMenu) {
         return;
     }
+    const QScopedValueRollback updating(m_updatingCommandBarOverflow, true);
 
     auto *layout = qobject_cast<QHBoxLayout *>(m_commandBar->layout());
     if (!layout) {
@@ -485,9 +545,8 @@ void MainWindow::updateCommandBarOverflow()
         return;
     }
 
-    auto layoutNeededWidth = [layout]() {
-        layout->invalidate();
-        return layout->sizeHint().width();
+    auto itemWidthWithSpacing = [layout](QWidget *widget) {
+        return CommandBarMeasureItem(widget).sizeHint().width() + layout->spacing();
     };
 
     auto syncOverflowMenu = [this](const QList<QAction *> &nextActions) {
@@ -496,82 +555,67 @@ void MainWindow::updateCommandBarOverflow()
             m_commandOverflowMenu->close();
         }
         if (m_commandOverflowMenu->actions() != nextActions) {
+            QAction *activeAction = m_commandOverflowMenu->activeAction();
             m_commandOverflowMenu->clear();
-            for (QAction *action : nextActions) {
-                m_commandOverflowMenu->addAction(action);
+            m_commandOverflowMenu->addActions(nextActions);
+            if (nextActions.contains(activeAction)) {
+                m_commandOverflowMenu->setActiveAction(activeAction);
             }
         }
-        m_commandOverflowButton->setVisible(anyOverflowed);
     };
 
-    // Measure directly via QHBoxLayout::sizeHint() so platform style margins,
-    // QSS borders, spacer spacing, and dynamic button texts stay 1px-exact.
+    // Start with the live layout hint to include Qt's effective margins. This
+    // bar has fixed spacing and always has nonempty items, so each added or
+    // removed widget changes the hint by its layout item width plus one gap.
+    layout->invalidate();
+    int neededWidth = layout->sizeHint().width() + kSliderMinWidth - m_thresholdSlider->minimumWidth();
     for (const auto &item : std::as_const(m_overflowCommandItems)) {
-        if (item.button) {
-            item.button->setVisible(true);
+        if (item.button->isHidden()) {
+            neededWidth += itemWidthWithSpacing(item.button);
         }
     }
-    if (m_optionsEndSeparator) {
-        m_optionsEndSeparator->setVisible(true);
+    const int optionsSeparatorWidth = itemWidthWithSpacing(m_optionsEndSeparator);
+    if (m_optionsEndSeparator->isHidden()) {
+        neededWidth += optionsSeparatorWidth;
     }
-    m_commandOverflowButton->setVisible(false);
-    m_thresholdSlider->setFixedWidth(kSliderMinWidth);
-
-    const int minAllWidth = layoutNeededWidth();
-    if (minAllWidth <= barWidth) {
-        const int sliderWidth = qBound(kSliderMinWidth,
-                                       kSliderMinWidth + (barWidth - minAllWidth),
-                                       kSliderPreferredWidth);
-        m_thresholdSlider->setFixedWidth(sliderWidth);
-        syncOverflowMenu({});
-        layout->activate();
-        return;
+    const int overflowButtonWidth = itemWidthWithSpacing(m_commandOverflowButton);
+    if (!m_commandOverflowButton->isHidden()) {
+        neededWidth -= overflowButtonWidth;
     }
 
-    // Overflow is required: show the overflow trigger and collapse secondary
-    // items from right to left until QHBoxLayout::sizeHint() fits barWidth.
-    m_commandOverflowButton->setVisible(true);
-    QList<bool> visible(m_overflowCommandItems.size(), true);
-    auto updateOptionsSeparator = [&]() {
-        if (!m_optionsEndSeparator) {
-            return;
-        }
-        bool anyVisibleOption = false;
-        for (int i = 0; i < m_overflowCommandItems.size(); ++i) {
-            if (visible.at(i) && m_overflowCommandItems.at(i).inOptionsGroup) {
-                anyVisibleOption = true;
-                break;
+    qsizetype visibleCount = m_overflowCommandItems.size();
+    auto visibleOptions = std::count_if(m_overflowCommandItems.cbegin(), m_overflowCommandItems.cend(),
+                                        [](const auto &item) { return item.inOptionsGroup; });
+    if (neededWidth > barWidth) {
+        neededWidth += overflowButtonWidth;
+        while (neededWidth > barWidth && visibleCount > 0) {
+            const auto &item = m_overflowCommandItems.at(--visibleCount);
+            neededWidth -= itemWidthWithSpacing(item.button);
+            if (item.inOptionsGroup && --visibleOptions == 0) {
+                neededWidth -= optionsSeparatorWidth;
             }
         }
-        m_optionsEndSeparator->setVisible(anyVisibleOption);
-    };
-
-    for (int i = m_overflowCommandItems.size() - 1; i >= 0; --i) {
-        updateOptionsSeparator();
-        if (layoutNeededWidth() <= barWidth) {
-            break;
-        }
-        visible[i] = false;
-        if (m_overflowCommandItems.at(i).button) {
-            m_overflowCommandItems.at(i).button->setVisible(false);
-        }
     }
-    updateOptionsSeparator();
 
-    const int currentWidth = layoutNeededWidth();
-    const int sliderWidth = qBound(kSliderMinWidth,
-                                   kSliderMinWidth + qMax(0, barWidth - currentWidth),
-                                   kSliderPreferredWidth);
-    m_thresholdSlider->setFixedWidth(sliderWidth);
-
+    const int sliderWidth =
+        qBound(kSliderMinWidth, kSliderMinWidth + barWidth - neededWidth, kSliderPreferredWidth);
     QList<QAction *> overflowActions;
-    for (int i = 0; i < m_overflowCommandItems.size(); ++i) {
-        if (!visible.at(i) && m_overflowCommandItems.at(i).action) {
-            overflowActions.append(m_overflowCommandItems.at(i).action);
+    for (qsizetype i = 0; i < m_overflowCommandItems.size(); ++i) {
+        const auto &item = m_overflowCommandItems.at(i);
+        item.button->setVisible(i < visibleCount);
+        if (i >= visibleCount) {
+            overflowActions.append(item.action);
         }
     }
+    m_optionsEndSeparator->setVisible(visibleOptions > 0);
     syncOverflowMenu(overflowActions);
+    m_commandOverflowButton->setVisible(!overflowActions.isEmpty());
+    m_thresholdSlider->setFixedWidth(sliderWidth);
     layout->activate();
+    // layout->invalidate() / setVisible() / setFixedWidth() post queued
+    // LayoutRequest events back to m_commandBar; clear those stale requests
+    // because layout->activate() just synchronized the bar geometry.
+    QCoreApplication::removePostedEvents(m_commandBar, QEvent::LayoutRequest);
 }
 
 QAction *MainWindow::addCommandAction(const QIcon &icon,
