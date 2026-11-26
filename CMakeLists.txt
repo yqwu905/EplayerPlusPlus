@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ImageCompare
-    VERSION 1.7.14
+    VERSION 1.7.16
     LANGUAGES CXX
     DESCRIPTION "Cross-platform image comparison tool"
 )
