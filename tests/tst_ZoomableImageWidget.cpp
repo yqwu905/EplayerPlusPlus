@@ -35,6 +35,7 @@ private slots:
     void testHasImage();
     void testSetZoomLevelAnchorsFocalPoint();
     void testNormalizedPanSyncAcrossDifferentSizes();
+    void testVisibleImageRect();
 };
 
 namespace {
@@ -324,6 +325,42 @@ void TestZoomableImageWidget::testNormalizedPanSyncAcrossDifferentSizes()
     QVERIFY2(std::abs(fracA.y() - fracB.y()) < 1e-9,
              qPrintable(QString("widget-fraction y mismatch: A=%1 B=%2")
                             .arg(fracA.y()).arg(fracB.y())));
+}
+
+void TestZoomableImageWidget::testVisibleImageRect()
+{
+    ZoomableImageWidget widget;
+    widget.resize(200, 200);
+    QVERIFY(widget.visibleImageRect().isEmpty());
+
+    QImage img = createTestImage(400, 400);
+    widget.setImage(img);
+    QCOMPARE(widget.visibleImageRect(), QRectF(0.0, 0.0, 400.0, 400.0));
+
+    // At 2x zoom centered on the image, the middle 200x200 region is visible.
+    widget.setZoomLevel(2.0, QPointF(0.5, 0.5));
+    const QRectF centeredRect = widget.visibleImageRect();
+    QVERIFY(std::abs(centeredRect.left() - 100.0) < 1e-6);
+    QVERIFY(std::abs(centeredRect.top() - 100.0) < 1e-6);
+    QVERIFY(std::abs(centeredRect.width() - 200.0) < 1e-6);
+    QVERIFY(std::abs(centeredRect.height() - 200.0) < 1e-6);
+
+    // Panning toward the right half shifts the visible rect to the right.
+    widget.setNormalizedPan(QPointF(-0.25, 0.0));
+    const QRectF rightRect = widget.visibleImageRect();
+    QVERIFY(std::abs(rightRect.left() - 200.0) < 1e-6);
+    QVERIFY(std::abs(rightRect.right() - 400.0) < 1e-6);
+
+    // At 1x zoom with nonzero linked pan offset, visibleImageRect() must match
+    // the panned viewport rendered by paintEvent() rather than the full image.
+    widget.resetView();
+    widget.setNormalizedPan(QPointF(-0.25, 0.0));
+    QCOMPARE(widget.zoomLevel(), 1.0);
+    const QRectF pannedAtOneX = widget.visibleImageRect();
+    QVERIFY(std::abs(pannedAtOneX.left() - 100.0) < 1e-6);
+    QVERIFY(std::abs(pannedAtOneX.right() - 400.0) < 1e-6);
+    QVERIFY(std::abs(pannedAtOneX.top() - 0.0) < 1e-6);
+    QVERIFY(std::abs(pannedAtOneX.height() - 400.0) < 1e-6);
 }
 
 QTEST_MAIN(TestZoomableImageWidget)

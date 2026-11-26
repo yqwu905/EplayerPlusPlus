@@ -44,6 +44,8 @@ set(SOURCES
     services/ImageLoader.h
     services/ImageComparer.cpp
     services/ImageComparer.h
+    services/ComparisonImageComposer.cpp
+    services/ComparisonImageComposer.h
     services/VlmAnnotationService.cpp
     services/VlmAnnotationService.h
     styles/FluentStyle.cpp
@@ -96,6 +98,8 @@ set(LIB_SOURCES
     services/ImageLoader.h
     services/ImageComparer.cpp
     services/ImageComparer.h
+    services/ComparisonImageComposer.cpp
+    services/ComparisonImageComposer.h
     services/VlmAnnotationService.cpp
     services/VlmAnnotationService.h
     styles/FluentStyle.cpp

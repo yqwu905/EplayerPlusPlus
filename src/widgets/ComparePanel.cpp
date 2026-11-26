@@ -2,13 +2,16 @@
 #include "FlowLayout.h"
 #include "ImageContextMenu.h"
 #include "ZoomableImageWidget.h"
+#include "services/ComparisonImageComposer.h"
 #include "services/ImageComparer.h"
 #include "services/ImageLoader.h"
 #include "services/ImageMarkManager.h"
 #include "services/SettingsManager.h"
 #include "models/CompareSession.h"
 
+#include <QClipboard>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -158,6 +161,9 @@ ComparePanel::~ComparePanel()
     if (m_toleranceRefreshTimer) {
         m_toleranceRefreshTimer->stop();
     }
+    if (m_copyFeedbackTimer) {
+        m_copyFeedbackTimer->stop();
+    }
     for (ImageCell &cell : m_cells) {
         cancelToleranceWatcher(cell);
         cancelResizeWatcher(cell);
@@ -208,6 +214,84 @@ void ComparePanel::setControlsVisible(bool visible)
     if (m_toolBar) {
         m_toolBar->setVisible(visible);
     }
+}
+
+QImage ComparePanel::buildComparisonImage() const
+{
+    if (m_cells.isEmpty()) {
+        return QImage();
+    }
+
+    QList<ComparisonImageComposer::CellItem> items;
+    items.reserve(m_cells.size());
+
+    for (int i = 0; i < m_cells.size(); ++i) {
+        const ImageCell &cell = m_cells.at(i);
+        ComparisonImageComposer::CellItem item;
+        item.index = i + 1;
+        item.badgeColor = compareColor(i);
+        item.gridName = cellDisplayName(i);
+        item.fileName = cell.imagePath.isEmpty()
+            ? QString()
+            : QFileInfo(cell.imagePath).fileName();
+        item.placeholderText = tr("未选择图片");
+
+        const QImage assignedImage = imageForCompare(i);
+        const QImage displayedImage = cell.imageWidget ? cell.imageWidget->image() : QImage();
+        // Use the tolerance map when actively displayed; otherwise always use
+        // this cell's own assigned image so a transient swap preview never
+        // pairs another cell's pixels with this cell's filename.
+        if (cell.showingToleranceMap && !displayedImage.isNull()) {
+            item.image = displayedImage;
+        } else {
+            item.image = assignedImage;
+        }
+
+        if (!item.image.isNull() && cell.imageWidget && !displayedImage.isNull()) {
+            const QRectF widgetVisibleRect = cell.imageWidget->visibleImageRect();
+            if (widgetVisibleRect.isValid() && !widgetVisibleRect.isEmpty()) {
+                if (displayedImage.size() == item.image.size()) {
+                    item.visibleSourceRect = widgetVisibleRect;
+                } else if (displayedImage.width() > 0 && displayedImage.height() > 0) {
+                    const double sx = static_cast<double>(item.image.width()) / displayedImage.width();
+                    const double sy = static_cast<double>(item.image.height()) / displayedImage.height();
+                    item.visibleSourceRect = QRectF(widgetVisibleRect.x() * sx,
+                                                    widgetVisibleRect.y() * sy,
+                                                    widgetVisibleRect.width() * sx,
+                                                    widgetVisibleRect.height() * sy);
+                }
+            }
+        }
+
+        items.append(item);
+    }
+
+    return ComparisonImageComposer::compose(items);
+}
+
+bool ComparePanel::copyComparisonImageToClipboard()
+{
+    finishKeyboardComparePreview();
+
+    const QImage composite = buildComparisonImage();
+    bool copied = false;
+    if (!composite.isNull()) {
+        if (QClipboard *clipboard = QGuiApplication::clipboard()) {
+            clipboard->setImage(composite);
+            copied = true;
+        }
+    }
+
+    if (m_copyComparisonAction) {
+        m_copyComparisonAction->setText(
+            copied ? tr("✓ 已复制") : tr("无可复制图片"));
+        if (m_copyFeedbackTimer) {
+            m_copyFeedbackTimer->start(1500);
+        }
+    }
+
+    emit comparisonImageCopied(copied);
+    return copied;
 }
 
 void ComparePanel::setCompareMode(CompareMode mode)
@@ -408,6 +492,25 @@ void ComparePanel::setupUi()
     connect(m_imageNameOverlayCheckBox, &QCheckBox::toggled,
             this, &ComparePanel::setImageNameOverlayEnabled);
     m_toolBar->addWidget(m_imageNameOverlayCheckBox);
+
+    m_copyComparisonAction = m_toolBar->addAction(tr("复制对比图"));
+    m_copyComparisonAction->setObjectName(QStringLiteral("copyComparisonImageAction"));
+    m_copyComparisonAction->setToolTip(
+        tr("生成包含对比网格名称、图片文件名和网格图片的拼接图并复制到剪贴板"));
+    if (QWidget *copyWidget = m_toolBar->widgetForAction(m_copyComparisonAction)) {
+        copyWidget->setAccessibleName(tr("复制对比图"));
+    }
+    connect(m_copyComparisonAction, &QAction::triggered, this, [this]() {
+        copyComparisonImageToClipboard();
+    });
+
+    m_copyFeedbackTimer = new QTimer(this);
+    m_copyFeedbackTimer->setSingleShot(true);
+    connect(m_copyFeedbackTimer, &QTimer::timeout, this, [this]() {
+        if (m_copyComparisonAction) {
+            m_copyComparisonAction->setText(tr("复制对比图"));
+        }
+    });
 
     m_toolBar->addSeparator();
 

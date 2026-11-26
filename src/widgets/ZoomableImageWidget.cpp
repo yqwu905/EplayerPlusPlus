@@ -54,6 +54,27 @@ QPointF ZoomableImageWidget::normalizedPan() const
                    m_panOffset.y() / m_image.height());
 }
 
+QRectF ZoomableImageWidget::visibleImageRect() const
+{
+    if (m_image.isNull() || m_image.width() <= 0 || m_image.height() <= 0) {
+        return QRectF();
+    }
+
+    const QRectF fullImageRect(0.0, 0.0, m_image.width(), m_image.height());
+    if (width() <= 0 || height() <= 0) {
+        return fullImageRect;
+    }
+
+    QRectF visibleTarget;
+    QRectF sourceRect;
+    if (!computePaintRects(visibleTarget, sourceRect)) {
+        return fullImageRect;
+    }
+
+    const QRectF clamped = sourceRect.intersected(fullImageRect);
+    return clamped.isEmpty() ? fullImageRect : clamped;
+}
+
 void ZoomableImageWidget::setZoomLevel(double level, QPointF focalPoint,
                                         bool emitSignal)
 {
@@ -121,6 +142,41 @@ double ZoomableImageWidget::effectiveScale() const
     return fitScale() * m_zoomLevel;
 }
 
+bool ZoomableImageWidget::computePaintRects(QRectF &visibleTarget, QRectF &sourceRect) const
+{
+    if (m_image.isNull() || m_image.width() <= 0 || m_image.height() <= 0 ||
+        width() <= 0 || height() <= 0) {
+        return false;
+    }
+
+    const double scale = effectiveScale();
+    if (scale <= 0.0) {
+        return false;
+    }
+
+    const double imgW = m_image.width() * scale;
+    const double imgH = m_image.height() * scale;
+
+    // Center the image, then apply pan offset (in image pixels, scaled)
+    const double ox = (width() - imgW) / 2.0 + m_panOffset.x() * scale;
+    const double oy = (height() - imgH) / 2.0 + m_panOffset.y() * scale;
+
+    const QRectF targetRect(ox, oy, imgW, imgH);
+    visibleTarget = targetRect.intersected(QRectF(rect()));
+    if (visibleTarget.isEmpty()) {
+        return false;
+    }
+
+    // Explicit source clipping prevents the raster backend from sampling the
+    // entire full-resolution image during a deep zoom/pan when only a small
+    // viewport-sized region can contribute pixels.
+    sourceRect = QRectF((visibleTarget.left() - targetRect.left()) / scale,
+                        (visibleTarget.top() - targetRect.top()) / scale,
+                        visibleTarget.width() / scale,
+                        visibleTarget.height() / scale);
+    return true;
+}
+
 void ZoomableImageWidget::paintEvent(QPaintEvent * /*event*/)
 {
     QPainter painter(this);
@@ -139,27 +195,11 @@ void ZoomableImageWidget::paintEvent(QPaintEvent * /*event*/)
         return;
     }
 
-    double scale = effectiveScale();
-    double imgW = m_image.width() * scale;
-    double imgH = m_image.height() * scale;
-
-    // Center the image, then apply pan offset (in image pixels, scaled)
-    double ox = (width() - imgW) / 2.0 + m_panOffset.x() * scale;
-    double oy = (height() - imgH) / 2.0 + m_panOffset.y() * scale;
-
-    const QRectF targetRect(ox, oy, imgW, imgH);
-    const QRectF visibleTarget = targetRect.intersected(QRectF(rect()));
-    if (visibleTarget.isEmpty()) {
+    QRectF visibleTarget;
+    QRectF sourceRect;
+    if (!computePaintRects(visibleTarget, sourceRect)) {
         return;
     }
-
-    // Explicit source clipping prevents the raster backend from sampling the
-    // entire full-resolution image during a deep zoom/pan when only a small
-    // viewport-sized region can contribute pixels.
-    const QRectF sourceRect((visibleTarget.left() - targetRect.left()) / scale,
-                            (visibleTarget.top() - targetRect.top()) / scale,
-                            visibleTarget.width() / scale,
-                            visibleTarget.height() / scale);
     painter.drawImage(visibleTarget, m_image, sourceRect);
 }
 

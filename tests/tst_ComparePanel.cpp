@@ -4,6 +4,9 @@
 #include <QSet>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QSignalSpy>
 #include <QLabel>
 #include <QDir>
 #include <QCoreApplication>
@@ -46,6 +49,11 @@ private slots:
     void markButton_ctrlClickMarksAllCurrentImages();
     void markShortcut_marksCurrentCellOnly();
     void markShortcut_ctrlMarksAllCurrentImages();
+    void copyComparisonImage_returnsFalseWhenNoImagesLoaded();
+    void copyComparisonImage_copiesCompositeImageWithCustomNameAndColors();
+    void copyComparisonImage_respectsZoomedViewport();
+    void copyComparisonImage_doesNotMislabelDuringSwapPreview();
+    void copyComparisonImage_handlesPartialGridToleranceAndReorder();
 
 private:
     static QString createImageInFolder(const QString &folderPath, const QString &name, const QColor &color);
@@ -1231,6 +1239,360 @@ void tst_ComparePanel::markShortcut_ctrlMarksAllCurrentImages()
                                   QStringLiteral("D"),
                                   1000);
     }
+}
+
+void tst_ComparePanel::copyComparisonImage_returnsFalseWhenNoImagesLoaded()
+{
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+
+    auto *copyAction = panel.findChild<QAction *>(QStringLiteral("copyComparisonImageAction"));
+    QVERIFY(copyAction != nullptr);
+    QCOMPARE(copyAction->text(), QStringLiteral("复制对比图"));
+
+    QSignalSpy copiedSpy(&panel, &ComparePanel::comparisonImageCopied);
+    QVERIFY(panel.buildComparisonImage().isNull());
+    copyAction->trigger();
+    QCOMPARE(copiedSpy.count(), 1);
+    QCOMPARE(copiedSpy.at(0).at(0).toBool(), false);
+    QCOMPARE(copyAction->text(), QStringLiteral("无可复制图片"));
+}
+
+void tst_ComparePanel::copyComparisonImage_copiesCompositeImageWithCustomNameAndColors()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    const QString folder0 = root.filePath(QStringLiteral("baseline"));
+    const QString folder1 = root.filePath(QStringLiteral("candidate"));
+    QVERIFY(QDir().mkpath(folder0));
+    QVERIFY(QDir().mkpath(folder1));
+
+    const QString image0Path = createImageInFolder(folder0, QStringLiteral("shot_a.png"), QColor(220, 40, 40));
+    const QString image1Path = createImageInFolder(folder1, QStringLiteral("shot_b.png"), QColor(30, 170, 60));
+    QVERIFY(!image0Path.isEmpty());
+    QVERIFY(!image1Path.isEmpty());
+
+    QVERIFY(session.addFolder(folder0));
+    QVERIFY(session.addFolder(folder1));
+    panel.setSelectedImages({{folder0, image0Path}, {folder1, image1Path}});
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *widget0 = cells.at(0)->findChild<ZoomableImageWidget *>();
+    auto *widget1 = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(widget0 != nullptr);
+    QVERIFY(widget1 != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.getCachedImage(image0Path).isNull() &&
+                             !loader.getCachedImage(image1Path).isNull(), 3000);
+    QCoreApplication::processEvents();
+    QCOMPARE(widget0->image().size(), QSize(32, 32));
+    QCOMPARE(widget1->image().size(), QSize(32, 32));
+
+    // Rename the first grid cell and verify the header changed while image bands stay identical.
+    const QImage beforeRename = panel.buildComparisonImage();
+    QVERIFY(!beforeRename.isNull());
+
+    auto *renameButton = cells.at(0)->findChild<QPushButton *>(QStringLiteral("compareCellRenameButton"));
+    QVERIFY(renameButton != nullptr);
+    acceptNextRenameDialog(QStringLiteral("自定义基准组"));
+    QTest::mouseClick(renameButton, Qt::LeftButton);
+    QCoreApplication::processEvents();
+
+    QSignalSpy copiedSpy(&panel, &ComparePanel::comparisonImageCopied);
+    auto *copyAction = panel.findChild<QAction *>(QStringLiteral("copyComparisonImageAction"));
+    QVERIFY(copyAction != nullptr);
+    copyAction->trigger();
+    QCOMPARE(copiedSpy.count(), 1);
+    QCOMPARE(copiedSpy.at(0).at(0).toBool(), true);
+    QCOMPARE(copyAction->text(), QStringLiteral("✓ 已复制"));
+
+    const QImage afterRename = panel.buildComparisonImage();
+    const QImage copied = QGuiApplication::clipboard()->image();
+    QVERIFY(!copied.isNull());
+    QCOMPARE(copied, afterRename);
+    QCOMPARE(copied.size(), beforeRename.size());
+
+    const int headerHeight = copied.height() / 3;
+    const QRect headerBand(0, 0, copied.width() / 2, headerHeight);
+    const QRect imageBand(0, headerHeight, copied.width(), copied.height() - headerHeight);
+    QVERIFY(copied.copy(headerBand) != beforeRename.copy(headerBand));
+    QCOMPARE(copied.copy(imageBand), beforeRename.copy(imageBand));
+
+    // Left half of the composite should contain the red image, right half the green image.
+    bool foundRedOnLeft = false;
+    bool foundGreenOnRight = false;
+    const int halfX = copied.width() / 2;
+    for (int y = headerHeight; y < copied.height(); y += 4) {
+        for (int x = 0; x < halfX; x += 4) {
+            const QColor c = copied.pixelColor(x, y);
+            if (c.red() > 200 && c.green() < 60 && c.blue() < 60) {
+                foundRedOnLeft = true;
+            }
+        }
+        for (int x = halfX; x < copied.width(); x += 4) {
+            const QColor c = copied.pixelColor(x, y);
+            if (c.green() > 150 && c.red() < 50 && c.blue() < 80) {
+                foundGreenOnRight = true;
+            }
+        }
+    }
+    QVERIFY(foundRedOnLeft);
+    QVERIFY(foundGreenOnRight);
+}
+
+void tst_ComparePanel::copyComparisonImage_respectsZoomedViewport()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    const QString folder0 = root.filePath(QStringLiteral("zoom_folder"));
+    QVERIFY(QDir().mkpath(folder0));
+
+    QImage splitImage(200, 200, QImage::Format_ARGB32);
+    for (int y = 0; y < splitImage.height(); ++y) {
+        for (int x = 0; x < splitImage.width(); ++x) {
+            splitImage.setPixelColor(x, y, x < 100 ? QColor(220, 30, 30) : QColor(30, 60, 220));
+        }
+    }
+    const QString imagePath = folder0 + QStringLiteral("/split.png");
+    QVERIFY(splitImage.save(imagePath));
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(600, 600);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(folder0));
+    panel.setSelectedImages({{folder0, imagePath}});
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 1);
+    auto *imageWidget = cells.at(0)->findChild<ZoomableImageWidget *>();
+    QVERIFY(imageWidget != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(imageWidget->image().size(), QSize(200, 200), 3000);
+
+    // Zoom in and pan to the right (blue) half.
+    imageWidget->setZoomLevel(2.5, QPointF(0.5, 0.5));
+    imageWidget->setNormalizedPan(QPointF(-0.3, 0.0));
+
+    const QImage composite = panel.buildComparisonImage();
+    QVERIFY(!composite.isNull());
+
+    bool foundBlue = false;
+    bool foundRed = false;
+    // Sample lower 65% of the composite where the image region resides.
+    const int imageStartY = composite.height() * 35 / 100;
+    for (int y = imageStartY; y < composite.height(); y += 4) {
+        for (int x = 0; x < composite.width(); x += 4) {
+            const QColor c = composite.pixelColor(x, y);
+            if (c.blue() > 190 && c.red() < 60 && c.green() < 90) {
+                foundBlue = true;
+            }
+            if (c.red() > 190 && c.blue() < 60 && c.green() < 60) {
+                foundRed = true;
+            }
+        }
+    }
+    QVERIFY(foundBlue);
+    QVERIFY(!foundRed);
+}
+
+void tst_ComparePanel::copyComparisonImage_doesNotMislabelDuringSwapPreview()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    const QString folder0 = root.filePath(QStringLiteral("left_group"));
+    const QString folder1 = root.filePath(QStringLiteral("right_group"));
+    QVERIFY(QDir().mkpath(folder0));
+    QVERIFY(QDir().mkpath(folder1));
+
+    const QString image0Path = createImageInFolder(folder0, QStringLiteral("red.png"), QColor(220, 40, 40));
+    const QString image1Path = createImageInFolder(folder1, QStringLiteral("green.png"), QColor(30, 170, 60));
+    QVERIFY(!image0Path.isEmpty());
+    QVERIFY(!image1Path.isEmpty());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(folder0));
+    QVERIFY(session.addFolder(folder1));
+    panel.setSelectedImages({{folder0, image0Path}, {folder1, image1Path}});
+
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *widget0 = cells.at(0)->findChild<ZoomableImageWidget *>();
+    auto *widget1 = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(widget0 != nullptr);
+    QVERIFY(widget1 != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(!loader.getCachedImage(image0Path).isNull() &&
+                             !loader.getCachedImage(image1Path).isNull(), 3000);
+    QCoreApplication::processEvents();
+    QCOMPARE(widget0->image().size(), QSize(32, 32));
+    QCOMPARE(widget1->image().size(), QSize(32, 32));
+
+    // Hold swap key '2' while cell 0 is active so cell 1 temporarily previews cell 0's red image.
+    QTest::mouseClick(cells.at(0), Qt::LeftButton);
+    QTest::keyPress(&panel, Qt::Key_2);
+    QCOMPARE(widget1->image().pixelColor(16, 16), QColor(220, 40, 40));
+
+    // Even during an active swap preview, buildComparisonImage() must keep cell 1's own green image.
+    const QImage composite = panel.buildComparisonImage();
+    QVERIFY(!composite.isNull());
+    const int halfX = composite.width() / 2;
+    const int imageStartY = composite.height() / 3;
+    bool foundRedOnRight = false;
+    bool foundGreenOnRight = false;
+    for (int y = imageStartY; y < composite.height(); y += 4) {
+        for (int x = halfX; x < composite.width(); x += 4) {
+            const QColor c = composite.pixelColor(x, y);
+            if (c.red() > 200 && c.green() < 60 && c.blue() < 60) {
+                foundRedOnRight = true;
+            }
+            if (c.green() > 150 && c.red() < 50 && c.blue() < 80) {
+                foundGreenOnRight = true;
+            }
+        }
+    }
+    QVERIFY(foundGreenOnRight);
+    QVERIFY(!foundRedOnRight);
+
+    // Copying should also restore the keyboard swap preview on cell 1.
+    QVERIFY(panel.copyComparisonImageToClipboard());
+    QCOMPARE(widget1->image().pixelColor(16, 16), QColor(30, 170, 60));
+    QTest::keyRelease(&panel, Qt::Key_2);
+}
+
+void tst_ComparePanel::copyComparisonImage_handlesPartialGridToleranceAndReorder()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    const QString folder0 = root.filePath(QStringLiteral("alpha"));
+    const QString folder1 = root.filePath(QStringLiteral("beta"));
+    QVERIFY(QDir().mkpath(folder0));
+    QVERIFY(QDir().mkpath(folder1));
+
+    const QString image0Path = createImageInFolder(folder0, QStringLiteral("a.png"), QColor(220, 40, 40));
+    const QString image1Path = createImageInFolder(folder1, QStringLiteral("b.png"), QColor(30, 170, 60));
+    QVERIFY(!image0Path.isEmpty());
+    QVERIFY(!image1Path.isEmpty());
+
+    CompareSession session;
+    ImageLoader loader;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.resize(1000, 700);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QVERIFY(session.addFolder(folder0));
+    QVERIFY(session.addFolder(folder1));
+
+    // Partial grid: only folder 0 has an image selected.
+    panel.setSelectedImages({{folder0, image0Path}});
+    auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *widget0 = cells.at(0)->findChild<ZoomableImageWidget *>();
+    auto *widget1 = cells.at(1)->findChild<ZoomableImageWidget *>();
+    QVERIFY(widget0 != nullptr);
+    QVERIFY(widget1 != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(widget0->image().size(), QSize(32, 32), 3000);
+
+    const QImage partial = panel.buildComparisonImage();
+    QVERIFY(!partial.isNull());
+    const int partialHalfX = partial.width() / 2;
+    const int partialBodyY = partial.height() / 3;
+    bool partialRedLeft = false;
+    bool partialRedRight = false;
+    for (int y = partialBodyY; y < partial.height(); y += 4) {
+        for (int x = 0; x < partialHalfX; x += 4) {
+            const QColor c = partial.pixelColor(x, y);
+            if (c.red() > 200 && c.green() < 60 && c.blue() < 60) {
+                partialRedLeft = true;
+            }
+        }
+        for (int x = partialHalfX; x < partial.width(); x += 4) {
+            const QColor c = partial.pixelColor(x, y);
+            if (c.red() > 200 && c.green() < 60 && c.blue() < 60) {
+                partialRedRight = true;
+            }
+        }
+    }
+    QVERIFY(partialRedLeft);
+    QVERIFY(!partialRedRight);
+
+    // Load second image and switch cell 1 to a tolerance map; export should capture the diff map.
+    panel.setSelectedImages({{folder0, image0Path}, {folder1, image1Path}});
+    QTRY_COMPARE_WITH_TIMEOUT(widget1->image().size(), QSize(32, 32), 3000);
+    panel.setCompareMode(ComparePanel::ToleranceMode);
+    panel.setComparisonThreshold(10);
+    auto *compareButton = cells.at(0)->findChild<QPushButton *>(QStringLiteral("compareTargetButton"));
+    QVERIFY(compareButton != nullptr);
+    QTest::mouseClick(compareButton, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(widget1->image().pixelColor(16, 16).red() >
+                             widget1->image().pixelColor(16, 16).green(), 3000);
+    const QColor tolerancePixel = widget1->image().pixelColor(16, 16);
+
+    const QImage toleranceComposite = panel.buildComparisonImage();
+    QVERIFY(!toleranceComposite.isNull());
+    bool foundTolerancePixelOnRight = false;
+    bool foundOriginalGreenOnRight = false;
+    for (int y = toleranceComposite.height() / 3; y < toleranceComposite.height(); y += 4) {
+        for (int x = toleranceComposite.width() / 2; x < toleranceComposite.width(); x += 4) {
+            const QColor c = toleranceComposite.pixelColor(x, y);
+            if (std::abs(c.red() - tolerancePixel.red()) <= 5 &&
+                std::abs(c.green() - tolerancePixel.green()) <= 5 &&
+                std::abs(c.blue() - tolerancePixel.blue()) <= 5) {
+                foundTolerancePixelOnRight = true;
+            }
+            if (c.green() > 150 && c.red() < 50 && c.blue() < 80) {
+                foundOriginalGreenOnRight = true;
+            }
+        }
+    }
+    QVERIFY(foundTolerancePixelOnRight);
+    QVERIFY(!foundOriginalGreenOnRight);
+
+    // Return to swap mode and reorder folders; export order must follow the new grid order.
+    panel.setCompareMode(ComparePanel::SwapMode);
+    QVERIFY(session.swapFolders(0, 1));
+    QCoreApplication::processEvents();
+
+    const QImage reordered = panel.buildComparisonImage();
+    QVERIFY(!reordered.isNull());
+    bool greenOnLeft = false;
+    bool redOnRight = false;
+    for (int y = reordered.height() / 3; y < reordered.height(); y += 4) {
+        for (int x = 0; x < reordered.width() / 2; x += 4) {
+            const QColor c = reordered.pixelColor(x, y);
+            if (c.green() > 150 && c.red() < 50 && c.blue() < 80) {
+                greenOnLeft = true;
+            }
+        }
+        for (int x = reordered.width() / 2; x < reordered.width(); x += 4) {
+            const QColor c = reordered.pixelColor(x, y);
+            if (c.red() > 200 && c.green() < 60 && c.blue() < 60) {
+                redOnRight = true;
+            }
+        }
+    }
+    QVERIFY(greenOnLeft);
+    QVERIFY(redOnRight);
 }
 
 QTEST_MAIN(tst_ComparePanel)

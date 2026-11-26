@@ -1,6 +1,8 @@
 #include <QTest>
 #include <QAbstractItemView>
 #include <QAction>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QImage>
 #include <QListView>
 #include <QPushButton>
@@ -27,6 +29,7 @@ private slots:
     void commandBar_compareModeButtonsControlComparePanel();
     void commandBar_reverseSwapDirectionControlsComparePanel();
     void commandBar_imageNameOverlayControlsComparePanel();
+    void commandBar_copyComparisonImageButtonCopiesToClipboard();
     void directionKeys_navigateBrowseSelection();
     void browsePanel_notCollapsibleButHidableByToggle();
 
@@ -311,6 +314,66 @@ void tst_MainWindow::browsePanel_notCollapsibleButHidableByToggle()
     toggle->trigger();
     QTRY_VERIFY(!browse->isHidden());
     QTRY_VERIFY(splitter->sizes().at(1) > 0);
+}
+
+void tst_MainWindow::commandBar_copyComparisonImageButtonCopiesToClipboard()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    const QString folderA = root.filePath(QStringLiteral("set_a"));
+    const QString folderB = root.filePath(QStringLiteral("set_b"));
+    QVERIFY(QDir().mkpath(folderA));
+    QVERIFY(QDir().mkpath(folderB));
+
+    QImage imgA(48, 48, QImage::Format_ARGB32);
+    imgA.fill(QColor(210, 40, 40));
+    const QString pathA = folderA + QStringLiteral("/sample_01.png");
+    QVERIFY(imgA.save(pathA));
+
+    QImage imgB(48, 48, QImage::Format_ARGB32);
+    imgB.fill(QColor(40, 90, 210));
+    const QString pathB = folderB + QStringLiteral("/sample_02.png");
+    QVERIFY(imgB.save(pathB));
+
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    QToolButton *copyButton = nullptr;
+    const auto buttons = window.findChildren<QToolButton *>(
+        QStringLiteral("commandButton"));
+    for (QToolButton *button : buttons) {
+        if (button->text() == QStringLiteral("复制对比图")) {
+            copyButton = button;
+            break;
+        }
+    }
+    QVERIFY(copyButton != nullptr);
+
+    // Clicking when no images are compared should show non-blocking feedback and not copy.
+    QGuiApplication::clipboard()->clear();
+    QTest::mouseClick(copyButton, Qt::LeftButton);
+    QCOMPARE(copyButton->text(), QStringLiteral("无可复制图片"));
+    QVERIFY(QGuiApplication::clipboard()->image().isNull());
+
+    auto *session = window.findChild<CompareSession *>();
+    auto *comparePanel = window.findChild<ComparePanel *>();
+    QVERIFY(session != nullptr);
+    QVERIFY(comparePanel != nullptr);
+
+    QVERIFY(session->addFolder(folderA));
+    QVERIFY(session->addFolder(folderB));
+    comparePanel->setSelectedImages({{folderA, pathA}, {folderB, pathB}});
+    QTRY_VERIFY_WITH_TIMEOUT(!comparePanel->buildComparisonImage().isNull(), 3000);
+
+    QTest::mouseClick(copyButton, Qt::LeftButton);
+    QCOMPARE(copyButton->text(), QStringLiteral("✓ 已复制"));
+
+    const QImage copied = QGuiApplication::clipboard()->image();
+    QVERIFY(!copied.isNull());
+    QVERIFY(copied.width() > imgA.width());
+    QVERIFY(copied.height() > imgA.height());
 }
 
 QTEST_MAIN(tst_MainWindow)

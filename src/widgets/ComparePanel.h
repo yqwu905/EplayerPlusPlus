@@ -86,6 +86,20 @@ public:
     void setImageNameOverlayEnabled(bool enabled);
     void setControlsVisible(bool visible);
 
+    /**
+     * @brief Render a single composite image of the current comparison grid
+     *        containing each cell's display name, image file name, and image.
+     * @return Rendered image, or a null QImage if no cell has a loaded image.
+     */
+    QImage buildComparisonImage() const;
+
+    /**
+     * @brief Generate the comparison grid composite image and copy it to the
+     *        system clipboard.
+     * @return true if a valid comparison image was copied to the clipboard.
+     */
+    bool copyComparisonImageToClipboard();
+
 signals:
     /**
      * @brief Request navigation to the previous image set.
@@ -102,6 +116,7 @@ signals:
     void resizeToFirstImageChanged(bool enabled);
     void reverseSwapDirectionChanged(bool enabled);
     void imageNameOverlayChanged(bool enabled);
+    void comparisonImageCopied(bool success);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -252,6 +267,8 @@ private:
     QAction *m_prevAction = nullptr;
     QAction *m_nextAction = nullptr;
     QAction *m_modeAction = nullptr;
+    QAction *m_copyComparisonAction = nullptr;
+    QTimer *m_copyFeedbackTimer = nullptr;
     QSlider *m_thresholdSlider = nullptr;
     QLabel *m_thresholdValueLabel = nullptr;
     QWidget *m_thresholdContainer = nullptr; // to show/hide threshold controls

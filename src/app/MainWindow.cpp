@@ -28,6 +28,7 @@
 #include <QShortcut>
 #include <QSlider>
 #include <QStatusBar>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -197,8 +198,8 @@ QWidget *MainWindow::createCommandBar()
     bar->setFixedHeight(44);
 
     auto *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(14, 5, 10, 5);
-    layout->setSpacing(8);
+    layout->setContentsMargins(10, 5, 10, 5);
+    layout->setSpacing(6);
 
     auto separator = [bar]() {
         auto *line = new QFrame(bar);
@@ -262,7 +263,7 @@ QWidget *MainWindow::createCommandBar()
     m_thresholdSlider = new QSlider(Qt::Horizontal, bar);
     m_thresholdSlider->setRange(0, 255);
     m_thresholdSlider->setValue(m_comparePanel ? m_comparePanel->comparisonThreshold() : 10);
-    m_thresholdSlider->setFixedWidth(190);
+    m_thresholdSlider->setFixedWidth(140);
     layout->addWidget(m_thresholdSlider);
 
     auto *valueButton = new QPushButton(QString::number(m_thresholdSlider->value()), bar);
@@ -308,6 +309,23 @@ QWidget *MainWindow::createCommandBar()
     connect(m_imageNameOverlayAction, &QAction::toggled,
             m_comparePanel, &ComparePanel::setImageNameOverlayEnabled);
     addButton(m_imageNameOverlayAction);
+
+    m_copyComparisonImageAction = new QAction(QStringLiteral("复制对比图"), bar);
+    m_copyComparisonImageAction->setObjectName(QStringLiteral("copyComparisonImageAction"));
+    m_copyComparisonImageAction->setToolTip(
+        tr("直接生成包含对比网格名称、图片文件名和网格图片的拼接图并复制到剪贴板"));
+    connect(m_copyComparisonImageAction, &QAction::triggered,
+            this, &MainWindow::copyComparisonImage);
+    QToolButton *copyButton = addButton(m_copyComparisonImageAction);
+    copyButton->setAccessibleName(QStringLiteral("复制对比图"));
+
+    m_copyFeedbackTimer = new QTimer(this);
+    m_copyFeedbackTimer->setSingleShot(true);
+    connect(m_copyFeedbackTimer, &QTimer::timeout, this, [this]() {
+        if (m_copyComparisonImageAction) {
+            m_copyComparisonImageAction->setText(QStringLiteral("复制对比图"));
+        }
+    });
 
     m_ignoreColorProfileAction = new QAction(QStringLiteral("忽略 ICC"), bar);
     m_ignoreColorProfileAction->setCheckable(true);
@@ -513,6 +531,25 @@ void MainWindow::showSettingsDialog()
     SettingsDialog dialog(m_settingsManager, this);
     dialog.setCurrentTab(SettingsDialog::Tab::Vlm);
     dialog.exec();
+}
+
+void MainWindow::copyComparisonImage()
+{
+    if (!m_comparePanel) {
+        return;
+    }
+
+    const bool copied = m_comparePanel->copyComparisonImageToClipboard();
+    if (m_copyComparisonImageAction) {
+        m_copyComparisonImageAction->setText(
+            copied ? tr("✓ 已复制") : tr("无可复制图片"));
+        if (m_copyFeedbackTimer) {
+            m_copyFeedbackTimer->start(1500);
+        }
+    }
+    statusBar()->showMessage(
+        copied ? tr("已复制对比图到剪贴板") : tr("当前没有可复制的对比图片"),
+        3000);
 }
 
 void MainWindow::togglePanel(int panelIndex)

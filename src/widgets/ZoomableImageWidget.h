@@ -67,6 +67,16 @@ public:
     QImage image() const { return m_image; }
 
     /**
+     * @brief Get the currently visible region in source image pixel coordinates.
+     *
+     * Matches the exact clipped source rectangle rendered by paintEvent() for
+     * the current zoom and pan state (including nonzero linked pan at 1x zoom).
+     * Returns the full image rect before the widget has a valid size, or an
+     * empty QRectF if no image is loaded.
+     */
+    QRectF visibleImageRect() const;
+
+    /**
      * @brief Check whether an image is loaded.
      */
     bool hasImage() const { return !m_image.isNull(); }
@@ -144,6 +154,12 @@ private:
      * @brief Compute the effective scale: fitScale * zoomLevel.
      */
     double effectiveScale() const;
+
+    /**
+     * @brief Compute the clipped target and source rects shared by painting and export.
+     * @return false if no image is loaded or the visible intersection is empty.
+     */
+    bool computePaintRects(QRectF &visibleTarget, QRectF &sourceRect) const;
 
     /**
      * @brief Map a widget coordinate to normalized image coordinate [0,1].

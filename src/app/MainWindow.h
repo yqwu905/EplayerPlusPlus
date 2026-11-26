@@ -8,6 +8,7 @@ class QSplitter;
 class QAction;
 class QSlider;
 class QLabel;
+class QTimer;
 class FolderPanel;
 class BrowsePanel;
 class ComparePanel;
@@ -45,6 +46,7 @@ private:
     void exportCategoriesForFolder(const QString &folderPath);
     void showVlmAnnotationDialog();
     void showSettingsDialog();
+    void copyComparisonImage();
     void togglePanel(int panelIndex);
     void saveSplitterSizes();
     void updateCompareModeActions();
@@ -69,9 +71,11 @@ private:
     QAction *m_reverseSwapDirectionAction = nullptr;
     QAction *m_resizeToFirstAction = nullptr;
     QAction *m_imageNameOverlayAction = nullptr;
+    QAction *m_copyComparisonImageAction = nullptr;
     QAction *m_ignoreColorProfileAction = nullptr;
     QAction *m_settingsAction = nullptr;
     QAction *m_vlmAnnotationAction = nullptr;
+    QTimer *m_copyFeedbackTimer = nullptr;
     QLabel *m_thresholdValueLabel = nullptr;
     QSlider *m_thresholdSlider = nullptr;
     VlmAnnotationDialog *m_vlmAnnotationDialog = nullptr;
