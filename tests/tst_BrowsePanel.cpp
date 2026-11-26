@@ -7,7 +7,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListView>
 #include <QJsonDocument>
@@ -15,13 +17,16 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QScrollArea>
-#include <QStyleOptionViewItem>
+#include <QSet>
+#include <QStyleOption>
 #include <algorithm>
+#include <utility>
 
 #include "models/CompareSession.h"
 #include "models/ImageListModel.h"
 #include "services/ImageLoader.h"
 #include "services/ImageMarkManager.h"
+#include "styles/FluentStyle.h"
 #include "widgets/BrowsePanel.h"
 #include "widgets/ThumbnailWidget.h"
 
@@ -37,7 +42,10 @@ private slots:
     void ctrlClick_alignsSameIndexRowsAcrossColumns();
     void altClick_exactVsFuzzyFileNameMatch();
     void markButtons_clickPersistsAndCtrlClickMarksSameRow();
+    void narrowColumn_marksStayInsideCardAndCanBeClicked();
     void filters_fileNameAndCategoryLimitVisibleRows();
+    void filters_textFitsStyledControls_data();
+    void filters_textFitsStyledControls();
     void fileNameFilter_debouncesRapidTyping();
     void categoryFilter_markingSelectedImageSelectsNextVisibleRow();
     void categoryFilter_ctrlClickAnchorsSameIndexRowsAcrossColumns();
@@ -51,6 +59,8 @@ private slots:
     void virtualizedColumn_doesNotCreateThumbnailWidgetsForRows();
     void thumbnailSize_scalesWithPanelWidthAndPushesDecodeBucket();
     void multipleFolders_panelMinimumStaysShrinkable();
+    void multipleFolders_thumbnailsPaintWithoutResizing_data();
+    void multipleFolders_thumbnailsPaintWithoutResizing();
     void moreThanSixFolders_addsAllColumnsWithHorizontalScroll();
 
 private:
@@ -94,7 +104,10 @@ void tst_BrowsePanel::clickRow(QListView *view, int row, Qt::KeyboardModifiers m
 
     QRect rect = view->visualRect(index);
     QVERIFY2(rect.isValid(), qPrintable(QString("invalid visual rect for row %1").arg(row)));
-    QTest::mouseClick(view->viewport(), Qt::LeftButton, modifiers, rect.center());
+    auto *panel = qobject_cast<BrowsePanel *>(view->window());
+    QVERIFY(panel != nullptr);
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, modifiers,
+                      panel->thumbnailMetrics().thumbnailImageRect(rect).center());
 }
 
 void tst_BrowsePanel::clickMarkButton(QListView *view,
@@ -117,23 +130,11 @@ void tst_BrowsePanel::clickMarkButton(QListView *view,
     const QRect itemRect = view->visualRect(index);
     QVERIFY2(itemRect.isValid(), qPrintable(QString("invalid visual rect for row %1").arg(row)));
 
-    // Card width is dynamic (thumbnails scale with the column), so derive it from
-    // the delegate's live sizeHint rather than assuming the baseline 166px.
-    QStyleOptionViewItem opt;
-    const int cardWidth = view->itemDelegateForIndex(index)->sizeHint(opt, index).width() - 16;
-    constexpr int buttonSize = 18;
-    constexpr int buttonGap = 3;
-    constexpr int topMargin = 10;
-    constexpr int rightMargin = 10;
-    const int cardX = itemRect.x() + qMax(0, (itemRect.width() - cardWidth) / 2);
-    const int cardY = itemRect.y() + 2;
-    const int totalWidth = categoryCount * buttonSize + (categoryCount - 1) * buttonGap;
-    const int buttonX = cardX + cardWidth - rightMargin - totalWidth
-                        + categoryIndex * (buttonSize + buttonGap);
-    const QPoint point(buttonX + buttonSize / 2,
-                       cardY + topMargin + buttonSize / 2);
-
-    QTest::mouseClick(view->viewport(), Qt::LeftButton, modifiers, point);
+    auto *panel = qobject_cast<BrowsePanel *>(view->window());
+    QVERIFY(panel != nullptr);
+    const QRect button = panel->thumbnailMetrics().markButtonRect(itemRect, categoryIndex);
+    QVERIFY(view->viewport()->rect().contains(button));
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, modifiers, button.center());
 }
 
 QString tst_BrowsePanel::folderPathForView(QListView *view)
@@ -399,6 +400,69 @@ void tst_BrowsePanel::markButtons_clickPersistsAndCtrlClickMarksSameRow()
     QCOMPARE(marks.markForImage(dirB.path(), pathsB.at(1)), QStringLiteral("D"));
 }
 
+void tst_BrowsePanel::narrowColumn_marksStayInsideCardAndCanBeClicked()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = dir.filePath(QStringLiteral("image.png"));
+    QImage image(64, 40, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#e32191")));
+    QVERIFY(image.save(imagePath));
+
+    CompareSession session;
+    ImageLoader loader;
+    ImageMarkManager marks;
+    BrowsePanel panel(&session, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(320, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    const QStringList categories = ImageMarkManager::categories();
+    QVERIFY(marks.setMarkForImage(dir.path(), imagePath, categories.last()));
+    for (int i = 0; i < 5; ++i) {
+        QVERIFY(session.addFolder(dir.path()));
+    }
+    const auto views = sortedViews(panel);
+    QCOMPARE(views.size(), 5);
+    auto *view = views.first();
+    waitForRows(view, 1);
+    const QModelIndex index = view->model()->index(0, 0);
+    QTRY_VERIFY(!index.data(ImageListModel::ThumbnailRole).value<QImage>().isNull());
+    clickRow(view, 0);
+    QVERIFY(isRowSelected(view, 0));
+
+    const QRect itemRect = view->visualRect(index);
+    const auto metrics = panel.thumbnailMetrics();
+    const QRect card = metrics.thumbnailCardRect(itemRect);
+    const QRect picture = metrics.thumbnailImageRect(itemRect);
+    QVERIFY(card.width() < 6 * 18 + 5 * 3);
+    QVERIFY(metrics.markButtonRect(itemRect, 0).top()
+            < metrics.markButtonRect(itemRect, categories.size() - 1).top());
+
+    QList<QRect> buttons;
+    for (int i = 0; i < categories.size(); ++i) {
+        const QRect button = metrics.markButtonRect(itemRect, i);
+        QVERIFY(card.contains(button));
+        QVERIFY(view->viewport()->rect().contains(button));
+        QVERIFY(!button.intersects(picture));
+        for (const QRect &previousButton : std::as_const(buttons)) {
+            QVERIFY(!button.intersects(previousButton));
+        }
+        buttons.append(button);
+
+        QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, button.center());
+        QTRY_COMPARE(marks.markForImage(dir.path(), imagePath), categories.at(i));
+        QVERIFY(isRowSelected(view, 0));
+
+        // Sample the active button's fill away from its letter and rounded corners.
+        const QPixmap capture = view->viewport()->grab();
+        const QPoint sample(button.left() + 2, button.center().y());
+        const QPoint pixel = sample * capture.devicePixelRatio();
+        QCOMPARE(capture.toImage().pixelColor(pixel), QColor(QStringLiteral("#0078d4")));
+    }
+}
+
 void tst_BrowsePanel::filters_fileNameAndCategoryLimitVisibleRows()
 {
     QTemporaryDir dir;
@@ -455,6 +519,69 @@ void tst_BrowsePanel::filters_fileNameAndCategoryLimitVisibleRows()
     QTRY_COMPARE_WITH_TIMEOUT(views[0]->model()->rowCount(), 2, 1000);
     QVERIFY(rowByFileName(views[0], QStringLiteral("alpha_cat.png")) >= 0);
     QVERIFY(rowByFileName(views[0], QStringLiteral("alpha_dog.png")) >= 0);
+}
+
+void tst_BrowsePanel::filters_textFitsStyledControls_data()
+{
+    QTest::addColumn<int>("pointSize");
+    QTest::newRow("platform-default") << 0;
+    QTest::newRow("application-font-size") << FluentStyle::fontSizeBody();
+    QTest::newRow("larger-font") << 18;
+}
+
+void tst_BrowsePanel::filters_textFitsStyledControls()
+{
+    QFETCH(int, pointSize);
+    CompareSession session;
+    ImageLoader loader;
+    BrowsePanel panel(&session, &loader);
+    if (pointSize > 0) {
+        QFont font = panel.font();
+        font.setPointSize(pointSize);
+        panel.setFont(font);
+    }
+    panel.resize(430, 500);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    auto *combo = panel.findChild<QComboBox *>(QStringLiteral("categoryFilterComboBox"));
+    auto *edit = panel.findChild<QLineEdit *>(QStringLiteral("fileNameFilterEdit"));
+    QVERIFY(combo != nullptr);
+    QVERIFY(edit != nullptr);
+
+    // Check the real styled text rectangles both on the default-width row
+    // and when the same controls have to wrap at the layout's minimum width.
+    for (int panelWidth : {430, panel.minimumSizeHint().width()}) {
+        panel.resize(panelWidth, 500);
+        QCoreApplication::processEvents();
+        QVERIFY(panel.rect().contains(combo->geometry()));
+        QVERIFY(panel.rect().contains(edit->geometry()));
+        QVERIFY(!combo->geometry().intersects(edit->geometry()));
+        QCOMPARE(combo->y() == edit->y(), panelWidth == 430);
+
+        for (int i = 0; i < combo->count(); ++i) {
+            combo->setCurrentIndex(i);
+            QStyleOptionComboBox option;
+            option.initFrom(combo);
+            option.currentText = combo->currentText();
+            const QRect textRect = combo->style()->subControlRect(
+                QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxEditField, combo);
+            const QRect arrowRect = combo->style()->subControlRect(
+                QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxArrow, combo);
+            const int textWidth = combo->fontMetrics().horizontalAdvance(combo->currentText());
+            QVERIFY2(textRect.width() >= textWidth + 4,
+                     qPrintable(QStringLiteral("'%1': text %2px, field %3px")
+                                    .arg(combo->currentText()).arg(textWidth).arg(textRect.width())));
+            QVERIFY(!textRect.intersects(arrowRect));
+        }
+
+        QStyleOptionFrame option;
+        option.initFrom(edit);
+        const QRect textRect = edit->style()->subElementRect(QStyle::SE_LineEditContents,
+                                                            &option, edit);
+        const int placeholderWidth = edit->fontMetrics().horizontalAdvance(edit->placeholderText());
+        QVERIFY(textRect.width() >= placeholderWidth + 4);
+    }
 }
 
 void tst_BrowsePanel::fileNameFilter_debouncesRapidTyping()
@@ -1057,7 +1184,8 @@ void tst_BrowsePanel::thumbnailSize_scalesWithPanelWidthAndPushesDecodeBucket()
     QStyleOptionViewItem opt;
     const QSize hint = views[0]->itemDelegateForIndex(idx)->sizeHint(opt, idx);
     QCOMPARE(hint.height(), wide.itemHeight);
-    QCOMPARE(hint.width(), wide.cardWidth + 16);
+    QCOMPARE(hint.width(), wide.cardWidth);
+    QCOMPARE(views[0]->visualRect(idx).height(), wide.itemHeight);
 
     // After the resize settles, the wider decode bucket is pushed to the model.
     auto *model = qobject_cast<ImageListModel *>(views[0]->model());
@@ -1110,6 +1238,141 @@ void tst_BrowsePanel::multipleFolders_panelMinimumStaysShrinkable()
     QVERIFY2(fourFolderMin < 760,
              qPrintable(QString("4-folder panel minimum = %1 (expected < 760; "
                                 "pre-fix regression was ~1076)").arg(fourFolderMin)));
+}
+
+void tst_BrowsePanel::multipleFolders_thumbnailsPaintWithoutResizing_data()
+{
+    QTest::addColumn<int>("folderCount");
+    QTest::addColumn<int>("panelWidth");
+    QTest::addColumn<bool>("useFluentStyle");
+    QTest::newRow("five-at-default-width") << 5 << 430 << true;
+    QTest::newRow("six-at-default-width") << 6 << 430 << true;
+    QTest::newRow("seven-at-default-width") << 7 << 430 << true;
+    QTest::newRow("eight-at-default-width") << 8 << 430 << true;
+    QTest::newRow("eight-at-narrow-width") << 8 << 320 << true;
+    QTest::newRow("five-with-platform-scrollbar") << 5 << 430 << false;
+    QTest::newRow("eight-with-platform-scrollbar") << 8 << 430 << false;
+}
+
+void tst_BrowsePanel::multipleFolders_thumbnailsPaintWithoutResizing()
+{
+    QFETCH(int, folderCount);
+    QFETCH(int, panelWidth);
+    QFETCH(bool, useFluentStyle);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QList<QColor> colors;
+
+    CompareSession session;
+    ImageLoader loader;
+    QWidget styleParent;
+    if (useFluentStyle) {
+        styleParent.setStyleSheet(FluentStyle::globalStyleSheet());
+    }
+    BrowsePanel panel(&session, &loader, &styleParent);
+    styleParent.resize(panelWidth, 500);
+    panel.resize(panelWidth, 500);
+    styleParent.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&styleParent));
+
+    constexpr int rowCount = 12;
+    for (int i = 0; i < folderCount; ++i) {
+        const QString name = QStringLiteral("folder_with_a_long_name_%1").arg(i);
+        QVERIFY(QDir(dir.path()).mkdir(name));
+        const QString path = dir.filePath(name);
+        const QColor color = QColor::fromRgb(QColor::fromHsv(i * 47, 220, 210).rgb());
+        colors.append(color);
+        QImage image(64, 40, QImage::Format_RGB32);
+        image.fill(color);
+        for (int row = 0; row < rowCount; ++row) {
+            QVERIFY(image.save(QDir(path).filePath(QStringLiteral("%1.png").arg(row))));
+        }
+        QVERIFY(session.addFolder(path));
+    }
+
+    const auto views = sortedViews(panel);
+    QCOMPARE(views.size(), folderCount);
+    for (auto *view : views) {
+        waitForRows(view, rowCount);
+        QTRY_VERIFY(view->verticalScrollBar()->isVisible());
+    }
+    QCOMPARE(panel.width(), panelWidth);
+
+    auto *scroll = panel.findChild<QScrollArea *>(QStringLiteral("compareColumnsScrollArea"));
+    QVERIFY(scroll != nullptr);
+    QWidget *viewport = scroll->viewport();
+    QScrollBar *bar = scroll->horizontalScrollBar();
+    QCOMPARE(bar->value(), 0);
+    const int lastColumnEnd = views.last()->mapTo(scroll->widget(), QPoint()).x()
+        + views.last()->width();
+    if (folderCount > 6 || lastColumnEnd > viewport->width()) {
+        QTRY_VERIFY(bar->maximum() > 0);
+    }
+
+    QList<int> offsets{0};
+    for (const auto *view : views) {
+        const int offset = qBound(0, view->mapTo(viewport, QPoint()).x(), bar->maximum());
+        if (offset > offsets.last()) {
+            offsets.append(offset);
+        }
+    }
+
+    QSet<QListView *> paintedColumns;
+    for (int offset : std::as_const(offsets)) {
+        bar->setValue(offset);
+        QList<QPair<QPoint, QColor>> samples;
+        for (int i = 0; i < views.size(); ++i) {
+            auto *view = views.at(i);
+            const QPoint origin = view->viewport()->mapTo(viewport, QPoint());
+            const QRect viewRect(origin, view->viewport()->size());
+            if (!viewRect.intersects(viewport->rect())) {
+                continue;
+            }
+
+            const QModelIndex index = view->model()->index(0, 0);
+            QTRY_VERIFY_WITH_TIMEOUT(!index.data(ImageListModel::ThumbnailRole).value<QImage>().isNull(), 5000);
+            const QRect item = view->visualRect(index);
+            const auto metrics = panel.thumbnailMetrics();
+            const QRect card = metrics.thumbnailCardRect(item);
+            const QRect picture = metrics.thumbnailImageRect(item);
+            QVERIFY2(view->viewport()->rect().contains(item),
+                     qPrintable(QStringLiteral("Column %1: item ends at %2, viewport width %3")
+                                    .arg(i).arg(item.right()).arg(view->viewport()->width())));
+            QVERIFY(item.contains(card));
+            QVERIFY(card.contains(picture));
+
+            const auto *header = view->parentWidget()->findChild<QLabel *>(
+                QStringLiteral("compareColumnHeaderLabel"));
+            const auto *progress = view->parentWidget()->findChild<QLabel *>(
+                QStringLiteral("compareColumnProgressLabel"));
+            QVERIFY(header != nullptr);
+            QVERIFY(progress != nullptr);
+            QCOMPARE(header->toolTip(), QDir(folderPathForView(view)).dirName());
+            QCOMPARE(header->text(), header->toolTip());
+            QCOMPARE(progress->text(), progress->toolTip());
+            QVERIFY(progress->width() > header->width());
+
+            const QRect visiblePicture = picture.translated(origin).intersected(viewport->rect());
+            if (visiblePicture.width() >= 4) {
+                samples.append({visiblePicture.center(), colors.at(i)});
+                paintedColumns.insert(view);
+            }
+        }
+        QVERIFY(!samples.isEmpty());
+        const QPixmap capture = viewport->grab();
+        const QImage pixels = capture.toImage();
+        for (const auto &[point, expected] : std::as_const(samples)) {
+            QCOMPARE(pixels.pixelColor(point * capture.devicePixelRatio()), expected);
+        }
+    }
+    QCOMPARE(paintedColumns.size(), folderCount);
+
+    if (folderCount > 6) {
+        const QModelIndex first = views.first()->model()->index(0, 0);
+        QTRY_VERIFY(first.data(ImageListModel::ThumbnailRole).value<QImage>().isNull());
+        bar->setValue(0);
+        QTRY_VERIFY_WITH_TIMEOUT(!first.data(ImageListModel::ThumbnailRole).value<QImage>().isNull(), 5000);
+    }
 }
 
 void tst_BrowsePanel::moreThanSixFolders_addsAllColumnsWithHorizontalScroll()

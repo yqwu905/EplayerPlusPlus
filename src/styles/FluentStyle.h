@@ -3,6 +3,7 @@
 
 #include <QColor>
 #include <QFont>
+#include <QIcon>
 #include <QString>
 #include <QStringList>
 
@@ -105,6 +106,31 @@ QFont applicationFont(Platform platform);
  * @brief Preferred UI font families for a platform, ordered by priority.
  */
 QStringList preferredFontFamilies(Platform platform);
+
+/**
+ * @brief Crisp resolution-independent Fluent 2 vector icons drawn via QPainter.
+ */
+enum class Icon
+{
+    FolderAdd,
+    Refresh,
+    Clear,
+    ArrowUp,
+    ArrowDown,
+    Swap,
+    Tolerance,
+    Settings,
+    Sparkle,
+    Edit,
+    More
+};
+
+/**
+ * @brief Create a crisp HiDPI vector icon without external SVG plugin dependencies.
+ * @param kind Icon glyph to render.
+ * @param color Optional override stroke/fill color for normal state (invalid = default ink).
+ */
+QIcon icon(Icon kind, const QColor &color = QColor());
 
 /**
  * @brief Get the global Fluent 2 QSS stylesheet string.

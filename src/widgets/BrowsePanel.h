@@ -19,7 +19,6 @@ class QCheckBox;
 class QComboBox;
 class QLineEdit;
 class QListView;
-class QResizeEvent;
 class QScrollArea;
 class CompareSession;
 class ImageListModel;
@@ -67,8 +66,12 @@ public:
         int imageWidth = 154;
         int imageHeight = 96;
         int cardWidth = 166;
-        int itemHeight = 142;
+        int itemHeight = 162;
         int decodeExtent = 180;
+
+        QRect thumbnailCardRect(const QRect &itemRect) const;
+        QRect thumbnailImageRect(const QRect &itemRect) const;
+        QRect markButtonRect(const QRect &itemRect, int categoryIndex) const;
     };
 
     /** @brief The thumbnail metrics currently in effect. */
@@ -120,9 +123,7 @@ private slots:
     void onFolderReady(int columnIndex);
 
 protected:
-    // Splitter drags / window resizes both reach the panel as a resizeEvent, so
-    // it is the single hook that keeps thumbnail size in sync with column width.
-    void resizeEvent(QResizeEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     enum class SelectionNavigationMode {

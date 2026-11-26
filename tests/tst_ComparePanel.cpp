@@ -13,6 +13,8 @@
 #include <QApplication>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QTimer>
 #include <algorithm>
 
@@ -54,6 +56,7 @@ private slots:
     void copyComparisonImage_respectsZoomedViewport();
     void copyComparisonImage_doesNotMislabelDuringSwapPreview();
     void copyComparisonImage_handlesPartialGridToleranceAndReorder();
+    void longFolderNames_elideHeadersWithoutHorizontalOverflow();
 
 private:
     static QString createImageInFolder(const QString &folderPath, const QString &name, const QColor &color);
@@ -1593,6 +1596,148 @@ void tst_ComparePanel::copyComparisonImage_handlesPartialGridToleranceAndReorder
     }
     QVERIFY(greenOnLeft);
     QVERIFY(redOnRight);
+}
+
+void tst_ComparePanel::longFolderNames_elideHeadersWithoutHorizontalOverflow()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+
+    CompareSession session;
+    ImageLoader loader;
+    ImageMarkManager marks;
+    ComparePanel panel(&session, nullptr, &loader);
+    panel.setImageMarkManager(&marks);
+    panel.resize(760, 720);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    QList<QPair<QString, QString>> selected;
+    for (int i = 0; i < 8; ++i) {
+        const QString folderName =
+            QStringLiteral("very_long_experiment_comparison_folder_name_with_extra_metadata_%1").arg(i);
+        const QString folder = root.filePath(folderName);
+        QVERIFY(QDir().mkpath(folder));
+        const QString imagePath = createImageInFolder(
+            folder,
+            QStringLiteral("extremely_long_rendered_output_frame_filename_%1.png").arg(i),
+            QColor::fromHsv((i * 40) % 360, 220, 220));
+        QVERIFY(!imagePath.isEmpty());
+        QVERIFY(session.addFolder(folder));
+        selected.append({folder, imagePath});
+    }
+
+    panel.setSelectedImages(selected);
+    QCoreApplication::processEvents();
+
+    auto *scrollArea = panel.findChild<QScrollArea *>();
+    QVERIFY(scrollArea != nullptr);
+    QCOMPARE(scrollArea->horizontalScrollBar()->maximum(), 0);
+
+    const auto cells = findCells(panel);
+    QCOMPARE(cells.size(), 8);
+    for (QWidget *cell : cells) {
+        auto *renameBtn = cell->findChild<QPushButton *>(QStringLiteral("compareCellRenameButton"));
+        QVERIFY(renameBtn != nullptr);
+        QVERIFY(!renameBtn->icon().isNull());
+
+        auto *compareContainer = cell->findChild<QWidget *>(QStringLiteral("compareCellButtons"));
+        auto *markContainer = cell->findChild<QWidget *>(QStringLiteral("imageMarkButtons"));
+        QVERIFY(compareContainer != nullptr);
+        QVERIFY(markContainer != nullptr);
+        QVERIFY(markContainer->isVisible());
+        QVERIFY(!compareContainer->geometry().intersects(markContainer->geometry()));
+    }
+
+    // Verify ResponsiveControlsLayout boundary behavior with 5 folders (4 compare
+    // buttons + 6 mark buttons): wide cells keep both groups on one row without
+    // wrapping the last compare button, and narrow cells stack them into two rows
+    // with compare buttons staying horizontal on row 1.
+    while (session.folderCount() > 5) {
+        QVERIFY(session.removeFolderAt(session.folderCount() - 1));
+    }
+    QCoreApplication::processEvents();
+
+    enum class LayoutMode { SingleRow, Stacked };
+    auto verifyControlsGeometry = [&](LayoutMode &outMode) {
+        const auto currentCells = findCells(panel);
+        QCOMPARE(currentCells.size(), 5);
+        for (int i = 0; i < currentCells.size(); ++i) {
+            QWidget *cell = currentCells.at(i);
+            auto *compareContainer = cell->findChild<QWidget *>(QStringLiteral("compareCellButtons"));
+            auto *markContainer = cell->findChild<QWidget *>(QStringLiteral("imageMarkButtons"));
+            QVERIFY(compareContainer != nullptr);
+            QVERIFY(markContainer != nullptr);
+            const QRect cRect = compareContainer->geometry();
+            const QRect mRect = markContainer->geometry();
+            QVERIFY(!cRect.intersects(mRect));
+
+            const auto compareBtns = compareContainer->findChildren<QPushButton *>(
+                QStringLiteral("compareTargetButton"));
+            QCOMPARE(compareBtns.size(), 4);
+            const int firstY = compareBtns.first()->y();
+            for (int b = 0; b < compareBtns.size(); ++b) {
+                QCOMPARE(compareBtns.at(b)->y(), firstY);
+                for (int other = b + 1; other < compareBtns.size(); ++other) {
+                    QVERIFY(!compareBtns.at(b)->geometry().intersects(compareBtns.at(other)->geometry()));
+                }
+            }
+
+            const auto markBtns = markContainer->findChildren<QPushButton *>();
+            QVERIFY(!markBtns.isEmpty());
+            for (int b = 0; b < markBtns.size(); ++b) {
+                for (int other = b + 1; other < markBtns.size(); ++other) {
+                    QVERIFY(!markBtns.at(b)->geometry().intersects(markBtns.at(other)->geometry()));
+                }
+            }
+
+            const bool isSingleRow = (cRect.right() < mRect.left() && mRect.top() <= cRect.bottom());
+            const bool isStacked = (mRect.top() > cRect.bottom());
+            QVERIFY2(isSingleRow || isStacked,
+                     qPrintable(QStringLiteral("unexpected control rects compare=%1,%2 %3x%4 mark=%5,%6 %7x%8")
+                                    .arg(cRect.x()).arg(cRect.y()).arg(cRect.width()).arg(cRect.height())
+                                    .arg(mRect.x()).arg(mRect.y()).arg(mRect.width()).arg(mRect.height())));
+            if (i == 0) {
+                outMode = isSingleRow ? LayoutMode::SingleRow : LayoutMode::Stacked;
+            }
+        }
+    };
+
+    // Wide layout must place compare + mark controls on a single row.
+    panel.resize(1100, 720);
+    QCoreApplication::processEvents();
+    LayoutMode wideMode = LayoutMode::Stacked;
+    verifyControlsGeometry(wideMode);
+    QCOMPARE(wideMode, LayoutMode::SingleRow);
+
+    // Narrow layout must stack them into two compact rows.
+    panel.resize(680, 720);
+    QCoreApplication::processEvents();
+    LayoutMode narrowMode = LayoutMode::SingleRow;
+    verifyControlsGeometry(narrowMode);
+    QCOMPARE(narrowMode, LayoutMode::Stacked);
+
+    // Sweep in 1px steps across the transition to confirm adjacent widths cross
+    // cleanly from Stacked to SingleRow with zero wrapped compare buttons.
+    bool sawStacked = false;
+    bool sawSingleRow = false;
+    bool sawAdjacentTransition = false;
+    LayoutMode prevMode = LayoutMode::Stacked;
+    for (int w = 820; w <= 960; ++w) {
+        panel.resize(w, 720);
+        QCoreApplication::processEvents();
+        LayoutMode mode = LayoutMode::Stacked;
+        verifyControlsGeometry(mode);
+        if (w > 820 && prevMode == LayoutMode::Stacked && mode == LayoutMode::SingleRow) {
+            sawAdjacentTransition = true;
+        }
+        sawStacked = sawStacked || (mode == LayoutMode::Stacked);
+        sawSingleRow = sawSingleRow || (mode == LayoutMode::SingleRow);
+        prevMode = mode;
+    }
+    QVERIFY(sawStacked);
+    QVERIFY(sawSingleRow);
+    QVERIFY(sawAdjacentTransition);
 }
 
 QTEST_MAIN(tst_ComparePanel)

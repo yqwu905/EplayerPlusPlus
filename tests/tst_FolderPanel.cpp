@@ -18,6 +18,7 @@ private slots:
     void enterPathAndPressReturn_addsFolder();
     void enterInvalidPathAndPressReturn_doesNotAddFolder();
     void rootFolderSummaryList_isNotShown();
+    void pathInput_scalesHeightWithLargerFont();
 };
 
 void tst_FolderPanel::init()
@@ -79,6 +80,27 @@ void tst_FolderPanel::rootFolderSummaryList_isNotShown()
     QVERIFY(QTest::qWaitForWindowExposed(&panel));
 
     QVERIFY(panel.findChild<QListWidget *>("rootFolderList") == nullptr);
+}
+
+void tst_FolderPanel::pathInput_scalesHeightWithLargerFont()
+{
+    SettingsManager settingsManager;
+    FolderPanel panel(&settingsManager);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+
+    auto *pathInput = panel.findChild<QLineEdit *>("folderPathInput");
+    QVERIFY(pathInput != nullptr);
+
+    QFont largeFont = pathInput->font();
+    largeFont.setPointSize(18);
+    pathInput->setFont(largeFont);
+    QCoreApplication::processEvents();
+
+    QVERIFY2(pathInput->sizeHint().height() > 30,
+             qPrintable(QStringLiteral("expected height > 30 for 18pt font, got %1")
+                            .arg(pathInput->sizeHint().height())));
+    QVERIFY(pathInput->height() >= pathInput->fontMetrics().height());
 }
 
 QTEST_MAIN(tst_FolderPanel)

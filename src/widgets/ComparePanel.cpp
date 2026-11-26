@@ -7,6 +7,7 @@
 #include "services/ImageLoader.h"
 #include "services/ImageMarkManager.h"
 #include "services/SettingsManager.h"
+#include "styles/FluentStyle.h"
 #include "models/CompareSession.h"
 
 #include <QClipboard>
@@ -15,6 +16,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPainter>
 #include <QSlider>
 #include <QToolBar>
 #include <QAction>
@@ -98,6 +100,270 @@ bool decodeFolderOrderDragIndex(const QMimeData *mimeData, int *index)
     stream >> *index;
     return stream.status() == QDataStream::Ok;
 }
+
+class ElidingTwoLineLabel final : public QLabel
+{
+public:
+    explicit ElidingTwoLineLabel(const QString &text, QWidget *parent = nullptr)
+        : QLabel(text, parent)
+    {
+        setTextFormat(Qt::PlainText);
+        setMinimumWidth(0);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override
+    {
+        const QFontMetrics fm(font());
+        const QMargins m = contentsMargins();
+        const int lineHeight = fm.height();
+        return QSize(0, lineHeight * 2 + 2 + m.top() + m.bottom());
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return sizeHint();
+    }
+
+protected:
+    void paintEvent(QPaintEvent * /*event*/) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+        const QRect r = contentsRect();
+        if (r.width() <= 0 || r.height() <= 0) {
+            return;
+        }
+
+        const QStringList lines = text().split(QLatin1Char('\n'));
+        const QFontMetrics fm(font());
+        const int lineHeight = fm.height();
+
+        if (!lines.isEmpty()) {
+            const QRect firstRect(r.x(), r.y(), r.width(), lineHeight);
+            painter.setPen(QColor(0x26, 0x32, 0x41));
+            painter.setFont(font());
+            painter.drawText(firstRect, Qt::AlignLeft | Qt::AlignVCenter,
+                             fm.elidedText(lines.at(0), Qt::ElideMiddle, r.width()));
+        }
+        if (lines.size() > 1) {
+            const QRect secondRect(r.x(), r.y() + lineHeight + 2, r.width(), lineHeight);
+            painter.setPen(QColor(0x68, 0x73, 0x85));
+            painter.setFont(font());
+            painter.drawText(secondRect, Qt::AlignLeft | Qt::AlignVCenter,
+                             fm.elidedText(lines.at(1), Qt::ElideRight, r.width()));
+        }
+    }
+};
+
+// Places compare target buttons on the left and mark buttons on the right on a
+// single row when wide enough, and cleanly stacks them into two compact rows
+// when narrow (instead of squeezing compare buttons into a tall 1-column stack).
+class ResponsiveControlsLayout final : public QLayout
+{
+public:
+    ResponsiveControlsLayout(QWidget *compareContainer,
+                             QWidget *markContainer,
+                             int hSpacing = 8,
+                             int vSpacing = 4)
+        : m_compareWidget(compareContainer)
+        , m_markWidget(markContainer)
+        , m_hSpace(hSpacing)
+        , m_vSpace(vSpacing)
+    {
+        setContentsMargins(0, 0, 0, 0);
+        if (compareContainer) {
+            addWidget(compareContainer);
+        }
+        if (markContainer) {
+            addWidget(markContainer);
+        }
+    }
+
+    ~ResponsiveControlsLayout() override
+    {
+        while (QLayoutItem *item = takeAt(0)) {
+            delete item;
+        }
+    }
+
+    void addItem(QLayoutItem *item) override
+    {
+        if (item) {
+            m_items.append(item);
+        }
+    }
+
+    int count() const override { return m_items.size(); }
+
+    QLayoutItem *itemAt(int index) const override
+    {
+        return m_items.value(index, nullptr);
+    }
+
+    QLayoutItem *takeAt(int index) override
+    {
+        if (index < 0 || index >= m_items.size()) {
+            return nullptr;
+        }
+        return m_items.takeAt(index);
+    }
+
+    bool hasHeightForWidth() const override { return true; }
+    int heightForWidth(int width) const override { return doLayout(QRect(0, 0, width, 0), true); }
+
+    QSize sizeHint() const override
+    {
+        const QSize markSz = markSizeHint();
+        const int compareW = compareSingleRowWidth();
+        const int h = qMax(markSz.height(), compareSingleLineHeight());
+        return QSize(compareW + (markSz.width() > 0 ? m_hSpace + markSz.width() : 0), h);
+    }
+
+    QSize minimumSize() const override
+    {
+        const QSize markSz = markSizeHint();
+        return QSize(qMin(markSz.width(), 160), qMax(22, markSz.height()));
+    }
+
+    void setGeometry(const QRect &rect) override
+    {
+        QLayout::setGeometry(rect);
+        doLayout(rect, false);
+    }
+
+private:
+    QLayoutItem *itemFor(const QWidget *widget) const
+    {
+        if (!widget) {
+            return nullptr;
+        }
+        for (QLayoutItem *item : m_items) {
+            if (item && item->widget() == widget) {
+                return item;
+            }
+        }
+        return nullptr;
+    }
+
+    QSize markSizeHint() const
+    {
+        QLayoutItem *markItem = itemFor(m_markWidget);
+        if (!markItem || !m_markWidget || m_markWidget->isHidden()) {
+            return QSize(0, 0);
+        }
+        return markItem->sizeHint();
+    }
+
+    int compareSingleRowWidth() const
+    {
+        if (!itemFor(m_compareWidget) || !m_compareWidget) {
+            return 0;
+        }
+        QLayout *inner = m_compareWidget->layout();
+        if (!inner || inner->count() == 0) {
+            return 0;
+        }
+        int total = 0;
+        for (int i = 0; i < inner->count(); ++i) {
+            if (QLayoutItem *child = inner->itemAt(i)) {
+                total += child->sizeHint().width();
+            }
+        }
+        total += qMax(0, inner->count() - 1) * 3;
+        return total;
+    }
+
+    int compareSingleLineHeight() const
+    {
+        if (!itemFor(m_compareWidget) || !m_compareWidget) {
+            return 0;
+        }
+        QLayout *inner = m_compareWidget->layout();
+        if (!inner || inner->count() == 0) {
+            return 0;
+        }
+        int maxH = 0;
+        for (int i = 0; i < inner->count(); ++i) {
+            if (QLayoutItem *child = inner->itemAt(i)) {
+                maxH = qMax(maxH, child->sizeHint().height());
+            }
+        }
+        return maxH;
+    }
+
+    int compareHeightForWidth(int width) const
+    {
+        QLayoutItem *compareItem = itemFor(m_compareWidget);
+        if (!compareItem) {
+            return 0;
+        }
+        if (compareItem->hasHeightForWidth()) {
+            return compareItem->heightForWidth(qMax(1, width));
+        }
+        return compareItem->sizeHint().height();
+    }
+
+    int doLayout(const QRect &rect, bool testOnly) const
+    {
+        QLayoutItem *compareItem = itemFor(m_compareWidget);
+        QLayoutItem *markItem = itemFor(m_markWidget);
+        const QSize markSz = markSizeHint();
+        const bool showMark = markItem != nullptr && markSz.width() > 0 && markSz.height() > 0;
+
+        // Query FlowLayout directly for the candidate single-row width so the
+        // outer layout's single-row vs stacked decision never disagrees with
+        // FlowLayout's own wrapping threshold by even 1px.
+        const int singleRowCompareWidth = showMark
+            ? qMax(0, rect.width() - markSz.width() - m_hSpace)
+            : rect.width();
+        const int singleLineH = compareSingleLineHeight();
+        const int compareHAtSingleRow = (singleRowCompareWidth > 0)
+            ? compareHeightForWidth(singleRowCompareWidth)
+            : (singleLineH + 1);
+        const bool singleRow = !showMark
+            || (singleLineH == 0)
+            || (singleRowCompareWidth > 0 && compareHAtSingleRow <= singleLineH);
+
+        if (singleRow) {
+            const int compareH = (singleLineH > 0) ? compareHAtSingleRow : 0;
+            const int rowH = qMax(compareH, markSz.height());
+            if (!testOnly) {
+                if (compareItem) {
+                    compareItem->setGeometry(QRect(rect.x(), rect.y(), singleRowCompareWidth, rowH));
+                }
+                if (showMark) {
+                    const int markY = rect.y() + (rowH - markSz.height()) / 2;
+                    markItem->setGeometry(QRect(rect.right() - markSz.width() + 1, markY,
+                                                markSz.width(), markSz.height()));
+                }
+            }
+            return rowH;
+        }
+
+        // Stacked compact layout: compare buttons stay horizontal across full width,
+        // mark buttons sit neatly right-aligned on the second row.
+        const int compareH = compareHeightForWidth(rect.width());
+        const int secondY = rect.y() + (compareH > 0 ? compareH + m_vSpace : 0);
+        if (!testOnly) {
+            if (compareItem) {
+                compareItem->setGeometry(QRect(rect.x(), rect.y(), rect.width(), compareH));
+            }
+            if (showMark) {
+                const int markX = rect.x() + qMax(0, rect.width() - markSz.width());
+                markItem->setGeometry(QRect(markX, secondY, markSz.width(), markSz.height()));
+            }
+        }
+        return (compareH > 0 ? compareH + m_vSpace : 0) + markSz.height();
+    }
+
+    QWidget *m_compareWidget = nullptr;
+    QWidget *m_markWidget = nullptr;
+    QList<QLayoutItem *> m_items;
+    int m_hSpace = 8;
+    int m_vSpace = 4;
+};
 }
 
 ComparePanel::ComparePanel(CompareSession *session,
@@ -973,24 +1239,25 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     identityRow->addWidget(cell.indexBadge, 0, Qt::AlignTop);
 
     QString folderName = QDir(folderPath).dirName();
-    cell.headerLabel = new QLabel(
+    cell.headerLabel = new ElidingTwoLineLabel(
         QStringLiteral("%1\n%2").arg(tr("未选择图片"), folderName),
         headerWidget);
     cell.headerLabel->setObjectName(QStringLiteral("compareCellHeaderLabel"));
     cell.headerLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     cell.headerLabel->setMinimumWidth(0);
-    cell.headerLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     cell.headerLabel->setToolTip(folderName);
     cell.headerLabel->setStyleSheet(
         "QLabel { background-color: #FFFFFF; color: #263241; "
-        "padding: 0px; border: none; font-size: 11px; font-weight: 500; line-height: 16px; }");
+        "padding: 0px; border: none; font-size: 11px; font-weight: 500; }");
     cell.headerLabel->setAcceptDrops(true);
     cell.headerLabel->setCursor(Qt::OpenHandCursor);
     cell.headerLabel->installEventFilter(this);
     identityRow->addWidget(cell.headerLabel, 1);
 
-    cell.renameButton = new QPushButton(QStringLiteral("✎"), headerWidget);
+    cell.renameButton = new QPushButton(headerWidget);
     cell.renameButton->setObjectName(QStringLiteral("compareCellRenameButton"));
+    cell.renameButton->setIcon(FluentStyle::icon(FluentStyle::Icon::Edit));
+    cell.renameButton->setIconSize(QSize(14, 14));
     cell.renameButton->setFixedSize(24, 24);
     cell.renameButton->setToolTip(tr("Rename this comparison grid"));
     cell.renameButton->setCursor(Qt::PointingHandCursor);
@@ -1025,10 +1292,6 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     identityRow->addWidget(cell.renameButton, 0, Qt::AlignTop);
     headerLayout->addLayout(identityRow);
 
-    auto *controlsRow = new QHBoxLayout();
-    controlsRow->setContentsMargins(0, 0, 0, 0);
-    controlsRow->setSpacing(8);
-
     cell.compareButtonsContainer = new QWidget(headerWidget);
     cell.compareButtonsContainer->setObjectName(QStringLiteral("compareCellButtons"));
     cell.compareButtonsLayout = new FlowLayout(cell.compareButtonsContainer, 0, 3, 3);
@@ -1036,7 +1299,6 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.compareButtonsContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     cell.compareButtonsContainer->setStyleSheet(
         "QWidget { background-color: #FFFFFF; border: none; }");
-    controlsRow->addWidget(cell.compareButtonsContainer, 1);
 
     cell.markButtonsContainer = new QWidget(headerWidget);
     cell.markButtonsContainer->setObjectName(QStringLiteral("imageMarkButtons"));
@@ -1045,8 +1307,10 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.markButtonsLayout->setSpacing(3);
     cell.markButtonsContainer->setStyleSheet(
         "QWidget { background-color: transparent; border: none; }");
-    controlsRow->addWidget(cell.markButtonsContainer, 0, Qt::AlignRight | Qt::AlignVCenter);
 
+    auto *controlsRow = new ResponsiveControlsLayout(cell.compareButtonsContainer,
+                                                     cell.markButtonsContainer,
+                                                     8, 4);
     headerLayout->addLayout(controlsRow);
     cellLayout->addWidget(headerWidget);
 

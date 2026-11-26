@@ -6,9 +6,12 @@
 
 class QSplitter;
 class QAction;
+class QIcon;
+class QMenu;
 class QSlider;
 class QLabel;
 class QTimer;
+class QToolButton;
 class FolderPanel;
 class BrowsePanel;
 class ComparePanel;
@@ -38,7 +41,9 @@ private:
     void setupUi();
     void setupMenuBar();
     QWidget *createCommandBar();
-    QAction *addCommandAction(const QString &text,
+    void updateCommandBarOverflow();
+    QAction *addCommandAction(const QIcon &icon,
+                              const QString &text,
                               const QString &toolTip,
                               const QObject *receiver,
                               const char *member);
@@ -76,6 +81,17 @@ private:
     QAction *m_settingsAction = nullptr;
     QAction *m_vlmAnnotationAction = nullptr;
     QTimer *m_copyFeedbackTimer = nullptr;
+    struct CommandOverflowItem {
+        QToolButton *button = nullptr;
+        QAction *action = nullptr;
+        bool inOptionsGroup = false;
+    };
+
+    QWidget *m_commandBar = nullptr;
+    QToolButton *m_commandOverflowButton = nullptr;
+    QMenu *m_commandOverflowMenu = nullptr;
+    QWidget *m_optionsEndSeparator = nullptr;
+    QList<CommandOverflowItem> m_overflowCommandItems;
     QLabel *m_thresholdValueLabel = nullptr;
     QSlider *m_thresholdSlider = nullptr;
     VlmAnnotationDialog *m_vlmAnnotationDialog = nullptr;

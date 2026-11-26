@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "styles/FluentStyle.h"
 #include "widgets/FolderPanel.h"
 #include "widgets/BrowsePanel.h"
 #include "widgets/ComparePanel.h"
@@ -12,6 +13,7 @@
 
 #include <QSplitter>
 #include <QMenuBar>
+#include <QMenu>
 #include <QMessageBox>
 #include <QApplication>
 #include <QAction>
@@ -21,16 +23,67 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QSaveFile>
 #include <QShortcut>
+#include <QSizePolicy>
 #include <QSlider>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <functional>
+
+namespace
+{
+
+class CommandBarWidget final : public QWidget
+{
+public:
+    explicit CommandBarWidget(QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+    }
+
+    void setResizeCallback(std::function<void()> callback)
+    {
+        m_onResize = std::move(callback);
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return QSize(0, 44);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        if (m_onResize) {
+            m_onResize();
+        }
+    }
+
+    void showEvent(QShowEvent *event) override
+    {
+        QWidget::showEvent(event);
+        if (m_onResize) {
+            m_onResize();
+        }
+    }
+
+private:
+    std::function<void()> m_onResize;
+};
+
+constexpr int kSliderMinWidth = 88;
+constexpr int kSliderPreferredWidth = 150;
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -143,12 +196,13 @@ void MainWindow::setupUi()
         "QWidget#mainChrome { background: #F3F6FA; }"
         "QSplitter#contentSplitter::handle { background: #F3F6FA; border: none; }"
         "QWidget#commandBar { background: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
-        "QFrame#commandSeparator { background: #E3E7EC; border: none; max-width: 1px; min-width: 1px; }"
-        "QToolButton#commandButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px 10px; color: #1F2937; font-size: 12px; }"
-        "QToolButton#commandButton:hover { background: #F4F7FB; border-color: #E2E8F0; }"
-        "QToolButton#commandButton:pressed { background: #CCE4F7; }"
+        "QFrame#commandSeparator, QFrame#optionsEndSeparator { background: #E3E7EC; border: none; max-width: 1px; min-width: 1px; }"
+        "QToolButton#commandButton, QToolButton#commandOverflowButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; color: #1F2937; font-size: 12px; }"
+        "QToolButton#commandButton:hover, QToolButton#commandOverflowButton:hover { background: #F4F7FB; border-color: #E2E8F0; }"
+        "QToolButton#commandButton:pressed, QToolButton#commandOverflowButton:pressed { background: #CCE4F7; }"
         "QToolButton#commandButton:checked { background: #E5F1FB; border-color: #C7E0F4; color: #0078D4; font-weight: 600; }"
-        "QPushButton#valuePill { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 10px; color: #243041; font-size: 12px; }"
+        "QToolButton#commandOverflowButton::menu-indicator { image: none; }"
+        "QLabel#valuePill { background: #F8FAFC; border: 1px solid #DDE4EE; border-radius: 5px; padding: 3px 6px; color: #243041; font-size: 12px; font-weight: 600; }"
         "QLabel#toolbarLabel { color: #263241; font-size: 12px; background: transparent; border: none; }");
 
     setCentralWidget(central);
@@ -193,42 +247,60 @@ void MainWindow::setupMenuBar()
 
 QWidget *MainWindow::createCommandBar()
 {
-    auto *bar = new QWidget(this);
+    auto *bar = new CommandBarWidget(this);
     bar->setObjectName(QStringLiteral("commandBar"));
     bar->setFixedHeight(44);
+    m_commandBar = bar;
+    m_optionsEndSeparator = nullptr;
+    m_overflowCommandItems.clear();
 
     auto *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(10, 5, 10, 5);
-    layout->setSpacing(6);
+    layout->setContentsMargins(10, 4, 10, 4);
+    layout->setSpacing(4);
 
-    auto separator = [bar]() {
+    auto addSeparator = [layout, bar]() {
         auto *line = new QFrame(bar);
         line->setObjectName(QStringLiteral("commandSeparator"));
-        line->setFixedHeight(24);
+        line->setFixedSize(1, 22);
+        layout->addWidget(line);
         return line;
     };
 
-    auto addButton = [layout, bar](QAction *action) {
+    auto addButton = [layout, bar, this](QAction *action,
+                                         bool collapsible = false,
+                                         bool inOptionsGroup = false) {
         auto *button = new QToolButton(bar);
         button->setObjectName(QStringLiteral("commandButton"));
         button->setDefaultAction(action);
-        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setIconSize(QSize(15, 15));
+        button->setToolButtonStyle(action->icon().isNull()
+                                       ? Qt::ToolButtonTextOnly
+                                       : Qt::ToolButtonTextBesideIcon);
         button->setAutoRaise(false);
+        button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         layout->addWidget(button);
+        if (collapsible) {
+            m_overflowCommandItems.append(CommandOverflowItem{button, action, inOptionsGroup});
+        }
         return button;
     };
 
-    addButton(addCommandAction(QStringLiteral("⊞  添加"), tr("添加文件夹"),
+    addButton(addCommandAction(FluentStyle::icon(FluentStyle::Icon::FolderAdd),
+                               tr("添加"), tr("添加文件夹"),
                                m_folderPanel, SLOT(addFolderViaDialog())));
-    addButton(addCommandAction(QStringLiteral("⟳  刷新"), tr("刷新文件夹"),
+    addButton(addCommandAction(FluentStyle::icon(FluentStyle::Icon::Refresh),
+                               tr("刷新"), tr("刷新文件夹"),
                                m_folderPanel, SLOT(refreshFolders())));
-    addButton(addCommandAction(QStringLiteral("⌫  清空"), tr("清空文件夹"),
+    addButton(addCommandAction(FluentStyle::icon(FluentStyle::Icon::Clear),
+                               tr("清空"), tr("清空文件夹"),
                                m_folderPanel, SLOT(clearFolders())));
 
-    m_swapModeAction = new QAction(QStringLiteral("交换"), bar);
+    addSeparator();
+
+    m_swapModeAction = new QAction(FluentStyle::icon(FluentStyle::Icon::Swap), tr("交换"), bar);
     m_swapModeAction->setCheckable(true);
     m_swapModeAction->setChecked(true);
-    m_toleranceModeAction = new QAction(QStringLiteral("容差图"), bar);
+    m_toleranceModeAction = new QAction(FluentStyle::icon(FluentStyle::Icon::Tolerance), tr("容差图"), bar);
     m_toleranceModeAction->setCheckable(true);
     auto *modeGroup = new QActionGroup(bar);
     modeGroup->addAction(m_swapModeAction);
@@ -244,7 +316,7 @@ QWidget *MainWindow::createCommandBar()
     addButton(m_swapModeAction);
     addButton(m_toleranceModeAction);
 
-    m_reverseSwapDirectionAction = new QAction(QStringLiteral("反向交换"), bar);
+    m_reverseSwapDirectionAction = new QAction(tr("反向交换"), bar);
     m_reverseSwapDirectionAction->setCheckable(true);
     m_reverseSwapDirectionAction->setChecked(
         m_comparePanel ? m_comparePanel->reverseSwapDirectionEnabled() : false);
@@ -252,55 +324,57 @@ QWidget *MainWindow::createCommandBar()
         tr("开启后，按住交换按钮时将目标图片显示到当前图片；关闭时将当前图片显示到目标图片。"));
     connect(m_reverseSwapDirectionAction, &QAction::toggled,
             m_comparePanel, &ComparePanel::setReverseSwapDirectionEnabled);
-    addButton(m_reverseSwapDirectionAction);
+    addButton(m_reverseSwapDirectionAction, /*collapsible=*/true);
 
-    layout->addWidget(separator());
+    addSeparator();
 
     auto *thresholdLabel = new QLabel(tr("阈值"), bar);
     thresholdLabel->setObjectName(QStringLiteral("toolbarLabel"));
+    thresholdLabel->setToolTip(tr("容差图像素差值阈值（0–255）"));
     layout->addWidget(thresholdLabel);
 
     m_thresholdSlider = new QSlider(Qt::Horizontal, bar);
     m_thresholdSlider->setRange(0, 255);
     m_thresholdSlider->setValue(m_comparePanel ? m_comparePanel->comparisonThreshold() : 10);
-    m_thresholdSlider->setFixedWidth(140);
+    m_thresholdSlider->setFixedWidth(kSliderPreferredWidth);
+    m_thresholdSlider->setToolTip(tr("容差图像素差值阈值（0–255）"));
     layout->addWidget(m_thresholdSlider);
 
-    auto *valueButton = new QPushButton(QString::number(m_thresholdSlider->value()), bar);
-    valueButton->setObjectName(QStringLiteral("valuePill"));
-    valueButton->setFixedWidth(52);
-    m_thresholdValueLabel = new QLabel(QString::number(m_thresholdSlider->value()), valueButton);
-    m_thresholdValueLabel->hide();
-    layout->addWidget(valueButton);
-    auto *percentLabel = new QLabel(QStringLiteral("%"), bar);
-    percentLabel->setObjectName(QStringLiteral("toolbarLabel"));
-    layout->addWidget(percentLabel);
+    m_thresholdValueLabel = new QLabel(QString::number(m_thresholdSlider->value()), bar);
+    m_thresholdValueLabel->setObjectName(QStringLiteral("valuePill"));
+    m_thresholdValueLabel->setAlignment(Qt::AlignCenter);
+    m_thresholdValueLabel->setFixedWidth(42);
+    m_thresholdValueLabel->setToolTip(tr("当前容差阈值（范围 0–255）"));
+    layout->addWidget(m_thresholdValueLabel);
 
-    connect(m_thresholdSlider, &QSlider::valueChanged, this, [this, valueButton](int value) {
-        valueButton->setText(QString::number(value));
+    connect(m_thresholdSlider, &QSlider::valueChanged, this, [this](int value) {
         if (m_thresholdValueLabel) {
             m_thresholdValueLabel->setText(QString::number(value));
         }
         m_comparePanel->setComparisonThreshold(value);
     });
 
-    layout->addWidget(separator());
+    addSeparator();
 
-    addButton(addCommandAction(QStringLiteral("↑  上一张"), tr("上一张"),
+    addButton(addCommandAction(FluentStyle::icon(FluentStyle::Icon::ArrowUp),
+                               tr("上一张"), tr("上一张（向上方向键）"),
                                m_browsePanel, SLOT(navigatePrevious())));
-    addButton(addCommandAction(QStringLiteral("↓  下一张"), tr("下一张"),
+    addButton(addCommandAction(FluentStyle::icon(FluentStyle::Icon::ArrowDown),
+                               tr("下一张"), tr("下一张（向下方向键）"),
                                m_browsePanel, SLOT(navigateNext())));
 
-    m_resizeToFirstAction = new QAction(QStringLiteral("同步最大尺寸"), bar);
+    addSeparator();
+
+    m_resizeToFirstAction = new QAction(tr("同步最大尺寸"), bar);
     m_resizeToFirstAction->setCheckable(true);
     m_resizeToFirstAction->setToolTip(
         tr("将所有对比图片平滑缩放到当前最大图片的尺寸"));
     m_resizeToFirstAction->setChecked(m_comparePanel ? m_comparePanel->resizeToFirstImageEnabled() : false);
     connect(m_resizeToFirstAction, &QAction::toggled,
             m_comparePanel, &ComparePanel::setResizeToFirstImageEnabled);
-    addButton(m_resizeToFirstAction);
+    addButton(m_resizeToFirstAction, /*collapsible=*/true, /*inOptionsGroup=*/true);
 
-    m_imageNameOverlayAction = new QAction(QStringLiteral("名称标注"), bar);
+    m_imageNameOverlayAction = new QAction(tr("名称标注"), bar);
     m_imageNameOverlayAction->setCheckable(true);
     m_imageNameOverlayAction->setChecked(
         m_comparePanel ? m_comparePanel->imageNameOverlayEnabled() : false);
@@ -308,26 +382,29 @@ QWidget *MainWindow::createCommandBar()
         tr("开启后，在每张对比图片顶部用红色大字显示文件夹或自定义名称。"));
     connect(m_imageNameOverlayAction, &QAction::toggled,
             m_comparePanel, &ComparePanel::setImageNameOverlayEnabled);
-    addButton(m_imageNameOverlayAction);
+    addButton(m_imageNameOverlayAction, /*collapsible=*/true, /*inOptionsGroup=*/true);
 
-    m_copyComparisonImageAction = new QAction(QStringLiteral("复制对比图"), bar);
+    m_copyComparisonImageAction = new QAction(tr("复制对比图"), bar);
     m_copyComparisonImageAction->setObjectName(QStringLiteral("copyComparisonImageAction"));
     m_copyComparisonImageAction->setToolTip(
         tr("直接生成包含对比网格名称、图片文件名和网格图片的拼接图并复制到剪贴板"));
     connect(m_copyComparisonImageAction, &QAction::triggered,
             this, &MainWindow::copyComparisonImage);
-    QToolButton *copyButton = addButton(m_copyComparisonImageAction);
+    QToolButton *copyButton = addButton(m_copyComparisonImageAction,
+                                        /*collapsible=*/true,
+                                        /*inOptionsGroup=*/true);
     copyButton->setAccessibleName(QStringLiteral("复制对比图"));
 
     m_copyFeedbackTimer = new QTimer(this);
     m_copyFeedbackTimer->setSingleShot(true);
     connect(m_copyFeedbackTimer, &QTimer::timeout, this, [this]() {
         if (m_copyComparisonImageAction) {
-            m_copyComparisonImageAction->setText(QStringLiteral("复制对比图"));
+            m_copyComparisonImageAction->setText(tr("复制对比图"));
+            updateCommandBarOverflow();
         }
     });
 
-    m_ignoreColorProfileAction = new QAction(QStringLiteral("忽略 ICC"), bar);
+    m_ignoreColorProfileAction = new QAction(tr("忽略 ICC"), bar);
     m_ignoreColorProfileAction->setCheckable(true);
     m_ignoreColorProfileAction->setChecked(m_settingsManager->ignoreImageColorProfile());
     m_ignoreColorProfileAction->setToolTip(
@@ -346,24 +423,27 @@ QWidget *MainWindow::createCommandBar()
             m_comparePanel->reloadAllImages();
         }
     });
-    addButton(m_ignoreColorProfileAction);
+    addButton(m_ignoreColorProfileAction, /*collapsible=*/true, /*inOptionsGroup=*/true);
 
-    auto *fuzzyMatchAction = new QAction(QStringLiteral("模糊匹配"), bar);
+    auto *fuzzyMatchAction = new QAction(tr("模糊匹配"), bar);
     fuzzyMatchAction->setCheckable(true);
     fuzzyMatchAction->setChecked(false);
     fuzzyMatchAction->setToolTip(
         tr("开启后，Alt+点击会按最接近的文件名匹配其他对比文件夹中的图片。"));
     connect(fuzzyMatchAction, &QAction::toggled,
             m_browsePanel, &BrowsePanel::setFuzzyFileNameMatchEnabled);
-    addButton(fuzzyMatchAction);
+    addButton(fuzzyMatchAction, /*collapsible=*/true, /*inOptionsGroup=*/true);
 
-    m_settingsAction = new QAction(QStringLiteral("设置"), bar);
+    m_optionsEndSeparator = addSeparator();
+    m_optionsEndSeparator->setObjectName(QStringLiteral("optionsEndSeparator"));
+
+    m_settingsAction = new QAction(FluentStyle::icon(FluentStyle::Icon::Settings), tr("设置"), bar);
     m_settingsAction->setToolTip(tr("打开全局设置"));
     connect(m_settingsAction, &QAction::triggered,
             this, &MainWindow::showSettingsDialog);
     addButton(m_settingsAction);
 
-    m_vlmAnnotationAction = new QAction(QStringLiteral("AI 标注"), bar);
+    m_vlmAnnotationAction = new QAction(FluentStyle::icon(FluentStyle::Icon::Sparkle), tr("AI 标注"), bar);
     m_vlmAnnotationAction->setToolTip(tr("使用 OpenAI 兼容 VLM API 批量标注当前过滤结果"));
     connect(m_vlmAnnotationAction, &QAction::triggered,
             this, &MainWindow::showVlmAnnotationDialog);
@@ -371,15 +451,136 @@ QWidget *MainWindow::createCommandBar()
 
     layout->addStretch();
 
+    m_commandOverflowMenu = new QMenu(bar);
+    m_commandOverflowMenu->setObjectName(QStringLiteral("commandOverflowMenu"));
+    m_commandOverflowButton = new QToolButton(bar);
+    m_commandOverflowButton->setObjectName(QStringLiteral("commandOverflowButton"));
+    m_commandOverflowButton->setIcon(FluentStyle::icon(FluentStyle::Icon::More));
+    m_commandOverflowButton->setIconSize(QSize(15, 15));
+    m_commandOverflowButton->setToolTip(tr("更多命令选项"));
+    m_commandOverflowButton->setPopupMode(QToolButton::InstantPopup);
+    m_commandOverflowButton->setMenu(m_commandOverflowMenu);
+    m_commandOverflowButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_commandOverflowButton->hide();
+    layout->addWidget(m_commandOverflowButton);
+
+    bar->setResizeCallback([this]() { updateCommandBarOverflow(); });
+
     return bar;
 }
 
-QAction *MainWindow::addCommandAction(const QString &text,
+void MainWindow::updateCommandBarOverflow()
+{
+    if (!m_commandBar || !m_thresholdSlider || !m_commandOverflowButton || !m_commandOverflowMenu) {
+        return;
+    }
+
+    auto *layout = qobject_cast<QHBoxLayout *>(m_commandBar->layout());
+    if (!layout) {
+        return;
+    }
+
+    const int barWidth = m_commandBar->contentsRect().width();
+    if (barWidth <= 0) {
+        return;
+    }
+
+    auto layoutNeededWidth = [layout]() {
+        layout->invalidate();
+        return layout->sizeHint().width();
+    };
+
+    auto syncOverflowMenu = [this](const QList<QAction *> &nextActions) {
+        const bool anyOverflowed = !nextActions.isEmpty();
+        if (!anyOverflowed && m_commandOverflowMenu->isVisible()) {
+            m_commandOverflowMenu->close();
+        }
+        if (m_commandOverflowMenu->actions() != nextActions) {
+            m_commandOverflowMenu->clear();
+            for (QAction *action : nextActions) {
+                m_commandOverflowMenu->addAction(action);
+            }
+        }
+        m_commandOverflowButton->setVisible(anyOverflowed);
+    };
+
+    // Measure directly via QHBoxLayout::sizeHint() so platform style margins,
+    // QSS borders, spacer spacing, and dynamic button texts stay 1px-exact.
+    for (const auto &item : std::as_const(m_overflowCommandItems)) {
+        if (item.button) {
+            item.button->setVisible(true);
+        }
+    }
+    if (m_optionsEndSeparator) {
+        m_optionsEndSeparator->setVisible(true);
+    }
+    m_commandOverflowButton->setVisible(false);
+    m_thresholdSlider->setFixedWidth(kSliderMinWidth);
+
+    const int minAllWidth = layoutNeededWidth();
+    if (minAllWidth <= barWidth) {
+        const int sliderWidth = qBound(kSliderMinWidth,
+                                       kSliderMinWidth + (barWidth - minAllWidth),
+                                       kSliderPreferredWidth);
+        m_thresholdSlider->setFixedWidth(sliderWidth);
+        syncOverflowMenu({});
+        layout->activate();
+        return;
+    }
+
+    // Overflow is required: show the overflow trigger and collapse secondary
+    // items from right to left until QHBoxLayout::sizeHint() fits barWidth.
+    m_commandOverflowButton->setVisible(true);
+    QList<bool> visible(m_overflowCommandItems.size(), true);
+    auto updateOptionsSeparator = [&]() {
+        if (!m_optionsEndSeparator) {
+            return;
+        }
+        bool anyVisibleOption = false;
+        for (int i = 0; i < m_overflowCommandItems.size(); ++i) {
+            if (visible.at(i) && m_overflowCommandItems.at(i).inOptionsGroup) {
+                anyVisibleOption = true;
+                break;
+            }
+        }
+        m_optionsEndSeparator->setVisible(anyVisibleOption);
+    };
+
+    for (int i = m_overflowCommandItems.size() - 1; i >= 0; --i) {
+        updateOptionsSeparator();
+        if (layoutNeededWidth() <= barWidth) {
+            break;
+        }
+        visible[i] = false;
+        if (m_overflowCommandItems.at(i).button) {
+            m_overflowCommandItems.at(i).button->setVisible(false);
+        }
+    }
+    updateOptionsSeparator();
+
+    const int currentWidth = layoutNeededWidth();
+    const int sliderWidth = qBound(kSliderMinWidth,
+                                   kSliderMinWidth + qMax(0, barWidth - currentWidth),
+                                   kSliderPreferredWidth);
+    m_thresholdSlider->setFixedWidth(sliderWidth);
+
+    QList<QAction *> overflowActions;
+    for (int i = 0; i < m_overflowCommandItems.size(); ++i) {
+        if (!visible.at(i) && m_overflowCommandItems.at(i).action) {
+            overflowActions.append(m_overflowCommandItems.at(i).action);
+        }
+    }
+    syncOverflowMenu(overflowActions);
+    layout->activate();
+}
+
+QAction *MainWindow::addCommandAction(const QIcon &icon,
+                                      const QString &text,
                                       const QString &toolTip,
                                       const QObject *receiver,
                                       const char *member)
 {
-    auto *action = new QAction(text, this);
+    auto *action = new QAction(icon, text, this);
     action->setToolTip(toolTip);
     connect(action, SIGNAL(triggered()), receiver, member);
     return action;
@@ -543,6 +744,7 @@ void MainWindow::copyComparisonImage()
     if (m_copyComparisonImageAction) {
         m_copyComparisonImageAction->setText(
             copied ? tr("✓ 已复制") : tr("无可复制图片"));
+        updateCommandBarOverflow();
         if (m_copyFeedbackTimer) {
             m_copyFeedbackTimer->start(1500);
         }

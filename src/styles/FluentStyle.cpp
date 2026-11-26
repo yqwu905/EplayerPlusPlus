@@ -2,10 +2,287 @@
 
 #include <QApplication>
 #include <QFont>
+#include <QIconEngine>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QString>
+#include <QtMath>
 
 namespace FluentStyle
 {
+
+namespace
+{
+
+class FluentVectorIconEngine final : public QIconEngine
+{
+public:
+    FluentVectorIconEngine(Icon kind, const QColor &baseColor)
+        : m_kind(kind)
+        , m_baseColor(baseColor)
+    {
+    }
+
+    void paint(QPainter *painter,
+               const QRect &rect,
+               QIcon::Mode mode,
+               QIcon::State state) override
+    {
+        if (!painter || rect.isEmpty()) {
+            return;
+        }
+
+        const QColor ink = resolvedColor(mode, state);
+        const QColor accent = (mode == QIcon::Disabled)
+            ? neutralForegroundDisabled()
+            : brandPrimary();
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+        // Normalize into a centered 16x16 logical coordinate system so every
+        // icon scales crisply at 1x, 1.25x, 1.5x, 2x, and 3x DPI.
+        const qreal extent = qMin(rect.width(), rect.height());
+        const qreal offsetX = rect.x() + (rect.width() - extent) / 2.0;
+        const qreal offsetY = rect.y() + (rect.height() - extent) / 2.0;
+        painter->translate(offsetX, offsetY);
+        painter->scale(extent / 16.0, extent / 16.0);
+
+        QPen strokePen(ink, 1.45, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        painter->setPen(strokePen);
+        painter->setBrush(Qt::NoBrush);
+
+        switch (m_kind) {
+        case Icon::FolderAdd: {
+            // Fluent folder outline with a crisp brand-accent '+' badge.
+            QPainterPath folder;
+            folder.moveTo(2.0, 4.2);
+            folder.quadTo(2.0, 3.0, 3.2, 3.0);
+            folder.lineTo(6.1, 3.0);
+            folder.lineTo(7.5, 4.6);
+            folder.lineTo(12.8, 4.6);
+            folder.quadTo(14.0, 4.6, 14.0, 5.8);
+            folder.lineTo(14.0, 8.2);
+            painter->drawPath(folder);
+
+            QPainterPath bodyBottom;
+            bodyBottom.moveTo(2.0, 4.2);
+            bodyBottom.lineTo(2.0, 11.8);
+            bodyBottom.quadTo(2.0, 13.0, 3.2, 13.0);
+            bodyBottom.lineTo(8.4, 13.0);
+            painter->drawPath(bodyBottom);
+
+            QPen plusPen(accent, 1.65, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            painter->setPen(plusPen);
+            painter->drawLine(QPointF(11.8, 9.4), QPointF(11.8, 14.0));
+            painter->drawLine(QPointF(9.5, 11.7), QPointF(14.1, 11.7));
+            break;
+        }
+        case Icon::Refresh: {
+            // Clean 285-degree circular arc with balanced open arrowhead.
+            const QRectF arcRect(2.7, 2.7, 10.6, 10.6);
+            painter->drawArc(arcRect, 35 * 16, 285 * 16);
+
+            QPainterPath arrow;
+            arrow.moveTo(10.8, 2.3);
+            arrow.lineTo(13.2, 4.6);
+            arrow.lineTo(10.2, 5.3);
+            painter->drawPath(arrow);
+            break;
+        }
+        case Icon::Clear: {
+            // Minimalist Fluent trash bin: handle, lid, tapered body, two flutes.
+            painter->drawLine(QPointF(2.4, 4.4), QPointF(13.6, 4.4));
+            QPainterPath handle;
+            handle.moveTo(6.1, 4.4);
+            handle.lineTo(6.1, 3.1);
+            handle.quadTo(6.1, 2.3, 6.9, 2.3);
+            handle.lineTo(9.1, 2.3);
+            handle.quadTo(9.9, 2.3, 9.9, 3.1);
+            handle.lineTo(9.9, 4.4);
+            painter->drawPath(handle);
+
+            QPainterPath bin;
+            bin.moveTo(3.8, 4.4);
+            bin.lineTo(4.4, 12.6);
+            bin.quadTo(4.5, 13.7, 5.6, 13.7);
+            bin.lineTo(10.4, 13.7);
+            bin.quadTo(11.5, 13.7, 11.6, 12.6);
+            bin.lineTo(12.2, 4.4);
+            painter->drawPath(bin);
+
+            QPen flutePen(ink, 1.25, Qt::SolidLine, Qt::RoundCap);
+            painter->setPen(flutePen);
+            painter->drawLine(QPointF(6.7, 7.0), QPointF(6.9, 11.3));
+            painter->drawLine(QPointF(9.3, 7.0), QPointF(9.1, 11.3));
+            break;
+        }
+        case Icon::ArrowUp: {
+            painter->drawLine(QPointF(8.0, 12.8), QPointF(8.0, 3.4));
+            QPainterPath head;
+            head.moveTo(4.2, 7.0);
+            head.lineTo(8.0, 3.2);
+            head.lineTo(11.8, 7.0);
+            painter->drawPath(head);
+            break;
+        }
+        case Icon::ArrowDown: {
+            painter->drawLine(QPointF(8.0, 3.2), QPointF(8.0, 12.6));
+            QPainterPath head;
+            head.moveTo(4.2, 9.0);
+            head.lineTo(8.0, 12.8);
+            head.lineTo(11.8, 9.0);
+            painter->drawPath(head);
+            break;
+        }
+        case Icon::Swap: {
+            // Opposing horizontal arrows.
+            painter->drawLine(QPointF(3.0, 5.5), QPointF(12.8, 5.5));
+            QPainterPath topHead;
+            topHead.moveTo(10.1, 3.0);
+            topHead.lineTo(12.8, 5.5);
+            topHead.lineTo(10.1, 8.0);
+            painter->drawPath(topHead);
+
+            painter->drawLine(QPointF(13.0, 10.5), QPointF(3.2, 10.5));
+            QPainterPath bottomHead;
+            bottomHead.moveTo(5.9, 8.0);
+            bottomHead.lineTo(3.2, 10.5);
+            bottomHead.lineTo(5.9, 13.0);
+            painter->drawPath(bottomHead);
+            break;
+        }
+        case Icon::Tolerance: {
+            // Split comparison frame with subtle diff fill on the right half.
+            const QRectF frame(2.4, 2.8, 11.2, 10.4);
+            painter->drawRoundedRect(frame, 2.0, 2.0);
+            painter->drawLine(QPointF(8.0, 2.8), QPointF(8.0, 13.2));
+
+            QColor tint = ink;
+            tint.setAlpha(45);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(tint);
+            painter->drawRoundedRect(QRectF(8.6, 3.6, 4.2, 8.8), 1.0, 1.0);
+            break;
+        }
+        case Icon::Settings: {
+            // Clean 6-tooth Fluent gear.
+            painter->drawEllipse(QPointF(8.0, 8.0), 2.3, 2.3);
+            painter->drawEllipse(QPointF(8.0, 8.0), 5.0, 5.0);
+            for (int i = 0; i < 6; ++i) {
+                const qreal rad = qDegreesToRadians(i * 60.0);
+                const QPointF inner(8.0 + 5.1 * qCos(rad), 8.0 + 5.1 * qSin(rad));
+                const QPointF outer(8.0 + 6.6 * qCos(rad), 8.0 + 6.6 * qSin(rad));
+                painter->drawLine(inner, outer);
+            }
+            break;
+        }
+        case Icon::Sparkle: {
+            // Four-point AI sparkle + small secondary accent star.
+            QPainterPath star;
+            star.moveTo(7.2, 2.2);
+            star.quadTo(7.2, 7.2, 12.2, 7.2);
+            star.quadTo(7.2, 7.2, 7.2, 12.2);
+            star.quadTo(7.2, 7.2, 2.2, 7.2);
+            star.quadTo(7.2, 7.2, 7.2, 2.2);
+            star.closeSubpath();
+            painter->setPen(QPen(ink, 1.25, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter->drawPath(star);
+
+            painter->setPen(QPen(accent, 1.35, Qt::SolidLine, Qt::RoundCap));
+            painter->drawLine(QPointF(12.4, 10.3), QPointF(12.4, 13.7));
+            painter->drawLine(QPointF(10.7, 12.0), QPointF(14.1, 12.0));
+            break;
+        }
+        case Icon::Edit: {
+            // Clean diagonal pencil with subtle baseline.
+            QPainterPath pencil;
+            pencil.moveTo(3.2, 12.8);
+            pencil.lineTo(4.0, 9.9);
+            pencil.lineTo(10.6, 3.3);
+            pencil.quadTo(11.4, 2.5, 12.2, 3.3);
+            pencil.lineTo(12.7, 3.8);
+            pencil.quadTo(13.5, 4.6, 12.7, 5.4);
+            pencil.lineTo(6.1, 12.0);
+            pencil.closeSubpath();
+            painter->drawPath(pencil);
+            painter->drawLine(QPointF(9.4, 4.5), QPointF(11.5, 6.6));
+            break;
+        }
+        case Icon::More: {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(ink);
+            painter->drawEllipse(QPointF(3.4, 8.0), 1.35, 1.35);
+            painter->drawEllipse(QPointF(8.0, 8.0), 1.35, 1.35);
+            painter->drawEllipse(QPointF(12.6, 8.0), 1.35, 1.35);
+            break;
+        }
+        }
+
+        painter->restore();
+    }
+
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override
+    {
+        return scaledPixmap(size, mode, state, 1.0);
+    }
+
+    QPixmap scaledPixmap(const QSize &size,
+                         QIcon::Mode mode,
+                         QIcon::State state,
+                         qreal scale) override
+    {
+        const qreal effectiveScale = (scale > 0.0) ? scale : 1.0;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+        // Qt 6.8+ passes logical (device-independent) size to scaledPixmap().
+        const QSize logicalSize = size.isValid() ? size : QSize(16, 16);
+        const QSize pixelSize(qMax(1, qRound(logicalSize.width() * effectiveScale)),
+                              qMax(1, qRound(logicalSize.height() * effectiveScale)));
+#else
+        // Qt 6.7 and earlier pass physical (pre-scaled) size to scaledPixmap().
+        const QSize pixelSize = size.isValid() ? size : QSize(16, 16);
+        const QSize logicalSize(qMax(1, qRound(pixelSize.width() / effectiveScale)),
+                                qMax(1, qRound(pixelSize.height() / effectiveScale)));
+#endif
+        QPixmap pm(pixelSize);
+        pm.fill(Qt::transparent);
+        pm.setDevicePixelRatio(effectiveScale);
+        QPainter painter(&pm);
+        paint(&painter, QRect(QPoint(0, 0), logicalSize), mode, state);
+        return pm;
+    }
+
+    QIconEngine *clone() const override
+    {
+        return new FluentVectorIconEngine(m_kind, m_baseColor);
+    }
+
+private:
+    QColor resolvedColor(QIcon::Mode mode, QIcon::State state) const
+    {
+        if (mode == QIcon::Disabled) {
+            return neutralForegroundDisabled();
+        }
+        if (state == QIcon::On || mode == QIcon::Selected) {
+            return brandPrimary();
+        }
+        if (m_baseColor.isValid()) {
+            return m_baseColor;
+        }
+        return QColor(0x33, 0x41, 0x55);
+    }
+
+    Icon m_kind;
+    QColor m_baseColor;
+};
+
+} // namespace
+
+QIcon icon(Icon kind, const QColor &color)
+{
+    return QIcon(new FluentVectorIconEngine(kind, color));
+}
 
 void applyGlobalStyle(QApplication *app)
 {

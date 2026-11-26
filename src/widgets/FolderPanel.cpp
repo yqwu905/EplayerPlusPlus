@@ -1,6 +1,7 @@
 #include "FolderPanel.h"
 #include "models/FolderModel.h"
 #include "services/SettingsManager.h"
+#include "styles/FluentStyle.h"
 
 #include <QTreeView>
 #include <QToolBar>
@@ -15,6 +16,7 @@
 #include <QClipboard>
 #include <QDir>
 #include <QGuiApplication>
+#include <QSizePolicy>
 
 FolderPanel::FolderPanel(SettingsManager *settingsManager, QWidget *parent)
     : QWidget(parent)
@@ -57,15 +59,18 @@ void FolderPanel::setupUi()
         "QToolBar { background-color: #FAFAFA; border: none; "
         "border-bottom: 1px solid #E0E0E0; padding: 4px 8px; spacing: 4px; }");
 
-    QAction *addAction = m_toolBar->addAction(tr("+ 添加"));
+    QAction *addAction = m_toolBar->addAction(
+        FluentStyle::icon(FluentStyle::Icon::FolderAdd), tr("添加"));
     addAction->setToolTip(tr("Add a folder to the list"));
 
     m_toolBar->addSeparator();
 
-    QAction *refreshAction = m_toolBar->addAction(tr("↻ 刷新"));
+    QAction *refreshAction = m_toolBar->addAction(
+        FluentStyle::icon(FluentStyle::Icon::Refresh), tr("刷新"));
     refreshAction->setToolTip(tr("Refresh all folders"));
 
-    QAction *clearAction = m_toolBar->addAction(tr("✕ 清空"));
+    QAction *clearAction = m_toolBar->addAction(
+        FluentStyle::icon(FluentStyle::Icon::Clear), tr("清空"));
     clearAction->setToolTip(tr("Remove all folders"));
 
     connect(addAction, &QAction::triggered, this, &FolderPanel::addFolderViaDialog);
@@ -77,7 +82,8 @@ void FolderPanel::setupUi()
     m_pathInput->setObjectName(QStringLiteral("folderPathInput"));
     m_pathInput->setPlaceholderText(tr("输入文件夹路径后按 Enter"));
     m_pathInput->setClearButtonEnabled(true);
-    m_pathInput->setFixedHeight(30);
+    m_pathInput->setMinimumHeight(30);
+    m_pathInput->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     layout->addWidget(m_pathInput);
 
     // ---- Tree View ----
