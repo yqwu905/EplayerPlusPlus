@@ -250,17 +250,17 @@ void MainWindow::setupUi()
     rootLayout->addWidget(m_mainSplitter, 1);
 
     central->setStyleSheet(
-        "QWidget#mainChrome { background: #F3F6FA; }"
-        "QSplitter#contentSplitter::handle { background: #F3F6FA; border: none; }"
-        "QWidget#commandBar { background: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
-        "QFrame#commandSeparator, QFrame#optionsEndSeparator { background: #E3E7EC; border: none; max-width: 1px; min-width: 1px; }"
-        "QToolButton#commandButton, QToolButton#commandOverflowButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; color: #1F2937; font-size: 12px; }"
-        "QToolButton#commandButton:hover, QToolButton#commandOverflowButton:hover { background: #F4F7FB; border-color: #E2E8F0; }"
-        "QToolButton#commandButton:pressed, QToolButton#commandOverflowButton:pressed { background: #CCE4F7; }"
-        "QToolButton#commandButton:checked { background: #E5F1FB; border-color: #C7E0F4; color: #0078D4; font-weight: 600; }"
+        "QWidget#mainChrome { background: palette(window); }"
+        "QSplitter#contentSplitter::handle { background: palette(window); border: none; }"
+        "QWidget#commandBar { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
+        "QFrame#commandSeparator, QFrame#optionsEndSeparator { background: palette(mid); border: none; max-width: 1px; min-width: 1px; }"
+        "QToolButton#commandButton, QToolButton#commandOverflowButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; color: palette(window-text); font-size: 12px; }"
+        "QToolButton#commandButton:hover, QToolButton#commandOverflowButton:hover { background: palette(light); border-color: palette(mid); }"
+        "QToolButton#commandButton:pressed, QToolButton#commandOverflowButton:pressed { background: palette(midlight); }"
+        "QToolButton#commandButton:checked { background: palette(midlight); border-color: palette(midlight); color: palette(link); font-weight: 600; }"
         "QToolButton#commandOverflowButton::menu-indicator { image: none; }"
-        "QLabel#valuePill { background: #F8FAFC; border: 1px solid #DDE4EE; border-radius: 5px; padding: 3px 6px; color: #243041; font-size: 12px; font-weight: 600; }"
-        "QLabel#toolbarLabel { color: #263241; font-size: 12px; background: transparent; border: none; }");
+        "QLabel#valuePill { background: palette(alternate-base); border: 1px solid palette(mid); border-radius: 5px; padding: 3px 6px; color: palette(window-text); font-size: 12px; font-weight: 600; }"
+        "QLabel#toolbarLabel { color: palette(window-text); font-size: 12px; background: transparent; border: none; }");
 
     setCentralWidget(central);
 }
@@ -444,8 +444,10 @@ QWidget *MainWindow::createCommandBar()
 
     m_copyComparisonImageAction = new QAction(tr("复制对比图"), bar);
     m_copyComparisonImageAction->setObjectName(QStringLiteral("copyComparisonImageAction"));
+    m_copyComparisonImageAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_C));
+    addAction(m_copyComparisonImageAction);
     m_copyComparisonImageAction->setToolTip(
-        tr("直接生成包含对比网格名称、图片文件名和网格图片的拼接图并复制到剪贴板"));
+        tr("生成对比拼接图并复制到剪贴板（Alt+C）"));
     connect(m_copyComparisonImageAction, &QAction::triggered,
             this, &MainWindow::copyComparisonImage);
     QToolButton *copyButton = addButton(m_copyComparisonImageAction,
@@ -482,6 +484,41 @@ QWidget *MainWindow::createCommandBar()
         }
     });
     addButton(m_ignoreColorProfileAction, /*collapsible=*/true, /*inOptionsGroup=*/true);
+
+    auto *fullScreenAction = new QAction(tr("全屏看图"), this);
+    fullScreenAction->setCheckable(true);
+    fullScreenAction->setAutoRepeat(false);
+    fullScreenAction->setShortcut(QKeySequence(Qt::Key_F11));
+    fullScreenAction->setToolTip(tr("全屏看图（F11，Esc 退出）"));
+    addAction(fullScreenAction);
+    connect(fullScreenAction, &QAction::toggled, this, &MainWindow::setImageFullScreen);
+    addButton(fullScreenAction, true, true);
+
+    m_exitFullScreenShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    m_exitFullScreenShortcut->setEnabled(false);
+    connect(m_exitFullScreenShortcut, &QShortcut::activated, this, [fullScreenAction]() {
+        fullScreenAction->setChecked(false);
+    });
+
+    auto *magnifierAction = new QAction(tr("放大镜"), this);
+    magnifierAction->setCheckable(true);
+    magnifierAction->setAutoRepeat(false);
+    magnifierAction->setShortcut(QKeySequence(Qt::Key_F8));
+    magnifierAction->setToolTip(tr("显示鼠标附近的放大预览（F8）"));
+    addAction(magnifierAction);
+    connect(magnifierAction, &QAction::toggled, m_comparePanel, &ComparePanel::setMagnifierEnabled);
+    addButton(magnifierAction, true, true);
+
+    auto *darkAppearanceAction = new QAction(tr("深色外观"), this);
+    darkAppearanceAction->setObjectName(QStringLiteral("darkAppearanceAction"));
+    darkAppearanceAction->setCheckable(true);
+    darkAppearanceAction->setChecked(m_settingsManager->darkAppearance());
+    darkAppearanceAction->setToolTip(tr("在深色与浅色外观之间切换"));
+    connect(darkAppearanceAction, &QAction::toggled, this, [this](bool dark) {
+        m_settingsManager->setDarkAppearance(dark);
+        FluentStyle::applyGlobalStyle(qApp, dark);
+    });
+    addButton(darkAppearanceAction, true, true);
 
     auto *fuzzyMatchAction = new QAction(tr("模糊匹配"), bar);
     fuzzyMatchAction->setCheckable(true);
@@ -793,13 +830,73 @@ void MainWindow::copyComparisonImage()
             m_copyFeedbackTimer->start(1500);
         }
     }
+    if (m_imageFullScreen) {
+        return;
+    }
     statusBar()->showMessage(
         copied ? tr("已复制对比图到剪贴板") : tr("当前没有可复制的对比图片"),
         3000);
 }
 
+void MainWindow::setImageFullScreen(bool enabled)
+{
+    m_imageFullScreen = enabled;
+    m_exitFullScreenShortcut->setEnabled(enabled);
+
+    if (enabled) {
+        m_restoreMaximized = isMaximized();
+        m_windowedMinimumSize = minimumSize();
+        m_windowedSplitterSizes = m_mainSplitter->sizes();
+        m_windowedFocus = focusWidget();
+        m_restoreFolderPanel = !m_folderPanel->isHidden();
+        m_restoreBrowsePanel = !m_browsePanel->isHidden();
+        m_commandBar->hide();
+        m_folderPanel->hide();
+        m_browsePanel->hide();
+        m_comparePanel->setMinimumWidth(0);
+        setMinimumSize(0, 0);
+        centralWidget()->layout()->setContentsMargins(0, 0, 0, 0);
+        m_comparePanel->setImageOnly(true);
+        showFullScreen();
+        m_comparePanel->setFocus(Qt::ShortcutFocusReason);
+        return;
+    }
+
+    centralWidget()->layout()->setContentsMargins(8, 8, 8, 8);
+    m_comparePanel->setImageOnly(false);
+    m_comparePanel->setMinimumWidth(650);
+    setMinimumSize(m_windowedMinimumSize);
+    m_commandBar->show();
+    m_folderPanel->setVisible(m_restoreFolderPanel);
+    m_browsePanel->setVisible(m_restoreBrowsePanel);
+    if (m_restoreMaximized) {
+        showMaximized();
+    } else {
+        showNormal();
+    }
+    m_mainSplitter->setSizes(m_windowedSplitterSizes);
+    if (m_windowedFocus && m_windowedFocus->isVisible()) {
+        m_windowedFocus->setFocus(Qt::ShortcutFocusReason);
+    }
+}
+
 void MainWindow::togglePanel(int panelIndex)
 {
+    // In image-only mode the checkable actions update the panels' restored visibility.
+    if (m_imageFullScreen) {
+        if (panelIndex == 0) {
+            m_restoreFolderPanel = m_toggleFolderPanelAction->isChecked();
+            if (m_restoreFolderPanel && m_windowedSplitterSizes[0] == 0) {
+                m_windowedSplitterSizes[0] = qMax(280, m_savedSplitterSizes.value(0));
+            }
+        } else {
+            m_restoreBrowsePanel = m_toggleBrowsePanelAction->isChecked();
+            if (m_restoreBrowsePanel && m_windowedSplitterSizes[1] == 0) {
+                m_windowedSplitterSizes[1] = qMax(480, m_savedSplitterSizes.value(1));
+            }
+        }
+        return;
+    }
     QWidget *panel = (panelIndex == 0) ? static_cast<QWidget *>(m_folderPanel)
                    : (panelIndex == 1) ? static_cast<QWidget *>(m_browsePanel)
                                        : nullptr;

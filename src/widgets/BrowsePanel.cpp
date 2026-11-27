@@ -216,6 +216,7 @@ QString markCategoryAtPosition(const QRect &itemRect, const QPoint &pos, const T
 }
 
 void paintMarkButtons(QPainter *painter,
+                      const QPalette &palette,
                       const QRect &itemRect,
                       const QString &currentMark,
                       bool currentMarkByVlm,
@@ -240,24 +241,24 @@ void paintMarkButtons(QPainter *painter,
         const bool aiActive = active && currentMarkByVlm;
 
         if (subtleResting) {
-            painter->setPen(QPen(QColor(0xDC, 0xE3, 0xEC), 1));
-            painter->setBrush(QColor(0xF8, 0xFA, 0xFC));
+            painter->setPen(QPen(palette.mid().color(), 1));
+            painter->setBrush(palette.alternateBase().color());
             painter->drawRoundedRect(rect, 4, 4);
-            painter->setPen(QColor(0x5C, 0x67, 0x76));
+            painter->setPen(palette.buttonText().color());
             painter->drawText(rect, Qt::AlignCenter, category);
             continue;
         }
 
         painter->setPen(QPen(aiActive ? QColor(0x0F, 0x7B, 0x93)
                                       : (active ? QColor(0x00, 0x78, 0xD4)
-                                                : QColor(0xC8, 0xC8, 0xC8)),
+                                                : palette.dark().color()),
                              aiActive ? 2 : 1));
         painter->setBrush(aiActive ? QColor(0xE6, 0xF6, 0xFA)
                                    : (active ? QColor(0x00, 0x78, 0xD4)
-                                             : QColor(255, 255, 255, 230)));
+                                             : palette.base().color()));
         painter->drawRoundedRect(rect, 4, 4);
         painter->setPen(aiActive ? QColor(0x0B, 0x5E, 0x70)
-                                 : (active ? Qt::white : QColor(0x42, 0x42, 0x42)));
+                                 : (active ? Qt::white : palette.windowText().color()));
         painter->drawText(rect, Qt::AlignCenter, aiActive ? category + QStringLiteral("*")
                                                           : category);
     }
@@ -607,13 +608,13 @@ public:
 
         if (selected) {
             painter->setPen(QPen(m_accentColor, 2));
-            painter->setBrush(QColor(0xFF, 0xFF, 0xFF));
+            painter->setBrush(option.palette.base().color());
         } else if (hovered) {
-            painter->setPen(QPen(QColor(0xD1, 0xD1, 0xD1), 1));
-            painter->setBrush(QColor(0xFF, 0xFF, 0xFF));
+            painter->setPen(QPen(option.palette.dark().color(), 1));
+            painter->setBrush(option.palette.base().color());
         } else {
-            painter->setPen(QPen(QColor(0xE0, 0xE0, 0xE0), 1));
-            painter->setBrush(QColor(0xFF, 0xFF, 0xFF));
+            painter->setPen(QPen(option.palette.mid().color(), 1));
+            painter->setBrush(option.palette.base().color());
         }
         painter->drawRoundedRect(cardRect.adjusted(1, 1, -1, -1), 8, 8);
 
@@ -624,7 +625,7 @@ public:
         clipPath.addRoundedRect(thumbArea, 6, 6);
         painter->setClipPath(clipPath, Qt::IntersectClip);
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(0xF5, 0xF5, 0xF5));
+        painter->setBrush(option.palette.alternateBase().color());
         painter->drawRect(thumbArea);
 
         const QVariant thumbVar = index.data(ImageListModel::ThumbnailRole);
@@ -635,7 +636,7 @@ public:
             const int y = thumbArea.y() + (thumbArea.height() - cover.height()) / 2;
             painter->drawImage(QPoint(x, y), cover);
         } else {
-            painter->setPen(QColor(0x9E, 0x9E, 0x9E));
+            painter->setPen(option.palette.color(QPalette::PlaceholderText));
             QFont placeholderFont = painter->font();
             placeholderFont.setPointSize(10);
             painter->setFont(placeholderFont);
@@ -659,7 +660,7 @@ public:
 
         const QRect textArea(thumbArea.x(), thumbArea.bottom() + 1 + kThumbnailTextGap,
                              thumbArea.width(), kThumbnailTextHeight);
-        painter->setPen(QColor(0x61, 0x61, 0x61));
+        painter->setPen(option.palette.buttonText().color());
         QFont font = painter->font();
         font.setPointSize(10);
         painter->setFont(font);
@@ -669,7 +670,7 @@ public:
                           Qt::AlignCenter,
                           fm.elidedText(fileName, Qt::ElideMiddle, textArea.width()));
 
-        paintMarkButtons(painter, option.rect, currentMark, currentMarkByVlm, hovered, m);
+        paintMarkButtons(painter, option.palette, option.rect, currentMark, currentMarkByVlm, hovered, m);
 
         painter->restore();
     }
@@ -924,7 +925,7 @@ void BrowsePanel::setupUi()
     m_scanStatusLabel = new ElidingLabel(this);
     m_scanStatusLabel->setText(tr("Idle"));
     m_scanStatusLabel->setStyleSheet(
-        "QLabel { color: #6E7785; padding-left: 2px; font-size: 11px; background: transparent; border: none; }");
+        "QLabel { color: palette(button-text); padding-left: 2px; font-size: 11px; background: transparent; border: none; }");
 
     m_columnsScrollArea = new QScrollArea(this);
     m_columnsScrollArea->setObjectName(QStringLiteral("compareColumnsScrollArea"));
@@ -955,22 +956,22 @@ void BrowsePanel::setupUi()
     m_rootLayout->addWidget(m_scanStatusLabel);
 
     setStyleSheet(
-        "QWidget#browsePanelRoot { background-color: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
-        "QScrollArea#compareColumnsScrollArea { background-color: #FFFFFF; border: none; }"
-        "QWidget#compareColumnsContainer { background-color: #FFFFFF; }"
-        "QWidget#compareColumnWidget { background-color: #FFFFFF; }"
-        "QWidget#compareColumnHeader { background-color: #FFFFFF; border: none; border-bottom: 1px solid #EEF1F5; }"
-        "QLabel#compareColumnHeaderLabel { color: #243041; background: transparent; border: none; }"
-        "QLabel#compareColumnProgressLabel { color: #687385; font-size: 11px; background: transparent; border: none; }"
-        "QLineEdit#fileNameFilterEdit { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; color: #243041; }"
+        "QWidget#browsePanelRoot { background-color: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
+        "QScrollArea#compareColumnsScrollArea { background-color: palette(base); border: none; }"
+        "QWidget#compareColumnsContainer { background-color: palette(base); }"
+        "QWidget#compareColumnWidget { background-color: palette(base); }"
+        "QWidget#compareColumnHeader { background-color: palette(base); border: none; border-bottom: 1px solid palette(mid); }"
+        "QLabel#compareColumnHeaderLabel { color: palette(window-text); background: transparent; border: none; }"
+        "QLabel#compareColumnProgressLabel { color: palette(button-text); font-size: 11px; background: transparent; border: none; }"
+        "QLineEdit#fileNameFilterEdit { background: palette(base); border: 1px solid palette(mid); border-radius: 5px; padding: 4px 8px; color: palette(window-text); }"
         "QLineEdit#fileNameFilterEdit:focus { border-color: #0078D4; }"
-        "QComboBox#categoryFilterComboBox { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 4px 8px; color: #243041; }"
-        "QComboBox#categoryFilterComboBox:hover { border-color: #C7D2E1; }"
+        "QComboBox#categoryFilterComboBox { background: palette(base); border: 1px solid palette(mid); border-radius: 5px; padding: 4px 8px; color: palette(window-text); }"
+        "QComboBox#categoryFilterComboBox:hover { border-color: palette(dark); }"
         "QComboBox#categoryFilterComboBox:focus { border-color: #0078D4; }"
         "QComboBox#categoryFilterComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border: none; background: transparent; }"
         "QComboBox#categoryFilterComboBox::down-arrow { image: url(:/icons/chevron_down.svg); width: 12px; height: 12px; }"
-        "QComboBox#categoryFilterComboBox QAbstractItemView { background: #FFFFFF; border: 1px solid #DDE4EE; border-radius: 5px; padding: 2px; outline: none; selection-background-color: #E5F1FB; selection-color: #0078D4; }"
-        "QListView#compareColumnListView { background-color: #FFFFFF; border: none; outline: none; }");
+        "QComboBox#categoryFilterComboBox QAbstractItemView { background: palette(base); border: 1px solid palette(mid); border-radius: 5px; padding: 2px; outline: none; selection-background-color: palette(midlight); selection-color: palette(link); }"
+        "QListView#compareColumnListView { background-color: palette(base); border: none; outline: none; }");
 
     m_columnsScrollArea->viewport()->installEventFilter(this);
     m_columnsContainer->installEventFilter(this);
@@ -1038,9 +1039,9 @@ void BrowsePanel::onFolderAdded(const QString &folderPath, int index)
     closeBtn->setStyleSheet(
         "QPushButton { background-color: transparent; border: none; "
         "padding: 0px; min-height: 0px; "
-        "font-size: 16px; font-weight: bold; color: #9E9E9E; border-radius: 14px; }"
-        "QPushButton:hover { background-color: #E0E0E0; color: #1A1A1A; }"
-        "QPushButton:pressed { background-color: #D1D1D1; color: #1A1A1A; }");
+        "font-size: 16px; font-weight: bold; color: palette(button-text); border-radius: 14px; }"
+        "QPushButton:hover { background-color: palette(mid); color: palette(window-text); }"
+        "QPushButton:pressed { background-color: palette(dark); color: palette(window-text); }");
     headerLayout->addWidget(closeBtn, 0, 2);
 
     QWidget *columnWidgetPtr = col.columnWidget;

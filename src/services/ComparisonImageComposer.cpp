@@ -94,23 +94,33 @@ QImage compose(const QList<CellItem> &cells, const Options &options)
         : minHeight;
     imageSlot = imageSlot.expandedTo(QSizeF(effectiveMinWidth, effectiveMinHeight));
 
-    // Define the layout in logical pixels and scale the whole composition once.
-    const qreal unit = std::clamp(imageSlot.width() / 320.0, 1.0, 2.5);
-    const qreal padding = 12 * unit;
-    const qreal gap = 12 * unit;
-    const qreal radius = 8 * unit;
-    const qreal lineGap = 2 * unit;
-    const qreal badgeHeight = 30 * unit;
+    // Keep annotation sizes independent of the zoomed image crop.
+    constexpr qreal padding = 12;
+    constexpr qreal gap = 12;
+    constexpr qreal radius = 8;
+    constexpr qreal lineGap = 2;
+    constexpr qreal badgeHeight = 30;
 
     QFont secondaryFont = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
-    secondaryFont.setPixelSize(qRound(13 * unit));
+    secondaryFont.setPixelSize(13);
     QFont titleFont = secondaryFont;
-    titleFont.setPixelSize(qRound(16 * unit));
+    titleFont.setPixelSize(16);
     titleFont.setBold(true);
     const QFontMetricsF titleMetrics(titleFont);
     const qreal titleHeight = std::ceil(titleMetrics.height());
     const qreal secondaryHeight = std::ceil(QFontMetricsF(secondaryFont).height());
     const qreal headerHeight = std::max(badgeHeight, titleHeight + lineGap + secondaryHeight);
+    if (options.maxCanvasEdge > 0) {
+        // Reserve the fixed headers and spacing, then fit the image slots into
+        // the remaining canvas. Only very small limits shrink the full layout.
+        const qreal maxSlotWidth = (options.maxCanvasEdge - gap) / grid.columns - 2 * padding - gap;
+        const qreal maxSlotHeight =
+            (options.maxCanvasEdge - gap) / grid.rows - headerHeight - 3 * padding - gap;
+        if (maxSlotWidth >= 1.0 && maxSlotHeight >= 1.0) {
+            imageSlot *= std::min({1.0, maxSlotWidth / imageSlot.width(),
+                                   maxSlotHeight / imageSlot.height()});
+        }
+    }
     const QSizeF cardSize(imageSlot.width() + 2 * padding,
                           imageSlot.height() + headerHeight + 3 * padding);
     const QSizeF logicalCanvas(grid.columns * (cardSize.width() + gap) + gap,
@@ -164,7 +174,7 @@ QImage compose(const QList<CellItem> &cells, const Options &options)
                            badgeWidth, badgeHeight);
         painter.setPen(Qt::NoPen);
         painter.setBrush(badgeColor);
-        painter.drawRoundedRect(badge, 6 * unit, 6 * unit);
+        painter.drawRoundedRect(badge, 6, 6);
         drawLabel(painter, badge, titleFont, Qt::white, badgeText, Qt::ElideRight, Qt::AlignCenter);
 
         const qreal labelLeft = badge.right() + padding;

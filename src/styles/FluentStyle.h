@@ -93,9 +93,9 @@ inline constexpr int fontSizeDisplay()  { return 20; }
 /**
  * @brief Apply the Fluent 2 global stylesheet and font to the application.
  *
- * Should be called once at startup from main().
+ * Called at startup and whenever the user changes appearance.
  */
-void applyGlobalStyle(QApplication *app);
+void applyGlobalStyle(QApplication *app, bool dark = false);
 
 /**
  * @brief Create the platform-specific application font.

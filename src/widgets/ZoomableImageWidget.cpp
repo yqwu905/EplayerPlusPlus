@@ -1,6 +1,8 @@
 #include "ZoomableImageWidget.h"
 
 #include <QPainter>
+#include <QCursor>
+#include <QEnterEvent>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QResizeEvent>
@@ -177,16 +179,44 @@ bool ZoomableImageWidget::computePaintRects(QRectF &visibleTarget, QRectF &sourc
     return true;
 }
 
+void ZoomableImageWidget::setMagnifierEnabled(bool enabled)
+{
+    m_magnifierEnabled = enabled;
+    m_magnifierPosition.reset();
+    if (enabled && underMouse()) {
+        m_magnifierPosition = mapFromGlobal(QCursor::pos());
+    }
+    update();
+}
+
+void ZoomableImageWidget::enterEvent(QEnterEvent *event)
+{
+    if (m_magnifierEnabled) {
+        m_magnifierPosition = event->position();
+        update();
+    }
+    QWidget::enterEvent(event);
+}
+
+void ZoomableImageWidget::leaveEvent(QEvent *event)
+{
+    if (m_magnifierPosition) {
+        m_magnifierPosition.reset();
+        update();
+    }
+    QWidget::leaveEvent(event);
+}
+
 void ZoomableImageWidget::paintEvent(QPaintEvent * /*event*/)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    painter.fillRect(rect(), QColor(0xF5, 0xF5, 0xF5));
+    painter.fillRect(rect(), palette().alternateBase());
 
     if (m_image.isNull()) {
         // Draw placeholder text
         if (!m_text.isEmpty()) {
-            painter.setPen(QColor(0x9E, 0x9E, 0x9E));
+            painter.setPen(palette().color(QPalette::PlaceholderText));
             QFont font = painter.font();
             font.setPixelSize(12);
             painter.setFont(font);
@@ -201,6 +231,39 @@ void ZoomableImageWidget::paintEvent(QPaintEvent * /*event*/)
         return;
     }
     painter.drawImage(visibleTarget, m_image, sourceRect);
+
+    if (!m_magnifierPosition || !visibleTarget.contains(*m_magnifierPosition)) {
+        return;
+    }
+
+    constexpr qreal gap = 14;
+    constexpr qreal magnification = 3;
+    const qreal side = qMin(160, qMin(width(), height()) - 4);
+    if (side <= 0) {
+        return;
+    }
+
+    const QPointF cursor = *m_magnifierPosition;
+    const qreal scale = effectiveScale();
+    const QPointF imagePoint = sourceRect.topLeft() + (cursor - visibleTarget.topLeft()) / scale;
+    const qreal sampleSide = side / (scale * magnification);
+    const QRectF sample(imagePoint - QPointF(sampleSide / 2, sampleSide / 2),
+                        QSizeF(sampleSide, sampleSide));
+
+    const qreal x = cursor.x() + gap + side <= width() ? cursor.x() + gap : cursor.x() - gap - side;
+    const qreal y = cursor.y() + gap + side <= height() ? cursor.y() + gap : cursor.y() - gap - side;
+    const QRectF lens(qBound(2.0, x, width() - side - 2),
+                      qBound(2.0, y, height() - side - 2), side, side);
+    const QRectF clipped = sample.intersected(QRectF(m_image.rect()));
+    const qreal lensScale = scale * magnification;
+    const QRectF target(lens.topLeft() + (clipped.topLeft() - sample.topLeft()) * lensScale,
+                        clipped.size() * lensScale);
+
+    painter.fillRect(lens, palette().alternateBase());
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    painter.drawImage(target, m_image, clipped);
+    painter.setPen(QPen(palette().color(QPalette::WindowText), 2));
+    painter.drawRect(lens);
 }
 
 // ---- Mouse interaction ----
@@ -328,6 +391,11 @@ void ZoomableImageWidget::mousePressEvent(QMouseEvent *event)
 
 void ZoomableImageWidget::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_magnifierEnabled) {
+        m_magnifierPosition = event->position();
+        update();
+    }
+
     if (m_isPanning) {
         QPoint delta = event->pos() - m_lastMousePos;
         m_lastMousePos = event->pos();

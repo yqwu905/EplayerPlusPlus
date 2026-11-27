@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QPixmap>
 #include <QPointF>
+#include <optional>
 
 /**
  * @brief A widget that displays an image with zoom and pan support.
@@ -35,6 +36,7 @@ public:
      * @brief Set placeholder text when no image is loaded.
      */
     void setText(const QString &text);
+    void setMagnifierEnabled(bool enabled);
 
     /**
      * @brief Get the current zoom level. 1.0 = fit-to-view.
@@ -137,6 +139,8 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -189,6 +193,8 @@ private:
      */
     QPointF normalizedImageToWidget(const QPointF &normalizedImage) const;
 
+    bool m_magnifierEnabled = false;
+    std::optional<QPointF> m_magnifierPosition;
     QImage m_image;
     QString m_text;           ///< Placeholder text when no image
     double m_zoomLevel = 1.0; ///< 1.0 = fit-to-view, >1.0 = zoomed in

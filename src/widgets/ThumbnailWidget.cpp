@@ -75,28 +75,28 @@ void ThumbnailWidget::paintEvent(QPaintEvent * /*event*/)
 
     // ---- Fluent 2 card styling ----
     if (m_selected) {
-        // Selected: brand accent border + light blue fill
+        // Selected: brand accent border and tinted fill
         painter.setPen(QPen(QColor(0x00, 0x78, 0xD4), 2));       // brandPrimary
-        painter.setBrush(QColor(0xE5, 0xF1, 0xFB));              // brandSelected
+        painter.setBrush(palette().midlight().color());
         painter.drawRoundedRect(cardRect, 8, 8);
     } else if (m_hovered) {
         // Hover: subtle elevation — slightly darker bg + thin border
-        painter.setPen(QPen(QColor(0xD1, 0xD1, 0xD1), 1));       // neutralStroke2
-        painter.setBrush(QColor(0xF5, 0xF5, 0xF5));              // neutralBackground2 (hover lift)
+        painter.setPen(QPen(palette().dark().color(), 1));
+        painter.setBrush(palette().alternateBase().color());
         painter.drawRoundedRect(cardRect, 8, 8);
 
         // Shadow simulation (2 pixel offset soft line at bottom)
         painter.setPen(Qt::NoPen);
         painter.setBrush(QColor(0, 0, 0, 12));
         painter.drawRoundedRect(cardRect.adjusted(2, 2, -2, 0), 8, 8);
-        // Re-draw white card on top
-        painter.setPen(QPen(QColor(0xD1, 0xD1, 0xD1), 1));
-        painter.setBrush(QColor(0xFF, 0xFF, 0xFF));
+        // Re-draw the card surface on top
+        painter.setPen(QPen(palette().dark().color(), 1));
+        painter.setBrush(palette().base().color());
         painter.drawRoundedRect(cardRect, 8, 8);
     } else {
-        // Normal: white card, subtle border
-        painter.setPen(QPen(QColor(0xE0, 0xE0, 0xE0), 1));       // neutralStroke1
-        painter.setBrush(QColor(0xFF, 0xFF, 0xFF));               // card surface
+        // Normal: plain card surface with a subtle border
+        painter.setPen(QPen(palette().mid().color(), 1));
+        painter.setBrush(palette().base().color());
         painter.drawRoundedRect(cardRect, 8, 8);
     }
 
@@ -120,7 +120,7 @@ void ThumbnailWidget::paintEvent(QPaintEvent * /*event*/)
 
         // Light background for image area
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0xF5, 0xF5, 0xF5));
+        painter.setBrush(palette().alternateBase().color());
         painter.drawRect(thumbArea);
 
         painter.drawPixmap(x, y, m_pixmap);
@@ -132,10 +132,10 @@ void ThumbnailWidget::paintEvent(QPaintEvent * /*event*/)
         painter.setClipPath(clipPath);
 
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0xF5, 0xF5, 0xF5));
+        painter.setBrush(palette().alternateBase().color());
         painter.drawRect(thumbArea);
 
-        painter.setPen(QColor(0x9E, 0x9E, 0x9E));
+        painter.setPen(palette().color(QPalette::PlaceholderText));
         QFont placeholderFont = painter.font();
         placeholderFont.setPointSize(10);
         painter.setFont(placeholderFont);
@@ -151,7 +151,7 @@ void ThumbnailWidget::paintEvent(QPaintEvent * /*event*/)
         kTextHeight
     );
 
-    painter.setPen(QColor(0x61, 0x61, 0x61));  // neutralForeground2
+    painter.setPen(palette().buttonText().color());
     QFont font = painter.font();
     font.setPointSize(10);
     painter.setFont(font);

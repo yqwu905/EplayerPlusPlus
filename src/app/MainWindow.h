@@ -3,12 +3,14 @@
 
 #include <QMainWindow>
 #include <QList>
+#include <QPointer>
 
 class QSplitter;
 class QAction;
 class QIcon;
 class QMenu;
 class QSlider;
+class QShortcut;
 class QLabel;
 class QTimer;
 class QToolButton;
@@ -52,6 +54,7 @@ private:
     void showVlmAnnotationDialog();
     void showSettingsDialog();
     void copyComparisonImage();
+    void setImageFullScreen(bool enabled);
     void togglePanel(int panelIndex);
     void saveSplitterSizes();
     void updateCompareModeActions();
@@ -80,6 +83,14 @@ private:
     QAction *m_ignoreColorProfileAction = nullptr;
     QAction *m_settingsAction = nullptr;
     QAction *m_vlmAnnotationAction = nullptr;
+    QShortcut *m_exitFullScreenShortcut = nullptr;
+    QPointer<QWidget> m_windowedFocus;
+    QSize m_windowedMinimumSize;
+    QList<int> m_windowedSplitterSizes;
+    bool m_restoreFolderPanel = false;
+    bool m_restoreBrowsePanel = false;
+    bool m_restoreMaximized = false;
+    bool m_imageFullScreen = false;
     QTimer *m_copyFeedbackTimer = nullptr;
     struct CommandOverflowItem {
         QToolButton *button = nullptr;

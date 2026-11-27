@@ -85,6 +85,8 @@ public:
     void setReverseSwapDirectionEnabled(bool enabled);
     void setImageNameOverlayEnabled(bool enabled);
     void setControlsVisible(bool visible);
+    void setImageOnly(bool enabled);
+    void setMagnifierEnabled(bool enabled);
 
     /**
      * @brief Render a single composite image of the current comparison grid
@@ -276,6 +278,8 @@ private:
     std::unique_ptr<QThreadPool> m_resizePool;
     QCheckBox *m_resizeToFirstImageCheckBox = nullptr;
     QCheckBox *m_imageNameOverlayCheckBox = nullptr;
+    bool m_imageOnly = false;
+    bool m_magnifierEnabled = false;
     QWidget *m_gridContainer = nullptr;
     QGridLayout *m_gridLayout = nullptr;
     QList<ImageCell> m_cells;

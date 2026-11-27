@@ -34,6 +34,16 @@ SettingsManager::SettingsManager(QObject *parent)
 
 SettingsManager::~SettingsManager() = default;
 
+bool SettingsManager::darkAppearance() const
+{
+    return QSettings().value(QStringLiteral("ui/dark_appearance"), false).toBool();
+}
+
+void SettingsManager::setDarkAppearance(bool dark)
+{
+    QSettings().setValue(QStringLiteral("ui/dark_appearance"), dark);
+}
+
 QStringList SettingsManager::loadFolderList() const
 {
     QSettings settings;
