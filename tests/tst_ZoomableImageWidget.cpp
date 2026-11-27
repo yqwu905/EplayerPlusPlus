@@ -3,6 +3,8 @@
 #include <QImage>
 #include <QPixmap>
 #include <QApplication>
+#include <QMouseEvent>
+#include <QPainter>
 
 #include <algorithm>
 #include <cmath>
@@ -36,6 +38,7 @@ private slots:
     void testSetZoomLevelAnchorsFocalPoint();
     void testNormalizedPanSyncAcrossDifferentSizes();
     void testVisibleImageRect();
+    void magnifierSamplesTheImageAndClearsOnLeave();
 };
 
 namespace {
@@ -361,6 +364,32 @@ void TestZoomableImageWidget::testVisibleImageRect()
     QVERIFY(std::abs(pannedAtOneX.right() - 400.0) < 1e-6);
     QVERIFY(std::abs(pannedAtOneX.top() - 0.0) < 1e-6);
     QVERIFY(std::abs(pannedAtOneX.height() - 400.0) < 1e-6);
+}
+
+void TestZoomableImageWidget::magnifierSamplesTheImageAndClearsOnLeave()
+{
+    ZoomableImageWidget widget;
+    widget.resize(460, 320);
+    QImage image = createTestImage(460, 320, Qt::blue);
+    {
+        QPainter painter(&image);
+        painter.fillRect(QRect(0, 0, 100, 320), Qt::red);
+    }
+    widget.setImage(image);
+    widget.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&widget));
+    widget.setMagnifierEnabled(true);
+
+    const QPointF local(90, 100);
+    QMouseEvent move(QEvent::MouseMove, local, widget.mapToGlobal(local.toPoint()),
+                     Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&widget, &move);
+    QCOMPARE(widget.grab().toImage().pixelColor(180, 130), QColor(Qt::red));
+    QCOMPARE(widget.grab().toImage().pixelColor(240, 130), QColor(Qt::blue));
+
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(&widget, &leave);
+    QCOMPARE(widget.grab().toImage().pixelColor(180, 130), QColor(Qt::blue));
 }
 
 QTEST_MAIN(TestZoomableImageWidget)

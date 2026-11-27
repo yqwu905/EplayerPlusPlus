@@ -5,6 +5,12 @@
 #include <QImage>
 #include <QPixmap>
 #include <QPointF>
+#include <optional>
+
+#include "services/ImageInformation.h"
+
+class QPainter;
+template<class T> class QFutureWatcher;
 
 /**
  * @brief A widget that displays an image with zoom and pan support.
@@ -35,6 +41,11 @@ public:
      * @brief Set placeholder text when no image is loaded.
      */
     void setText(const QString &text);
+    void setMagnifierEnabled(bool enabled);
+    void setMagnifierAnchor(std::optional<QPointF> normalized);
+    void setMagnifierParameters(double magnification, double size);
+    void setImageInformationVisible(bool visible);
+    void setImageInformationSource(const QString &path, const QImage &original);
 
     /**
      * @brief Get the current zoom level. 1.0 = fit-to-view.
@@ -115,6 +126,9 @@ public:
     void resetView(bool emitSignal = false);
 
 signals:
+    void magnifierAnchorChanged(QPointF normalized, bool active);
+    void magnifierParametersChanged(double magnification, double size);
+
     /**
      * @brief Emitted when zoom level changes via user interaction.
      * @param zoomLevel New zoom level.
@@ -137,6 +151,8 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -189,6 +205,22 @@ private:
      */
     QPointF normalizedImageToWidget(const QPointF &normalizedImage) const;
 
+    void updateMagnifierHover(const QPointF &position);
+    void paintMagnifier(QPainter &painter, const QRectF &visibleTarget, const QRectF &sourceRect);
+    void paintImageInformation(QPainter &painter, const QRectF &visibleTarget) const;
+    void requestImageInformation();
+
+    bool m_magnifierEnabled = false;
+    bool m_magnifierHovering = false;
+    std::optional<QPointF> m_magnifierAnchor;
+    double m_magnification = 3.0;
+    double m_magnifierSize = 160;
+
+    bool m_informationVisible = false;
+    QString m_informationPath;
+    QImage m_informationSource;
+    std::optional<ImageInformation> m_information;
+    QFutureWatcher<ImageInformation> *m_informationWatcher = nullptr;
     QImage m_image;
     QString m_text;           ///< Placeholder text when no image
     double m_zoomLevel = 1.0; ///< 1.0 = fit-to-view, >1.0 = zoomed in

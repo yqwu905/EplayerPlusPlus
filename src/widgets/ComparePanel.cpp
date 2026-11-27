@@ -75,7 +75,7 @@ QString colorStyle(const QColor &color)
 QString compareCellContainerStyle(bool current)
 {
     return QStringLiteral(
-        "QWidget#compareCellContainer { background-color: #FFFFFF; "
+        "QWidget#compareCellContainer { background-color: palette(base); "
         "border: 2px solid %1; border-radius: 8px; }")
         .arg(current ? QStringLiteral("#0078D4") : QStringLiteral("transparent"));
 }
@@ -142,14 +142,14 @@ protected:
 
         if (!lines.isEmpty()) {
             const QRect firstRect(r.x(), r.y(), r.width(), lineHeight);
-            painter.setPen(QColor(0x26, 0x32, 0x41));
+            painter.setPen(palette().color(QPalette::WindowText));
             painter.setFont(font());
             painter.drawText(firstRect, Qt::AlignLeft | Qt::AlignVCenter,
                              fm.elidedText(lines.at(0), Qt::ElideMiddle, r.width()));
         }
         if (lines.size() > 1) {
             const QRect secondRect(r.x(), r.y() + lineHeight + 2, r.width(), lineHeight);
-            painter.setPen(QColor(0x68, 0x73, 0x85));
+            painter.setPen(palette().color(QPalette::ButtonText));
             painter.setFont(font());
             painter.drawText(secondRect, Qt::AlignLeft | Qt::AlignVCenter,
                              fm.elidedText(lines.at(1), Qt::ElideRight, r.width()));
@@ -482,6 +482,50 @@ void ComparePanel::setControlsVisible(bool visible)
     }
 }
 
+void ComparePanel::setImageOnly(bool enabled)
+{
+    m_imageOnly = enabled;
+    const int margin = enabled ? 0 : 16;
+    layout()->setContentsMargins(margin, margin, margin, margin);
+    m_gridLayout->setSpacing(enabled ? 4 : 8);
+    for (int i = 0; i < m_cells.size(); ++i) {
+        auto &cell = m_cells[i];
+        cell.headerWidget->setVisible(!enabled);
+        const int minimum = enabled ? 0 : 200;
+        cell.imageContainer->setMinimumSize(minimum, minimum);
+        cell.imageWidget->setMinimumSize(minimum, minimum);
+        updateImageNameOverlay(i);
+    }
+}
+
+void ComparePanel::setMagnifierEnabled(bool enabled)
+{
+    m_magnifierEnabled = enabled;
+    if (!enabled) {
+        m_magnifierSource = nullptr;
+        m_magnifierAnchor.reset();
+    }
+    for (const auto &cell : m_cells) {
+        cell.imageWidget->setMagnifierEnabled(enabled);
+    }
+}
+
+void ComparePanel::setMagnifierAnchor(std::optional<QPointF> anchor)
+{
+    m_magnifierAnchor = anchor;
+    for (const auto &cell : m_cells) {
+        cell.imageWidget->setMagnifierAnchor(anchor);
+    }
+}
+
+void ComparePanel::setImageInformationVisible(bool visible)
+{
+    m_imageInformationVisible = visible;
+    for (const auto &cell : m_cells) {
+        cell.imageWidget->setImageInformationVisible(visible);
+    }
+}
+
 QImage ComparePanel::buildComparisonImage() const
 {
     if (m_cells.isEmpty()) {
@@ -715,7 +759,7 @@ void ComparePanel::setupUi()
 {
     setObjectName(QStringLiteral("comparePanelRoot"));
     setStyleSheet(
-        "QWidget#comparePanelRoot { background-color: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }");
+        "QWidget#comparePanelRoot { background-color: palette(base); border: 1px solid palette(mid); border-radius: 8px; }");
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(16, 16, 16, 16);
     mainLayout->setSpacing(0);
@@ -724,8 +768,8 @@ void ComparePanel::setupUi()
     m_toolBar = new QToolBar(this);
     m_toolBar->setIconSize(QSize(16, 16));
     m_toolBar->setStyleSheet(
-        "QToolBar { background-color: #FAFAFA; border: none; "
-        "border-bottom: 1px solid #E0E0E0; padding: 4px 12px; spacing: 4px; }");
+        "QToolBar { background-color: palette(window); border: none; "
+        "border-bottom: 1px solid palette(mid); padding: 4px 12px; spacing: 4px; }");
 
     // Navigation buttons — Fluent 2 style
     m_prevAction = m_toolBar->addAction(QStringLiteral("\u25B2"));  // ▲
@@ -796,7 +840,7 @@ void ComparePanel::setupUi()
 
     auto *thresholdLabel = new QLabel(tr("阈值"), m_thresholdContainer);
     thresholdLabel->setStyleSheet(
-        "QLabel { color: #616161; font-size: 12px; background: transparent; }");
+        "QLabel { color: palette(button-text); font-size: 12px; background: transparent; }");
     thresholdLayout->addWidget(thresholdLabel);
 
     m_thresholdSlider = new QSlider(Qt::Horizontal, m_thresholdContainer);
@@ -809,7 +853,7 @@ void ComparePanel::setupUi()
     m_thresholdValueLabel = new QLabel(QString("%1").arg(m_threshold), m_thresholdContainer);
     m_thresholdValueLabel->setMinimumWidth(30);
     m_thresholdValueLabel->setStyleSheet(
-        "QLabel { color: #1A1A1A; font-size: 12px; font-weight: 600; "
+        "QLabel { color: palette(window-text); font-size: 12px; font-weight: 600; "
         "background: transparent; }");
     thresholdLayout->addWidget(m_thresholdValueLabel);
 
@@ -825,10 +869,10 @@ void ComparePanel::setupUi()
     auto *scrollArea = new QScrollArea(this);
     scrollArea->setWidgetResizable(true);
     scrollArea->setStyleSheet(
-        "QScrollArea { background-color: #FFFFFF; border: none; }");
+        "QScrollArea { background-color: palette(base); border: none; }");
 
     m_gridContainer = new QWidget(scrollArea);
-    m_gridContainer->setStyleSheet("QWidget { background-color: #FFFFFF; }");
+    m_gridContainer->setStyleSheet("QWidget { background-color: palette(base); }");
     m_gridLayout = new QGridLayout(m_gridContainer);
     m_gridLayout->setContentsMargins(0, 0, 0, 0);
     m_gridLayout->setSpacing(8);
@@ -895,6 +939,10 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
         return;
     }
 
+    if (m_cells[removeIndex].imageWidget == m_magnifierSource) {
+        m_magnifierSource = nullptr;
+        setMagnifierAnchor(std::nullopt);
+    }
     cancelToleranceWatcher(m_cells[removeIndex]);
     cancelResizeWatcher(m_cells[removeIndex]);
     if (m_cells[removeIndex].container) {
@@ -1051,8 +1099,6 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
             m_cells[i].showingToleranceMap = false;
             m_cells[i].toleranceSourceIndex = -1;
             loadImage(i);
-
-            updateCellHeader(i);
         } else if (!m_cells[i].hasImage && m_imageLoader) {
             // A repeated activation is a retry gesture after a failed full decode.
             // requestImage() deduplicates harmlessly if the original job is merely
@@ -1217,7 +1263,7 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     auto *headerWidget = cell.headerWidget;
     headerWidget->setMinimumHeight(72);
     headerWidget->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border: none; }");
+        "QWidget { background-color: palette(base); border: none; }");
     headerWidget->setAcceptDrops(true);
     headerWidget->setCursor(Qt::OpenHandCursor);
     headerWidget->installEventFilter(this);
@@ -1247,7 +1293,7 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.headerLabel->setMinimumWidth(0);
     cell.headerLabel->setToolTip(folderName);
     cell.headerLabel->setStyleSheet(
-        "QLabel { background-color: #FFFFFF; color: #263241; "
+        "QLabel { background-color: palette(base); color: palette(window-text); "
         "padding: 0px; border: none; font-size: 11px; font-weight: 500; }");
     cell.headerLabel->setAcceptDrops(true);
     cell.headerLabel->setCursor(Qt::OpenHandCursor);
@@ -1266,19 +1312,19 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
         "  border: 1px solid transparent;"
         "  border-radius: 5px;"
         "  background-color: transparent;"
-        "  color: #616161;"
+        "  color: palette(button-text);"
         "  font-weight: 600;"
         "  padding: 0px;"
         "}"
         "QPushButton:hover {"
-        "  background-color: #F5F5F5;"
-        "  border-color: #D1D1D1;"
-        "  color: #1A1A1A;"
+        "  background-color: palette(alternate-base);"
+        "  border-color: palette(dark);"
+        "  color: palette(window-text);"
         "}"
         "QPushButton:pressed {"
-        "  background-color: #E5F1FB;"
+        "  background-color: palette(midlight);"
         "  border-color: #0078D4;"
-        "  color: #0078D4;"
+        "  color: palette(link);"
         "}");
     QWidget *cellContainer = cell.container;
     connect(cell.renameButton, &QPushButton::clicked, this, [this, cellContainer]() {
@@ -1298,7 +1344,7 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.compareButtonsLayout->setContentsMargins(0, 0, 0, 0);
     cell.compareButtonsContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     cell.compareButtonsContainer->setStyleSheet(
-        "QWidget { background-color: #FFFFFF; border: none; }");
+        "QWidget { background-color: palette(base); border: none; }");
 
     cell.markButtonsContainer = new QWidget(headerWidget);
     cell.markButtonsContainer->setObjectName(QStringLiteral("imageMarkButtons"));
@@ -1313,6 +1359,7 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
                                                      8, 4);
     headerLayout->addLayout(controlsRow);
     cellLayout->addWidget(headerWidget);
+    headerWidget->setVisible(!m_imageOnly);
 
     // ---- Image container ----
     cell.imageContainer = new QWidget(cell.container);
@@ -1321,9 +1368,17 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
     cell.imageContainer->setContextMenuPolicy(Qt::CustomContextMenu);
     cell.imageContainer->setAcceptDrops(true);
     cell.imageContainer->setStyleSheet(
-        "QWidget { background-color: #F8FAFC; border: 1px solid #EEF1F5; border-radius: 6px; }");
+        "QWidget { background-color: palette(alternate-base); border: 1px solid palette(mid); border-radius: 6px; }");
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
+    cell.imageWidget->setMagnifierEnabled(m_magnifierEnabled);
+    cell.imageWidget->setMagnifierAnchor(m_magnifierAnchor);
+    cell.imageWidget->setMagnifierParameters(m_magnification, m_magnifierSize);
+    cell.imageWidget->setImageInformationVisible(m_imageInformationVisible);
+    if (m_imageOnly) {
+        cell.imageContainer->setMinimumSize(0, 0);
+        cell.imageWidget->setMinimumSize(0, 0);
+    }
     cell.imageWidget->setText(tr("点击缩略图\n开始对比"));
     cell.imageWidget->setContextMenuPolicy(Qt::CustomContextMenu);
     cell.imageWidget->setAcceptDrops(true);
@@ -1362,6 +1417,25 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
         showImageContextMenuForCell(cellContainerForMenu, sourceWidget, pos);
     });
 
+    connect(cell.imageWidget, &ZoomableImageWidget::magnifierAnchorChanged, this,
+            [this, widget = cell.imageWidget](QPointF anchor, bool active) {
+        if (active && m_magnifierEnabled) {
+            m_magnifierSource = widget;
+            setMagnifierAnchor(anchor);
+        } else if (!active && m_magnifierSource == widget) {
+            m_magnifierSource = nullptr;
+            setMagnifierAnchor(std::nullopt);
+        }
+    });
+    connect(cell.imageWidget, &ZoomableImageWidget::magnifierParametersChanged, this,
+            [this](double magnification, double size) {
+        m_magnification = magnification;
+        m_magnifierSize = size;
+        for (const auto &item : m_cells) {
+            item.imageWidget->setMagnifierParameters(magnification, size);
+        }
+    });
+
     // Connect zoom/pan signals for linked view
     connect(cell.imageWidget, &ZoomableImageWidget::zoomChanged,
             this, &ComparePanel::onCellZoomChanged);
@@ -1375,6 +1449,8 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
 void ComparePanel::clearCells()
 {
+    m_magnifierSource = nullptr;
+    m_magnifierAnchor.reset();
     m_keyboardComparePreviewIndex = -1;
     m_keyboardCompareKey = 0;
 
@@ -1584,18 +1660,18 @@ void ComparePanel::setupCompareButtonsForCell(int cellIndex)
         button->setCursor(Qt::PointingHandCursor);
         button->setStyleSheet(
             "QPushButton {"
-            "  border: 1px solid #D5DCE6;"
+            "  border: 1px solid palette(mid);"
             "  border-radius: 4px;"
-            "  background-color: #FFFFFF;"
-            "  color: #283447;"
+            "  background-color: palette(base);"
+            "  color: palette(window-text);"
             "  font-weight: 600;"
             "  font-size: 11px;"
             "  padding: 0px;"
             "}"
             "QPushButton:hover {"
-            "  background-color: #E5F1FB;"
+            "  background-color: palette(midlight);"
             "  border-color: #0078D4;"
-            "  color: #0078D4;"
+            "  color: palette(link);"
             "}"
             "QPushButton:pressed {"
             "  background-color: #0078D4;"
@@ -1732,21 +1808,21 @@ void ComparePanel::updateMarkButtonsForCell(int cellIndex)
         button->setStyleSheet(aiActive
             ? QStringLiteral(
                   "QPushButton { border: 2px solid #0F7B93; border-radius: 4px; "
-                  "background-color: #E6F6FA; color: #0B5E70; font-weight: 800; "
+                  "background-color: palette(alternate-base); color: palette(link); font-weight: 800; "
                   "font-size: 11px; padding: 0px; }"
-                  "QPushButton:hover { background-color: #D1EFF5; }")
+                  "QPushButton:hover { background-color: palette(light); }")
             : (active
                 ? QStringLiteral(
                   "QPushButton { border: 1px solid #0078D4; border-radius: 4px; "
-                  "background-color: #E5F1FB; color: #0078D4; font-weight: 700; "
+                  "background-color: palette(midlight); color: palette(link); font-weight: 700; "
                   "font-size: 11px; padding: 0px; }"
-                  "QPushButton:hover { background-color: #CCE4F7; }")
+                  "QPushButton:hover { background-color: palette(midlight); }")
                 : QStringLiteral(
-                  "QPushButton { border: 1px solid #E0E5ED; border-radius: 4px; "
-                  "background-color: #FFFFFF; color: #344054; font-weight: 600; "
+                  "QPushButton { border: 1px solid palette(mid); border-radius: 4px; "
+                  "background-color: palette(base); color: palette(window-text); font-weight: 600; "
                   "font-size: 11px; padding: 0px; }"
-                  "QPushButton:hover { background-color: #F7FAFD; border-color: #B9C4D3; }"
-                  "QPushButton:pressed { background-color: #E5F1FB; border-color: #0078D4; }")));
+                  "QPushButton:hover { background-color: palette(light); border-color: palette(dark); }"
+                  "QPushButton:pressed { background-color: palette(midlight); border-color: #0078D4; }")));
     }
 }
 
@@ -1893,6 +1969,7 @@ void ComparePanel::loadImage(int cellIndex)
             cell.hasImage = false;
             cell.cachedToleranceImage = QImage();
             cell.cachedToleranceThreshold = -1;
+            updateCellHeader(cellIndex);
             return;
         }
     } else {
@@ -1909,6 +1986,7 @@ void ComparePanel::loadImage(int cellIndex)
     positionImageNameOverlay(cellIndex);
 
     showOriginalImage(cellIndex, true);  // resetView on initial load
+    updateCellHeader(cellIndex);
     refreshToleranceJobsDependingOn(cellIndex);
 }
 
@@ -2538,6 +2616,7 @@ void ComparePanel::updateCellHeader(int cellIndex)
     }
 
     ImageCell &cell = m_cells[cellIndex];
+    cell.imageWidget->setImageInformationSource(cell.imagePath, cell.originalImage);
     if (!cell.headerLabel) {
         updateImageNameOverlay(cellIndex);
         return;
@@ -2553,10 +2632,14 @@ void ComparePanel::updateCellHeader(int cellIndex)
         return;
     }
 
-    const QString fileName = QFileInfo(cell.imagePath).fileName();
-    cell.headerLabel->setText(QStringLiteral("%1\n%2").arg(fileName, displayName));
+    QString imageLabel = QFileInfo(cell.imagePath).fileName();
+    if (!cell.originalImage.isNull()) {
+        imageLabel += QStringLiteral("  ·  %1 × %2")
+                          .arg(cell.originalImage.width()).arg(cell.originalImage.height());
+    }
+    cell.headerLabel->setText(QStringLiteral("%1\n%2").arg(imageLabel, displayName));
     cell.headerLabel->setToolTip(QStringLiteral("%1\n%2\n%3")
-                                     .arg(displayName, fileName, cell.imagePath));
+                                     .arg(displayName, imageLabel, cell.imagePath));
     updateImageNameOverlay(cellIndex);
 }
 
@@ -2576,7 +2659,7 @@ void ComparePanel::updateImageNameOverlay(int cellIndex)
     cell.nameOverlayLabel->setToolTip(
         QStringLiteral("%1\n%2").arg(displayName, cell.folderPath));
     cell.nameOverlayLabel->setVisible(
-        m_imageNameOverlayEnabled && !cell.imagePath.isEmpty());
+        !m_imageOnly && m_imageNameOverlayEnabled && !cell.imagePath.isEmpty());
     positionImageNameOverlay(cellIndex);
 }
 
@@ -2887,6 +2970,7 @@ void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
         m_cells[i].previewImage = QImage();
         m_cells[i].cachedToleranceImage = QImage();
         showOriginalImage(i, /*resetView=*/!wasShowingZoomedPreview);
+        updateCellHeader(i);
         if (wantsTolerance && toleranceSource >= 0) {
             m_cells[i].showingToleranceMap = true;
             m_cells[i].toleranceSourceIndex = toleranceSource;

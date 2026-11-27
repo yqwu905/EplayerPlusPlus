@@ -49,6 +49,7 @@ private slots:
     void testComposeGrid();
     void testPlaceholder();
     void testVisibleSourceRect();
+    void testHeaderSizeIsIndependentOfZoomCrop();
     void testInvalidSourceRectUsesFullImage();
     void testSizeLimits();
     void testLongLabels();
@@ -164,6 +165,27 @@ void tst_ComparisonImageComposer::testVisibleSourceRect()
     QVERIFY(!containsColor(result, imageArea, QColor(Qt::red)));
 }
 
+void tst_ComparisonImageComposer::testHeaderSizeIsIndependentOfZoomCrop()
+{
+    CellItem cell = solidCell(Qt::red, QSize(1400, 800));
+    Options options;
+    options.maxCanvasEdge = 1100;
+    const QImage full = compose({cell}, options);
+    QVERIFY(!full.isNull());
+    QCOMPARE(full.width(), options.maxCanvasEdge);
+
+    for (const QRectF &crop : {QRectF(100, 100, 960, 540), QRectF(600, 350, 80, 45)}) {
+        cell.visibleSourceRect = crop;
+        const QImage zoomed = compose({cell}, options);
+        QVERIFY(!zoomed.isNull());
+        QVERIFY(zoomed.width() < full.width());
+        const QRect header(0, 0, 290, 85);
+        QVERIFY(containsColor(zoomed, header, QColor(0x1F2937), 20));
+        QVERIFY(containsColor(zoomed, header, QColor(0x4B5563), 20));
+        QCOMPARE(zoomed.copy(header), full.copy(header));
+    }
+}
+
 void tst_ComparisonImageComposer::testInvalidSourceRectUsesFullImage()
 {
     CellItem cell = solidCell(Qt::red);
@@ -203,8 +225,8 @@ void tst_ComparisonImageComposer::testSizeLimits()
     QVERIFY(!grid.isNull());
     QVERIFY(grid.width() <= options.maxCanvasEdge);
     QVERIFY(grid.height() <= options.maxCanvasEdge);
-    QCOMPARE(grid.pixelColor(grid.width() / 4, grid.height() / 4), QColor(Qt::red));
-    QCOMPARE(grid.pixelColor(3 * grid.width() / 4, 3 * grid.height() / 4), QColor(Qt::red));
+    QCOMPARE(grid.pixelColor(grid.width() / 4, grid.height() / 3), QColor(Qt::red));
+    QCOMPARE(grid.pixelColor(3 * grid.width() / 4, 5 * grid.height() / 6), QColor(Qt::red));
 
     options.maxCanvasEdge = 1;
     options.minCellWidth = 0;

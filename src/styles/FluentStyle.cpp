@@ -1,6 +1,7 @@
 #include "FluentStyle.h"
 
 #include <QApplication>
+#include <QPalette>
 #include <QFont>
 #include <QIconEngine>
 #include <QPainter>
@@ -262,15 +263,15 @@ private:
     QColor resolvedColor(QIcon::Mode mode, QIcon::State state) const
     {
         if (mode == QIcon::Disabled) {
-            return neutralForegroundDisabled();
+            return qApp->palette().color(QPalette::Disabled, QPalette::WindowText);
         }
         if (state == QIcon::On || mode == QIcon::Selected) {
-            return brandPrimary();
+            return qApp->palette().color(QPalette::Link);
         }
         if (m_baseColor.isValid()) {
             return m_baseColor;
         }
-        return QColor(0x33, 0x41, 0x55);
+        return qApp->palette().color(QPalette::WindowText);
     }
 
     Icon m_kind;
@@ -284,7 +285,7 @@ QIcon icon(Icon kind, const QColor &color)
     return QIcon(new FluentVectorIconEngine(kind, color));
 }
 
-void applyGlobalStyle(QApplication *app)
+void applyGlobalStyle(QApplication *app, bool dark)
 {
 #if defined(Q_OS_MACOS)
     const Platform platform = Platform::MacOS;
@@ -294,6 +295,34 @@ void applyGlobalStyle(QApplication *app)
     const Platform platform = Platform::Other;
 #endif
 
+    QPalette palette;
+    const auto setColor = [&palette, dark](QPalette::ColorRole role, QRgb light, QRgb darkColor) {
+        palette.setColor(role, QColor::fromRgb(dark ? darkColor : light));
+    };
+    setColor(QPalette::Window, 0xFAFAFA, 0x181B20);
+    setColor(QPalette::Base, 0xFFFFFF, 0x23272E);
+    setColor(QPalette::AlternateBase, 0xF5F5F5, 0x1C2026);
+    setColor(QPalette::Button, 0xFFFFFF, 0x2D333D);
+    setColor(QPalette::Light, 0xEFEFEF, 0x363D49);
+    setColor(QPalette::Midlight, 0xE5F1FB, 0x233E59);
+    setColor(QPalette::Mid, 0xE0E0E0, 0x424B58);
+    setColor(QPalette::Dark, 0xC7C7C7, 0x606C7C);
+    setColor(QPalette::Shadow, 0x808080, 0x8795A7);
+    setColor(QPalette::WindowText, 0x1A1A1A, 0xF1F4F8);
+    setColor(QPalette::Text, 0x1A1A1A, 0xF1F4F8);
+    setColor(QPalette::ButtonText, 0x616161, 0xC2CCD9);
+    setColor(QPalette::PlaceholderText, 0x777777, 0xA5B1C0);
+    setColor(QPalette::Link, 0x006BBE, 0x8BC6FF);
+    setColor(QPalette::Highlight, 0x0078D4, 0x006BBE);
+    setColor(QPalette::HighlightedText, 0xFFFFFF, 0xFFFFFF);
+    setColor(QPalette::ToolTipBase, 0xFFFFFF, 0x2D333D);
+    setColor(QPalette::ToolTipText, 0x1A1A1A, 0xF1F4F8);
+    const QColor disabledText = dark ? QColor(0x80, 0x8B, 0x99) : neutralForegroundDisabled();
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, disabledText);
+    palette.setColor(QPalette::Disabled, QPalette::Text, disabledText);
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, disabledText);
+
+    app->setPalette(palette);
     app->setFont(applicationFont(platform));
     app->setStyleSheet(globalStyleSheet());
 }
@@ -346,53 +375,53 @@ QString globalStyleSheet()
    QMainWindow / top-level background
    ============================================================ */
 QMainWindow {
-    background-color: #FAFAFA;
+    background-color: palette(window);
 }
 
 /* ============================================================
    QMenuBar
    ============================================================ */
 QMenuBar {
-    background-color: #FAFAFA;
-    border-bottom: 1px solid #E0E0E0;
+    background-color: palette(window);
+    border-bottom: 1px solid palette(mid);
     padding: 2px 0px;
     spacing: 0px;
 }
 QMenuBar::item {
     padding: 6px 12px;
     border-radius: 4px;
-    color: #1A1A1A;
+    color: palette(window-text);
 }
 QMenuBar::item:selected {
-    background-color: #EFEFEF;
+    background-color: palette(light);
 }
 QMenuBar::item:pressed {
-    background-color: #E0E0E0;
+    background-color: palette(mid);
 }
 
 /* ============================================================
    QMenu (context menu, dropdown)
    ============================================================ */
 QMenu {
-    background-color: #FFFFFF;
-    border: 1px solid #E0E0E0;
+    background-color: palette(base);
+    border: 1px solid palette(mid);
     border-radius: 8px;
     padding: 4px;
 }
 QMenu::item {
     padding: 8px 32px 8px 12px;
     border-radius: 4px;
-    color: #1A1A1A;
+    color: palette(window-text);
 }
 QMenu::item:selected {
-    background-color: #EFEFEF;
+    background-color: palette(light);
 }
 QMenu::item:disabled {
-    color: #BDBDBD;
+    color: palette(button-text);
 }
 QMenu::separator {
     height: 1px;
-    background-color: #E0E0E0;
+    background-color: palette(mid);
     margin: 4px 8px;
 }
 
@@ -400,15 +429,15 @@ QMenu::separator {
    QToolBar
    ============================================================ */
 QToolBar {
-    background-color: #FAFAFA;
+    background-color: palette(window);
     border: none;
-    border-bottom: 1px solid #E0E0E0;
+    border-bottom: 1px solid palette(mid);
     padding: 4px 8px;
     spacing: 4px;
 }
 QToolBar::separator {
     width: 1px;
-    background-color: #E0E0E0;
+    background-color: palette(mid);
     margin: 4px 4px;
 }
 
@@ -420,44 +449,44 @@ QToolButton {
     border: none;
     border-radius: 4px;
     padding: 6px 12px;
-    color: #1A1A1A;
+    color: palette(window-text);
     font-size: 12px;
 }
 QToolButton:hover {
-    background-color: #EFEFEF;
+    background-color: palette(light);
 }
 QToolButton:pressed {
-    background-color: #E0E0E0;
+    background-color: palette(mid);
 }
 QToolButton:checked {
-    background-color: #E5F1FB;
-    color: #0078D4;
+    background-color: palette(midlight);
+    color: palette(link);
 }
 
 /* ============================================================
    QPushButton
    ============================================================ */
 QPushButton {
-    background-color: #FFFFFF;
-    border: 1px solid #D1D1D1;
+    background-color: palette(base);
+    border: 1px solid palette(dark);
     border-radius: 4px;
     padding: 6px 16px;
-    color: #1A1A1A;
+    color: palette(window-text);
     font-size: 12px;
     min-height: 20px;
 }
 QPushButton:hover {
-    background-color: #F5F5F5;
-    border-color: #C7C7C7;
+    background-color: palette(alternate-base);
+    border-color: palette(dark);
 }
 QPushButton:pressed {
-    background-color: #EFEFEF;
-    border-color: #BBBBBB;
+    background-color: palette(light);
+    border-color: palette(dark);
 }
 QPushButton:disabled {
-    background-color: #F5F5F5;
-    border-color: #E0E0E0;
-    color: #BDBDBD;
+    background-color: palette(alternate-base);
+    border-color: palette(mid);
+    color: palette(button-text);
 }
 /* Primary (accent) button: set objectName = "primaryButton" */
 QPushButton#primaryButton {
@@ -478,11 +507,11 @@ QPushButton#primaryButton:pressed {
    QTreeView
    ============================================================ */
 QTreeView {
-    background-color: #FAFAFA;
+    background-color: palette(window);
     border: none;
     outline: none;
     font-size: 12px;
-    color: #1A1A1A;
+    color: palette(window-text);
 }
 QTreeView::item {
     padding: 4px 8px;
@@ -490,11 +519,11 @@ QTreeView::item {
     min-height: 24px;
 }
 QTreeView::item:hover {
-    background-color: #F0F0F0;
+    background-color: palette(light);
 }
 QTreeView::item:selected {
-    background-color: #E5F1FB;
-    color: #1A1A1A;
+    background-color: palette(midlight);
+    color: palette(window-text);
 }
 QTreeView::branch {
     background-color: transparent;
@@ -528,15 +557,15 @@ QScrollBar:vertical {
     border: none;
 }
 QScrollBar::handle:vertical {
-    background-color: #C7C7C7;
+    background-color: palette(dark);
     border-radius: 4px;
     min-height: 32px;
 }
 QScrollBar::handle:vertical:hover {
-    background-color: #A0A0A0;
+    background-color: palette(shadow);
 }
 QScrollBar::handle:vertical:pressed {
-    background-color: #808080;
+    background-color: palette(shadow);
 }
 QScrollBar::add-line:vertical,
 QScrollBar::sub-line:vertical {
@@ -557,15 +586,15 @@ QScrollBar:horizontal {
     border: none;
 }
 QScrollBar::handle:horizontal {
-    background-color: #C7C7C7;
+    background-color: palette(dark);
     border-radius: 4px;
     min-width: 32px;
 }
 QScrollBar::handle:horizontal:hover {
-    background-color: #A0A0A0;
+    background-color: palette(shadow);
 }
 QScrollBar::handle:horizontal:pressed {
-    background-color: #808080;
+    background-color: palette(shadow);
 }
 QScrollBar::add-line:horizontal,
 QScrollBar::sub-line:horizontal {
@@ -580,12 +609,12 @@ QScrollBar::sub-page:horizontal {
    QSlider — Horizontal (Fluent-style)
    ============================================================ */
 QSlider::groove:horizontal {
-    background-color: #E0E0E0;
+    background-color: palette(mid);
     height: 4px;
     border-radius: 2px;
 }
 QSlider::handle:horizontal {
-    background-color: #FFFFFF;
+    background-color: palette(base);
     border: 2px solid #0078D4;
     width: 16px;
     height: 16px;
@@ -593,7 +622,7 @@ QSlider::handle:horizontal {
     border-radius: 9px;
 }
 QSlider::handle:horizontal:hover {
-    background-color: #E5F1FB;
+    background-color: palette(midlight);
 }
 QSlider::handle:horizontal:pressed {
     background-color: #0078D4;
@@ -608,7 +637,7 @@ QSlider::sub-page:horizontal {
    QSplitter
    ============================================================ */
 QSplitter::handle {
-    background-color: #E0E0E0;
+    background-color: palette(mid);
 }
 QSplitter::handle:horizontal {
     width: 1px;
@@ -624,7 +653,7 @@ QSplitter::handle:hover {
    QLabel
    ============================================================ */
 QLabel {
-    color: #1A1A1A;
+    color: palette(window-text);
     background-color: transparent;
 }
 
@@ -632,10 +661,10 @@ QLabel {
    QMessageBox
    ============================================================ */
 QMessageBox {
-    background-color: #FFFFFF;
+    background-color: palette(base);
 }
 QMessageBox QLabel {
-    color: #1A1A1A;
+    color: palette(window-text);
     font-size: 13px;
 }
 
@@ -643,11 +672,11 @@ QMessageBox QLabel {
    QHeaderView (for any tables/headers)
    ============================================================ */
 QHeaderView::section {
-    background-color: #FAFAFA;
+    background-color: palette(window);
     border: none;
-    border-bottom: 1px solid #E0E0E0;
+    border-bottom: 1px solid palette(mid);
     padding: 6px 12px;
-    color: #616161;
+    color: palette(button-text);
     font-size: 12px;
 }
 

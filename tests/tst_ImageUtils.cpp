@@ -4,6 +4,7 @@
 #include <QImage>
 
 #include "utils/ImageUtils.h"
+#include "services/ImageInformation.h"
 
 class tst_ImageUtils : public QObject
 {
@@ -30,6 +31,7 @@ private slots:
 
     void testGetImageSize();
     void testGetImageSize_invalidFile();
+    void imageInformationReadsExifAndHistogram();
 
     void testStripColorProfile_clearsTag();
     void testStripColorProfile_nullImageIsNoop();
@@ -229,6 +231,31 @@ void tst_ImageUtils::testGenerateThumbnail_keepsColorProfileByDefault()
         source, QSize(32, 32), Qt::SmoothTransformation, /*ignoreColorProfile=*/false);
     QVERIFY(!tagged.isNull());
     QVERIFY(tagged.colorSpace().isValid());
+}
+
+void tst_ImageUtils::imageInformationReadsExifAndHistogram()
+{
+    // JPEG APP1 / EXIF with a little-endian TIFF directory and an inline camera model.
+    QFile file(m_tempDir.filePath(QStringLiteral("camera.jpg")));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray jpeg = QByteArray::fromHex(
+        "ffd8ffe10022" "457869660000" "49492a0008000000"
+        "0100" "100102000400000043616d00" "00000000" "ffd9");
+    QCOMPARE(file.write(jpeg), jpeg.size());
+    file.close();
+
+    QImage image(3, 1, QImage::Format_ARGB32);
+    image.setPixelColor(0, 0, QColor(42, 64, 128));
+    image.setPixelColor(1, 0, QColor(42, 64, 255));
+    image.setPixelColor(2, 0, QColor(2, 3, 4, 0));
+    const auto info = readImageInformation(file.fileName(), image);
+    QCOMPARE(info.exifLines, QStringList{QStringLiteral("Cam")});
+    QCOMPARE(info.histogram[0][42], quint64(2));
+    QCOMPARE(info.histogram[1][64], quint64(2));
+    QCOMPARE(info.histogram[2][128], quint64(1));
+    QCOMPARE(info.histogram[2][255], quint64(1));
+    QCOMPARE(info.histogram[0][2], quint64(0));
+    QVERIFY(readImageInformation(m_testImagePath, image).exifLines.isEmpty());
 }
 
 QTEST_MAIN(tst_ImageUtils)

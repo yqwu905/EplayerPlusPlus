@@ -131,6 +131,9 @@ public:
      */
     QList<int> splitterSizes() const;
 
+    bool darkAppearance() const;
+    void setDarkAppearance(bool dark);
+
     /**
      * @brief Persist the main-splitter panel widths.
      */

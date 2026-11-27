@@ -42,6 +42,8 @@ set(SOURCES
     services/CategoryExporter.h
     services/ImageLoader.cpp
     services/ImageLoader.h
+    services/ImageInformation.cpp
+    services/ImageInformation.h
     services/ImageComparer.cpp
     services/ImageComparer.h
     services/ComparisonImageComposer.cpp
@@ -96,6 +98,8 @@ set(LIB_SOURCES
     services/CategoryExporter.h
     services/ImageLoader.cpp
     services/ImageLoader.h
+    services/ImageInformation.cpp
+    services/ImageInformation.h
     services/ImageComparer.cpp
     services/ImageComparer.h
     services/ComparisonImageComposer.cpp

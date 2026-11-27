@@ -1,6 +1,12 @@
 #include "ZoomableImageWidget.h"
 
 #include <QPainter>
+#include <algorithm>
+#include <QCursor>
+#include <QEnterEvent>
+#include <QFutureWatcher>
+#include <QPainterPath>
+#include <QtConcurrentRun>
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QResizeEvent>
@@ -42,6 +48,9 @@ void ZoomableImageWidget::setText(const QString &text)
 {
     m_text = text;
     m_image = QImage();
+    if (m_magnifierHovering) {
+        updateMagnifierHover({});
+    }
     update();
 }
 
@@ -177,16 +186,118 @@ bool ZoomableImageWidget::computePaintRects(QRectF &visibleTarget, QRectF &sourc
     return true;
 }
 
+void ZoomableImageWidget::setMagnifierEnabled(bool enabled)
+{
+    m_magnifierEnabled = enabled;
+    if (enabled && underMouse()) {
+        updateMagnifierHover(mapFromGlobal(QCursor::pos()));
+    } else if (!enabled) {
+        m_magnifierHovering = false;
+        setMagnifierAnchor(std::nullopt);
+    }
+}
+
+void ZoomableImageWidget::setMagnifierAnchor(std::optional<QPointF> normalized)
+{
+    if (normalized != m_magnifierAnchor) {
+        m_magnifierAnchor = normalized;
+        update();
+    }
+}
+
+void ZoomableImageWidget::setMagnifierParameters(double magnification, double size)
+{
+    m_magnification = qBound(1.5, magnification, 16.0);
+    m_magnifierSize = qBound(64.0, size, 400.0);
+    update();
+}
+
+void ZoomableImageWidget::updateMagnifierHover(const QPointF &position)
+{
+    QRectF target;
+    QRectF source;
+    if (computePaintRects(target, source) && target.contains(position)) {
+        m_magnifierHovering = true;
+        const QPointF normalized = widgetToNormalized(position);
+        setMagnifierAnchor(normalized);
+        emit magnifierAnchorChanged(normalized, true);
+    } else if (m_magnifierHovering) {
+        m_magnifierHovering = false;
+        setMagnifierAnchor(std::nullopt);
+        emit magnifierAnchorChanged({}, false);
+    }
+}
+
+void ZoomableImageWidget::enterEvent(QEnterEvent *event)
+{
+    if (m_magnifierEnabled) {
+        updateMagnifierHover(event->position());
+    }
+    QWidget::enterEvent(event);
+}
+
+void ZoomableImageWidget::leaveEvent(QEvent *event)
+{
+    if (m_magnifierHovering) {
+        m_magnifierHovering = false;
+        setMagnifierAnchor(std::nullopt);
+        emit magnifierAnchorChanged({}, false);
+    }
+    QWidget::leaveEvent(event);
+}
+
+void ZoomableImageWidget::setImageInformationVisible(bool visible)
+{
+    m_informationVisible = visible;
+    requestImageInformation();
+    update();
+}
+
+void ZoomableImageWidget::setImageInformationSource(const QString &path, const QImage &original)
+{
+    if (path == m_informationPath && original.cacheKey() == m_informationSource.cacheKey()) {
+        return;
+    }
+    m_informationPath = path;
+    m_informationSource = original;
+    m_information.reset();
+    requestImageInformation();
+    update();
+}
+
+void ZoomableImageWidget::requestImageInformation()
+{
+    if (!m_informationVisible || m_informationWatcher ||
+        m_information || m_informationSource.isNull()) {
+        return;
+    }
+
+    const QString path = m_informationPath;
+    const QImage image = m_informationSource;
+    auto *watcher = new QFutureWatcher<ImageInformation>(this);
+    m_informationWatcher = watcher;
+    connect(watcher, &QFutureWatcher<ImageInformation>::finished, this, [this, watcher, path, image] {
+        m_informationWatcher = nullptr;
+        if (m_informationPath == path && m_informationSource.cacheKey() == image.cacheKey()) {
+            m_information = watcher->result();
+            update();
+        }
+        watcher->deleteLater();
+        requestImageInformation();
+    });
+    watcher->setFuture(QtConcurrent::run([path, image] { return readImageInformation(path, image); }));
+}
+
 void ZoomableImageWidget::paintEvent(QPaintEvent * /*event*/)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    painter.fillRect(rect(), QColor(0xF5, 0xF5, 0xF5));
+    painter.fillRect(rect(), palette().alternateBase());
 
     if (m_image.isNull()) {
         // Draw placeholder text
         if (!m_text.isEmpty()) {
-            painter.setPen(QColor(0x9E, 0x9E, 0x9E));
+            painter.setPen(palette().color(QPalette::PlaceholderText));
             QFont font = painter.font();
             font.setPixelSize(12);
             painter.setFont(font);
@@ -201,6 +312,119 @@ void ZoomableImageWidget::paintEvent(QPaintEvent * /*event*/)
         return;
     }
     painter.drawImage(visibleTarget, m_image, sourceRect);
+
+    if (m_informationVisible && m_information) {
+        paintImageInformation(painter, visibleTarget);
+    }
+    if (m_magnifierEnabled && m_magnifierAnchor) {
+        paintMagnifier(painter, visibleTarget, sourceRect);
+    }
+}
+
+void ZoomableImageWidget::paintMagnifier(QPainter &painter, const QRectF &visibleTarget,
+                                        const QRectF &sourceRect)
+{
+    constexpr qreal gap = 14;
+    const qreal side = qMin(m_magnifierSize, qreal(qMin(width(), height()) - 4));
+    if (side <= 0) {
+        return;
+    }
+
+    const QPointF imagePoint(m_magnifierAnchor->x() * m_image.width(),
+                             m_magnifierAnchor->y() * m_image.height());
+    const qreal scale = effectiveScale();
+    const QPointF position = visibleTarget.topLeft() + (imagePoint - sourceRect.topLeft()) * scale;
+    const QPointF cursor(qBound(visibleTarget.left(), position.x(), visibleTarget.right()),
+                         qBound(visibleTarget.top(), position.y(), visibleTarget.bottom()));
+    const qreal lensScale = scale * m_magnification;
+    const qreal sampleSide = side / lensScale;
+    const QRectF sample(imagePoint - QPointF(sampleSide / 2, sampleSide / 2),
+                        QSizeF(sampleSide, sampleSide));
+
+    const qreal x = cursor.x() + gap + side <= width() ? cursor.x() + gap : cursor.x() - gap - side;
+    const qreal y = cursor.y() + gap + side <= height() ? cursor.y() + gap : cursor.y() - gap - side;
+    const QRectF lens(qBound(2.0, x, width() - side - 2),
+                      qBound(2.0, y, height() - side - 2), side, side);
+    const QRectF clipped = sample.intersected(QRectF(m_image.rect()));
+    const QRectF target(lens.topLeft() + (clipped.topLeft() - sample.topLeft()) * lensScale,
+                        clipped.size() * lensScale);
+
+    painter.fillRect(lens, palette().alternateBase());
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    painter.drawImage(target, m_image, clipped);
+    painter.setPen(QPen(palette().color(QPalette::WindowText), 2));
+    painter.drawRect(lens);
+}
+
+void ZoomableImageWidget::paintImageInformation(QPainter &painter, const QRectF &visibleTarget) const
+{
+    constexpr qreal margin = 8;
+    if (visibleTarget.width() < 100 || visibleTarget.height() < 75) {
+        return;
+    }
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing);
+    QFont small = painter.font();
+    small.setPixelSize(11);
+    painter.setFont(small);
+    const QFontMetrics metrics(small);
+    const auto &info = *m_information;
+    const QStringList lines = info.exifLines.isEmpty()
+        ? QStringList{tr("无 EXIF 信息")} : info.exifLines;
+
+    const qreal histogramWidth = qMin(176.0, visibleTarget.width() - 2 * margin);
+    const qreal histogramHeight = qMin(88.0, visibleTarget.height() * 0.40);
+    const qreal exifWidth = qMin(220.0, visibleTarget.width() - 2 * margin);
+    const bool sharesWidth = exifWidth + histogramWidth + 3 * margin > visibleTarget.width();
+    const qreal exifHeightLimit = visibleTarget.height() - 2 * margin
+        - (sharesWidth ? histogramHeight + margin : 0);
+    const qreal exifHeight = qMin(metrics.height() * (lines.size() + 1) + 12.0,
+                                  exifHeightLimit);
+    const QRectF exif(visibleTarget.right() - exifWidth - margin, visibleTarget.top() + margin,
+                      exifWidth, exifHeight);
+    const auto drawPanel = [&painter](const QRectF &panel) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(14, 19, 26, 195));
+        painter.drawRoundedRect(panel, 6, 6);
+    };
+    drawPanel(exif);
+    painter.save();
+    painter.setClipRect(exif);
+    painter.setPen(Qt::white);
+    qreal y = exif.top() + 6 + metrics.ascent();
+    painter.drawText(QPointF(exif.left() + 8, y), QStringLiteral("EXIF"));
+    for (const QString &line : lines) {
+        y += metrics.height();
+        painter.drawText(QPointF(exif.left() + 8, y),
+                         metrics.elidedText(line, Qt::ElideRight, qRound(exif.width() - 16)));
+    }
+    painter.restore();
+
+    const QRectF histogram(visibleTarget.left() + margin,
+                           visibleTarget.bottom() - histogramHeight - margin,
+                           histogramWidth, histogramHeight);
+    drawPanel(histogram);
+    painter.setPen(Qt::white);
+    painter.drawText(QPointF(histogram.left() + 8, histogram.top() + 6 + metrics.ascent()),
+                     tr("RGB 直方图"));
+    const QRectF plot = histogram.adjusted(8, metrics.height() + 9, -8, -7);
+    quint64 maximum = 0;
+    for (const auto &channel : info.histogram) {
+        maximum = qMax(maximum, *std::max_element(channel.begin(), channel.end()));
+    }
+    if (maximum > 0) {
+        const QColor colors[] = {QColor(255, 108, 108), QColor(100, 235, 150), QColor(117, 174, 255)};
+        for (int channel = 0; channel < 3; ++channel) {
+            QPainterPath curve(QPointF(plot.left(), plot.bottom()));
+            for (int bin = 0; bin < 256; ++bin) {
+                curve.lineTo(plot.left() + plot.width() * bin / 255,
+                             plot.bottom() - plot.height() * qreal(info.histogram[channel][bin]) / maximum);
+            }
+            painter.setPen(colors[channel]);
+            painter.drawPath(curve);
+        }
+    }
+    painter.restore();
 }
 
 // ---- Mouse interaction ----
@@ -292,6 +516,20 @@ void ZoomableImageWidget::wheelEvent(QWheelEvent *event)
         return;
     }
 
+    const double steps = event->angleDelta().y() / 120.0;
+    const auto modifiers = event->modifiers();
+    if (m_magnifierEnabled && (modifiers == Qt::AltModifier || modifiers == Qt::ControlModifier)) {
+        updateMagnifierHover(event->position());
+        if (m_magnifierHovering) {
+            const double factor = qPow(1.2, qBound(-32.0, steps, 32.0));
+            setMagnifierParameters(modifiers == Qt::AltModifier ? m_magnification * factor : m_magnification,
+                                   modifiers == Qt::ControlModifier ? m_magnifierSize * factor : m_magnifierSize);
+            emit magnifierParametersChanged(m_magnification, m_magnifierSize);
+            event->accept();
+            return;
+        }
+    }
+
     const QPointF focalWidget = event->position();
     // Capture the focal point in normalized image coords *before* zoom so the
     // emitted signal lets linked cells anchor on the same image-relative point.
@@ -304,13 +542,15 @@ void ZoomableImageWidget::wheelEvent(QWheelEvent *event)
     // instead of being truncated to zero (no zoom at all on a macOS trackpad).
     // A full detent still yields exactly one kZoomStep, so ordinary mouse-wheel
     // behaviour is unchanged.
-    const double steps = event->angleDelta().y() / 120.0;
     const double factor = qPow(kZoomStep, steps);
     const double newLevel = m_zoomLevel * factor;
 
     applyZoom(newLevel, focalWidget);
 
     emit zoomChanged(m_zoomLevel, normalizedFocal);
+    if (m_magnifierEnabled) {
+        updateMagnifierHover(focalWidget);
+    }
     event->accept();
 }
 
@@ -341,8 +581,15 @@ void ZoomableImageWidget::mouseMoveEvent(QMouseEvent *event)
         // Emit normalized pan so linked cells with differently-sized images
         // stay in agreement on which image region is centred.
         emit panChanged(normalizedPan());
+        if (m_magnifierEnabled) {
+            updateMagnifierHover(event->position());
+        }
         event->accept();
         return;
+    }
+
+    if (m_magnifierEnabled) {
+        updateMagnifierHover(event->position());
     }
 
     // Change cursor when hoverable for pan. Only call setCursor when the shape

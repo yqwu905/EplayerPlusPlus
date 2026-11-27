@@ -39,16 +39,16 @@ void FolderPanel::setupUi()
 
     setObjectName(QStringLiteral("folderPanelRoot"));
     setStyleSheet(
-        "QWidget#folderPanelRoot { background-color: #FFFFFF; border: 1px solid #E3E7EC; border-radius: 8px; }"
-        "QLabel#folderTitle { color: #111827; font-size: 15px; font-weight: 700; border: none; background: transparent; }"
-        "QLabel#folderSubtitle { color: #6B7280; font-size: 11px; border: none; background: transparent; }"
-        "QTreeView#folderTreeView { background-color: #FFFFFF; border: none; padding: 2px; outline: none; }"
-        "QTreeView#folderTreeView::item { padding: 3px 6px; border-radius: 5px; min-height: 24px; color: #243041; }"
-        "QTreeView#folderTreeView::item:hover { background-color: #F5F7FA; }"
-        "QTreeView#folderTreeView::item:selected { background-color: #E5F1FB; color: #111827; }"
-        "QLineEdit#folderPathInput { background-color: #F8FAFC; border: 1px solid #E5EAF1; border-radius: 6px; padding: 5px 8px; color: #374151; }"
-        "QLineEdit#folderPathInput:focus { background-color: #FFFFFF; border-color: #0078D4; }"
-        "QLabel#folderStatusLabel { color: #5E6A7A; font-size: 11px; border: none; background: transparent; }");
+        "QWidget#folderPanelRoot { background-color: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
+        "QLabel#folderTitle { color: palette(window-text); font-size: 15px; font-weight: 700; border: none; background: transparent; }"
+        "QLabel#folderSubtitle { color: palette(button-text); font-size: 11px; border: none; background: transparent; }"
+        "QTreeView#folderTreeView { background-color: palette(base); border: none; padding: 2px; outline: none; }"
+        "QTreeView#folderTreeView::item { padding: 3px 6px; border-radius: 5px; min-height: 24px; color: palette(window-text); }"
+        "QTreeView#folderTreeView::item:hover { background-color: palette(light); }"
+        "QTreeView#folderTreeView::item:selected { background-color: palette(midlight); color: palette(window-text); }"
+        "QLineEdit#folderPathInput { background-color: palette(alternate-base); border: 1px solid palette(mid); border-radius: 6px; padding: 5px 8px; color: palette(window-text); }"
+        "QLineEdit#folderPathInput:focus { background-color: palette(base); border-color: #0078D4; }"
+        "QLabel#folderStatusLabel { color: palette(button-text); font-size: 11px; border: none; background: transparent; }");
 
     // ---- Toolbar retained for command actions, hidden visually in the new shell ----
     m_toolBar = new QToolBar(this);
@@ -56,8 +56,8 @@ void FolderPanel::setupUi()
     m_toolBar->setIconSize(QSize(16, 16));
     m_toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_toolBar->setStyleSheet(
-        "QToolBar { background-color: #FAFAFA; border: none; "
-        "border-bottom: 1px solid #E0E0E0; padding: 4px 8px; spacing: 4px; }");
+        "QToolBar { background-color: palette(window); border: none; "
+        "border-bottom: 1px solid palette(mid); padding: 4px 8px; spacing: 4px; }");
 
     QAction *addAction = m_toolBar->addAction(
         FluentStyle::icon(FluentStyle::Icon::FolderAdd), tr("添加"));

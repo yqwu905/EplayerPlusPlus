@@ -12,6 +12,8 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QSettings>
+#include <QScopeGuard>
 #include <QSlider>
 #include <QSplitter>
 #include <QTemporaryDir>
@@ -24,6 +26,7 @@
 #include "widgets/BrowsePanel.h"
 #include "widgets/ComparePanel.h"
 #include "widgets/VlmAnnotationDialog.h"
+#include "widgets/ZoomableImageWidget.h"
 
 namespace
 {
@@ -68,6 +71,7 @@ private slots:
     void commandBar_reverseSwapDirectionControlsComparePanel();
     void commandBar_imageNameOverlayControlsComparePanel();
     void commandBar_copyComparisonImageButtonCopiesToClipboard();
+    void darkAppearance_updatesChromeAndPersists();
     void directionKeys_navigateBrowseSelection();
     void browsePanel_notCollapsibleButHidableByToggle();
 
@@ -690,6 +694,78 @@ void tst_MainWindow::commandBar_copyComparisonImageButtonCopiesToClipboard()
     QVERIFY(!copied.isNull());
     QVERIFY(copied.width() > imgA.width());
     QVERIFY(copied.height() > imgA.height());
+
+    comparePanel->setReverseSwapDirectionEnabled(false);
+    comparePanel->setImageNameOverlayEnabled(true);
+    auto *bar = window.findChild<QWidget *>(QStringLiteral("commandBar"));
+    auto *splitter = window.findChild<QSplitter *>(QStringLiteral("contentSplitter"));
+    auto *browse = window.findChild<BrowsePanel *>();
+    const auto sizes = splitter->sizes();
+    QTest::keyClick(&window, Qt::Key_F11);
+    QTRY_VERIFY(window.isFullScreen());
+    QVERIFY(!bar->isVisible());
+    QVERIFY(!browse->isVisible());
+    QVERIFY(!comparePanel->findChild<QLabel *>(QStringLiteral("compareCellIndexBadge"))->isVisible());
+
+    const auto images = comparePanel->findChildren<ZoomableImageWidget *>();
+    QCOMPARE(images.size(), 2);
+    QCOMPARE(window.focusWidget(), comparePanel);
+    QTest::keyPress(window.focusWidget(), Qt::Key_2);
+    QTRY_COMPARE(images[1]->image().pixelColor(0, 0), imgA.pixelColor(0, 0));
+    QTest::keyRelease(window.focusWidget(), Qt::Key_2);
+    QTRY_COMPARE(images[1]->image().pixelColor(0, 0), imgB.pixelColor(0, 0));
+
+    QGuiApplication::clipboard()->clear();
+    QTest::keyClick(window.focusWidget(), Qt::Key_C, Qt::AltModifier);
+    QTRY_COMPARE(QGuiApplication::clipboard()->image(), comparePanel->buildComparisonImage());
+
+    QTest::keyClick(window.focusWidget(), Qt::Key_Escape);
+    QTRY_VERIFY(!window.isFullScreen());
+    QVERIFY(bar->isVisible());
+    QVERIFY(browse->isVisible());
+    QVERIFY(comparePanel->findChild<QLabel *>(QStringLiteral("compareCellIndexBadge"))->isVisible());
+    QCOMPARE(splitter->sizes(), sizes);
+}
+
+void tst_MainWindow::darkAppearance_updatesChromeAndPersists()
+{
+    QSettings settings;
+    const QString key = QStringLiteral("ui/dark_appearance");
+    const QVariant previous = settings.value(key);
+    const QPalette palette = qApp->palette();
+    const QFont font = qApp->font();
+    const QString style = qApp->styleSheet();
+    const auto restore = qScopeGuard([&] {
+        if (previous.isValid()) {
+            settings.setValue(key, previous);
+        } else {
+            settings.remove(key);
+        }
+        qApp->setPalette(palette);
+        qApp->setFont(font);
+        qApp->setStyleSheet(style);
+    });
+    settings.setValue(key, false);
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *bar = window.findChild<QWidget *>(QStringLiteral("commandBar"));
+    QVERIFY(bar);
+    auto darkAction = [](MainWindow &mainWindow) {
+        return mainWindow.findChild<QAction *>(QStringLiteral("darkAppearanceAction"));
+    };
+    QVERIFY(darkAction(window));
+    QVERIFY(!darkAction(window)->isChecked());
+
+    darkAction(window)->trigger();
+    QTRY_VERIFY(bar->grab().toImage().pixelColor(5, 20).lightness() < 80);
+    QCOMPARE(QSettings().value(key).toBool(), true);
+    MainWindow afterRestart;
+    QVERIFY(darkAction(afterRestart)->isChecked());
+
+    darkAction(window)->trigger();
+    QTRY_VERIFY(bar->grab().toImage().pixelColor(5, 20).lightness() > 200);
+    QCOMPARE(QSettings().value(key).toBool(), false);
 }
 
 QTEST_MAIN(tst_MainWindow)
