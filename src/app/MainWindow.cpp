@@ -504,10 +504,17 @@ QWidget *MainWindow::createCommandBar()
     magnifierAction->setCheckable(true);
     magnifierAction->setAutoRepeat(false);
     magnifierAction->setShortcut(QKeySequence(Qt::Key_F8));
-    magnifierAction->setToolTip(tr("显示鼠标附近的放大预览（F8）"));
+    magnifierAction->setToolTip(tr("同步放大镜（F8）。Alt+滚轮调整倍率，Ctrl+滚轮调整方框"));
     addAction(magnifierAction);
     connect(magnifierAction, &QAction::toggled, m_comparePanel, &ComparePanel::setMagnifierEnabled);
     addButton(magnifierAction, true, true);
+
+    auto *imageInformationAction = new QAction(tr("图像信息"), this);
+    imageInformationAction->setCheckable(true);
+    imageInformationAction->setToolTip(tr("在图片右上角显示 EXIF，在左下角显示 RGB 直方图"));
+    connect(imageInformationAction, &QAction::toggled,
+            m_comparePanel, &ComparePanel::setImageInformationVisible);
+    addButton(imageInformationAction, true, true);
 
     auto *darkAppearanceAction = new QAction(tr("深色外观"), this);
     darkAppearanceAction->setObjectName(QStringLiteral("darkAppearanceAction"));

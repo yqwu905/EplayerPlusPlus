@@ -34,6 +34,7 @@ private slots:
     void compareButtons_nMinusOnePerImage();
     void compareHeader_placesTitleAndButtonsInHeaderBlock();
     void layout_imageAreaExpandsToFillAvailableGridHeight();
+    void magnifierSynchronizesAcrossImages();
     void customGridName_updatesOnlyThatCellAndCompareTooltips();
     void imageNameOverlay_toggleShowsProminentDisplayNames();
     void folderSwap_reordersGridCellsAndImages();
@@ -1738,6 +1739,73 @@ void tst_ComparePanel::longFolderNames_elideHeadersWithoutHorizontalOverflow()
     QVERIFY(sawStacked);
     QVERIFY(sawSingleRow);
     QVERIFY(sawAdjacentTransition);
+}
+
+void tst_ComparePanel::magnifierSynchronizesAcrossImages()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString leftFolder = root.filePath(QStringLiteral("left"));
+    const QString rightFolder = root.filePath(QStringLiteral("right"));
+    QVERIFY(QDir().mkpath(leftFolder));
+    QVERIFY(QDir().mkpath(rightFolder));
+
+    CompareSession session;
+    ComparePanel panel(&session, nullptr, nullptr);
+    panel.resize(1100, 600);
+    panel.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&panel));
+    QVERIFY(session.addFolder(leftFolder));
+    QVERIFY(session.addFolder(rightFolder));
+    panel.setSelectedImages({
+        {leftFolder, createImageInFolder(leftFolder, QStringLiteral("left.png"), Qt::red)},
+        {rightFolder, createImageInFolder(rightFolder, QStringLiteral("right.png"), Qt::blue)},
+    });
+    const auto cells = sortedCells(panel);
+    QCOMPARE(cells.size(), 2);
+    auto *left = cells[0]->findChild<ZoomableImageWidget *>();
+    auto *right = cells[1]->findChild<ZoomableImageWidget *>();
+    const auto *title = cells[0]->findChild<QLabel *>(QStringLiteral("compareCellHeaderLabel"));
+    QVERIFY(left && right && title);
+    QVERIFY(title->text().contains(QStringLiteral("left.png  ·  32 × 32")));
+    QCoreApplication::processEvents();
+    const QImage original = right->grab().toImage();
+
+    panel.setMagnifierEnabled(true);
+    const QPointF anchor = left->rect().center();
+    const QPointF global = left->mapToGlobal(anchor.toPoint());
+    QMouseEvent move(QEvent::MouseMove, anchor, global, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(left, &move);
+    const QImage magnified = right->grab().toImage();
+    QVERIFY(magnified != original);
+
+    QSignalSpy adjustments(left, &ZoomableImageWidget::magnifierParametersChanged);
+    const auto scroll = [&](Qt::KeyboardModifier modifier, int delta) {
+        QWheelEvent event(anchor, global, {}, QPoint(0, delta), Qt::NoButton, modifier,
+                          Qt::NoScrollPhase, false);
+        QApplication::sendEvent(left, &event);
+        QVERIFY(event.isAccepted());
+    };
+    scroll(Qt::AltModifier, 4000);
+    QCOMPARE(adjustments.last().at(0).toDouble(), 16.0);
+    scroll(Qt::AltModifier, -4000);
+    QCOMPARE(adjustments.last().at(0).toDouble(), 1.5);
+    scroll(Qt::ControlModifier, 4000);
+    QCOMPARE(adjustments.last().at(1).toDouble(), 400.0);
+    QVERIFY(right->grab().toImage() != magnified);
+    scroll(Qt::ControlModifier, -4000);
+    QCOMPARE(adjustments.last().at(1).toDouble(), 64.0);
+    QCOMPARE(left->zoomLevel(), 1.0);
+    QCOMPARE(right->zoomLevel(), 1.0);
+
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(left, &leave);
+    QCOMPARE(right->grab().toImage(), original);
+
+    panel.setImageInformationVisible(true);
+    QTRY_VERIFY(right->grab().toImage() != original);
+    panel.setImageInformationVisible(false);
+    QCOMPARE(right->grab().toImage(), original);
 }
 
 QTEST_MAIN(tst_ComparePanel)

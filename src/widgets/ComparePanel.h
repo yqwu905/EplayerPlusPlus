@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 
 class QGridLayout;
 class QSlider;
@@ -87,6 +88,7 @@ public:
     void setControlsVisible(bool visible);
     void setImageOnly(bool enabled);
     void setMagnifierEnabled(bool enabled);
+    void setImageInformationVisible(bool visible);
 
     /**
      * @brief Render a single composite image of the current comparison grid
@@ -234,6 +236,7 @@ private:
     int swapPreviewCellIndex(int sourceIndex, int targetIndex) const;
     void refreshCellsUsingLargestImage();
     void resizeImageCell(int cellIndex);
+    void setMagnifierAnchor(std::optional<QPointF> anchor);
     void rebuildCompareButtons();
     int compareTargetIndexForNumberKey(int key) const;
     bool canHandleNumberCompareShortcut(const QKeyEvent *event) const;
@@ -280,6 +283,11 @@ private:
     QCheckBox *m_imageNameOverlayCheckBox = nullptr;
     bool m_imageOnly = false;
     bool m_magnifierEnabled = false;
+    bool m_imageInformationVisible = false;
+    ZoomableImageWidget *m_magnifierSource = nullptr;
+    std::optional<QPointF> m_magnifierAnchor;
+    double m_magnification = 3.0;
+    double m_magnifierSize = 160;
     QWidget *m_gridContainer = nullptr;
     QGridLayout *m_gridLayout = nullptr;
     QList<ImageCell> m_cells;

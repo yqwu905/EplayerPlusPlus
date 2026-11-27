@@ -142,14 +142,14 @@ protected:
 
         if (!lines.isEmpty()) {
             const QRect firstRect(r.x(), r.y(), r.width(), lineHeight);
-            painter.setPen(QColor(0x26, 0x32, 0x41));
+            painter.setPen(palette().color(QPalette::WindowText));
             painter.setFont(font());
             painter.drawText(firstRect, Qt::AlignLeft | Qt::AlignVCenter,
                              fm.elidedText(lines.at(0), Qt::ElideMiddle, r.width()));
         }
         if (lines.size() > 1) {
             const QRect secondRect(r.x(), r.y() + lineHeight + 2, r.width(), lineHeight);
-            painter.setPen(QColor(0x68, 0x73, 0x85));
+            painter.setPen(palette().color(QPalette::ButtonText));
             painter.setFont(font());
             painter.drawText(secondRect, Qt::AlignLeft | Qt::AlignVCenter,
                              fm.elidedText(lines.at(1), Qt::ElideRight, r.width()));
@@ -501,8 +501,28 @@ void ComparePanel::setImageOnly(bool enabled)
 void ComparePanel::setMagnifierEnabled(bool enabled)
 {
     m_magnifierEnabled = enabled;
+    if (!enabled) {
+        m_magnifierSource = nullptr;
+        m_magnifierAnchor.reset();
+    }
     for (const auto &cell : m_cells) {
         cell.imageWidget->setMagnifierEnabled(enabled);
+    }
+}
+
+void ComparePanel::setMagnifierAnchor(std::optional<QPointF> anchor)
+{
+    m_magnifierAnchor = anchor;
+    for (const auto &cell : m_cells) {
+        cell.imageWidget->setMagnifierAnchor(anchor);
+    }
+}
+
+void ComparePanel::setImageInformationVisible(bool visible)
+{
+    m_imageInformationVisible = visible;
+    for (const auto &cell : m_cells) {
+        cell.imageWidget->setImageInformationVisible(visible);
     }
 }
 
@@ -919,6 +939,10 @@ void ComparePanel::onFolderRemoved(const QString &folderPath, int index)
         return;
     }
 
+    if (m_cells[removeIndex].imageWidget == m_magnifierSource) {
+        m_magnifierSource = nullptr;
+        setMagnifierAnchor(std::nullopt);
+    }
     cancelToleranceWatcher(m_cells[removeIndex]);
     cancelResizeWatcher(m_cells[removeIndex]);
     if (m_cells[removeIndex].container) {
@@ -1075,8 +1099,6 @@ void ComparePanel::setSelectedImages(const QList<QPair<QString, QString>> &selec
             m_cells[i].showingToleranceMap = false;
             m_cells[i].toleranceSourceIndex = -1;
             loadImage(i);
-
-            updateCellHeader(i);
         } else if (!m_cells[i].hasImage && m_imageLoader) {
             // A repeated activation is a retry gesture after a failed full decode.
             // requestImage() deduplicates harmlessly if the original job is merely
@@ -1350,6 +1372,9 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
     cell.imageWidget = new ZoomableImageWidget(cell.imageContainer);
     cell.imageWidget->setMagnifierEnabled(m_magnifierEnabled);
+    cell.imageWidget->setMagnifierAnchor(m_magnifierAnchor);
+    cell.imageWidget->setMagnifierParameters(m_magnification, m_magnifierSize);
+    cell.imageWidget->setImageInformationVisible(m_imageInformationVisible);
     if (m_imageOnly) {
         cell.imageContainer->setMinimumSize(0, 0);
         cell.imageWidget->setMinimumSize(0, 0);
@@ -1392,6 +1417,25 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
         showImageContextMenuForCell(cellContainerForMenu, sourceWidget, pos);
     });
 
+    connect(cell.imageWidget, &ZoomableImageWidget::magnifierAnchorChanged, this,
+            [this, widget = cell.imageWidget](QPointF anchor, bool active) {
+        if (active && m_magnifierEnabled) {
+            m_magnifierSource = widget;
+            setMagnifierAnchor(anchor);
+        } else if (!active && m_magnifierSource == widget) {
+            m_magnifierSource = nullptr;
+            setMagnifierAnchor(std::nullopt);
+        }
+    });
+    connect(cell.imageWidget, &ZoomableImageWidget::magnifierParametersChanged, this,
+            [this](double magnification, double size) {
+        m_magnification = magnification;
+        m_magnifierSize = size;
+        for (const auto &item : m_cells) {
+            item.imageWidget->setMagnifierParameters(magnification, size);
+        }
+    });
+
     // Connect zoom/pan signals for linked view
     connect(cell.imageWidget, &ZoomableImageWidget::zoomChanged,
             this, &ComparePanel::onCellZoomChanged);
@@ -1405,6 +1449,8 @@ ComparePanel::ImageCell ComparePanel::createCell(const QString &folderPath)
 
 void ComparePanel::clearCells()
 {
+    m_magnifierSource = nullptr;
+    m_magnifierAnchor.reset();
     m_keyboardComparePreviewIndex = -1;
     m_keyboardCompareKey = 0;
 
@@ -1923,6 +1969,7 @@ void ComparePanel::loadImage(int cellIndex)
             cell.hasImage = false;
             cell.cachedToleranceImage = QImage();
             cell.cachedToleranceThreshold = -1;
+            updateCellHeader(cellIndex);
             return;
         }
     } else {
@@ -1939,6 +1986,7 @@ void ComparePanel::loadImage(int cellIndex)
     positionImageNameOverlay(cellIndex);
 
     showOriginalImage(cellIndex, true);  // resetView on initial load
+    updateCellHeader(cellIndex);
     refreshToleranceJobsDependingOn(cellIndex);
 }
 
@@ -2568,6 +2616,7 @@ void ComparePanel::updateCellHeader(int cellIndex)
     }
 
     ImageCell &cell = m_cells[cellIndex];
+    cell.imageWidget->setImageInformationSource(cell.imagePath, cell.originalImage);
     if (!cell.headerLabel) {
         updateImageNameOverlay(cellIndex);
         return;
@@ -2583,10 +2632,14 @@ void ComparePanel::updateCellHeader(int cellIndex)
         return;
     }
 
-    const QString fileName = QFileInfo(cell.imagePath).fileName();
-    cell.headerLabel->setText(QStringLiteral("%1\n%2").arg(fileName, displayName));
+    QString imageLabel = QFileInfo(cell.imagePath).fileName();
+    if (!cell.originalImage.isNull()) {
+        imageLabel += QStringLiteral("  ·  %1 × %2")
+                          .arg(cell.originalImage.width()).arg(cell.originalImage.height());
+    }
+    cell.headerLabel->setText(QStringLiteral("%1\n%2").arg(imageLabel, displayName));
     cell.headerLabel->setToolTip(QStringLiteral("%1\n%2\n%3")
-                                     .arg(displayName, fileName, cell.imagePath));
+                                     .arg(displayName, imageLabel, cell.imagePath));
     updateImageNameOverlay(cellIndex);
 }
 
@@ -2917,6 +2970,7 @@ void ComparePanel::onImageReady(const QString &imagePath, const QImage &image)
         m_cells[i].previewImage = QImage();
         m_cells[i].cachedToleranceImage = QImage();
         showOriginalImage(i, /*resetView=*/!wasShowingZoomedPreview);
+        updateCellHeader(i);
         if (wantsTolerance && toleranceSource >= 0) {
             m_cells[i].showingToleranceMap = true;
             m_cells[i].toleranceSourceIndex = toleranceSource;
